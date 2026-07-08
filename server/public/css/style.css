@@ -1,0 +1,627 @@
+/* ─── Reset & Base ─────────────────────────────────────── */
+
+*, *::before, *::after {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+:root {
+  --bg: #0a0a0f;
+  --bg-card: #14141f;
+  --bg-input: #1a1a2a;
+  --bg-hover: #1e1e30;
+  --fg: #e0e0f0;
+  --fg-dim: #8888a0;
+  --fg-muted: #606080;
+  --primary: #4a7cf7;
+  --primary-dim: #2a4ca7;
+  --danger: #f74a4a;
+  --danger-dim: #a72a2a;
+  --success: #4af77a;
+  --warning: #f7c84a;
+  --radius: 12px;
+  --radius-sm: 8px;
+  --shadow: 0 2px 8px rgba(0,0,0,0.4);
+  --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+html, body {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+}
+
+body {
+  font-family: var(--font);
+  background: var(--bg);
+  color: var(--fg);
+  -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+}
+
+/* ─── Layout ───────────────────────────────────────────── */
+
+.page {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.screen {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  padding: 24px;
+  gap: 16px;
+}
+
+.screen.hidden {
+  display: none;
+}
+
+h1 {
+  font-size: 24px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+h2 {
+  font-size: 18px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.subtitle {
+  color: var(--fg-dim);
+  font-size: 14px;
+  margin-top: 4px;
+}
+
+.hint {
+  color: var(--fg-muted);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+/* ─── Cards ────────────────────────────────────────────── */
+
+.card-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 0;
+}
+
+.card {
+  display: block;
+  background: var(--bg-card);
+  border-radius: var(--radius);
+  padding: 20px;
+  text-decoration: none;
+  color: var(--fg);
+  border: 1px solid transparent;
+  transition: border-color 0.2s, background 0.2s;
+}
+
+.card:active {
+  background: var(--bg-hover);
+  border-color: var(--primary);
+}
+
+.card-primary {
+  border-color: var(--primary-dim);
+}
+
+.card-icon {
+  font-size: 32px;
+  margin-bottom: 8px;
+}
+
+.card h2 {
+  font-size: 18px;
+  margin-bottom: 4px;
+}
+
+.card p {
+  font-size: 13px;
+  color: var(--fg-dim);
+}
+
+.badge {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  background: var(--primary-dim);
+  color: var(--primary);
+  padding: 2px 6px;
+  border-radius: 4px;
+  margin-left: 8px;
+  vertical-align: middle;
+}
+
+/* ─── Buttons ──────────────────────────────────────────── */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-family: var(--font);
+  font-size: 15px;
+  font-weight: 600;
+  padding: 12px 24px;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: opacity 0.2s, transform 0.1s;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.btn:active {
+  transform: scale(0.97);
+}
+
+.btn:disabled {
+  opacity: 0.4;
+  pointer-events: none;
+}
+
+.btn-primary {
+  background: var(--primary);
+  color: #fff;
+}
+
+.btn-danger {
+  background: var(--danger);
+  color: #fff;
+}
+
+.btn-outline {
+  background: transparent;
+  border: 1px solid var(--fg-muted);
+  color: var(--fg);
+}
+
+.btn-large {
+  padding: 16px 32px;
+  font-size: 17px;
+  width: 100%;
+}
+
+.btn-small {
+  padding: 8px 16px;
+  font-size: 13px;
+}
+
+.btn-round {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  padding: 0;
+  font-size: 22px;
+  background: var(--bg-card);
+  border: 1px solid var(--fg-muted);
+  color: var(--fg);
+}
+
+/* ─── Forms ────────────────────────────────────────────── */
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.form-group label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+input[type="text"] {
+  font-family: var(--font);
+  font-size: 16px;
+  padding: 12px 16px;
+  background: var(--bg-input);
+  border: 1px solid var(--fg-muted);
+  border-radius: var(--radius-sm);
+  color: var(--fg);
+  outline: none;
+  transition: border-color 0.2s;
+  width: 100%;
+}
+
+input[type="text"]:focus {
+  border-color: var(--primary);
+}
+
+/* ─── Camera Page ──────────────────────────────────────── */
+
+.camera-page {
+  background: #000;
+}
+
+.pairing-container,
+.status-container {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 20px;
+  max-width: 400px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+.pairing-method label {
+  display: block;
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 8px;
+  color: var(--fg-dim);
+}
+
+.code-input-group {
+  display: flex;
+  gap: 8px;
+}
+
+.code-input-group input {
+  flex: 1;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  font-family: monospace;
+  font-size: 16px;
+}
+
+.status-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.video-container {
+  position: relative;
+  background: #000;
+  border-radius: var(--radius);
+  overflow: hidden;
+  aspect-ratio: 16/9;
+}
+
+.video-container video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.stream-controls {
+  display: flex;
+  gap: 8px;
+}
+
+.status-info {
+  background: var(--bg-card);
+  border-radius: var(--radius-sm);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.info-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 13px;
+}
+
+.info-row span:first-child {
+  color: var(--fg-dim);
+}
+
+.device-actions {
+  display: flex;
+  justify-content: center;
+}
+
+/* ─── Base Station Page ────────────────────────────────── */
+
+.control-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 24px;
+  background: var(--bg-card);
+  border-bottom: 1px solid var(--bg-input);
+}
+
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.header-left h1 {
+  font-size: 20px;
+}
+
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pairing-code {
+  font-family: monospace;
+  font-size: 12px;
+  color: var(--primary);
+  background: var(--primary-dim);
+  padding: 4px 8px;
+  border-radius: 4px;
+}
+
+.video-grid {
+  position: relative;
+  background: #000;
+  min-height: 200px;
+  border-radius: var(--radius);
+  margin: 12px;
+  overflow: hidden;
+  aspect-ratio: 16/9;
+}
+
+.empty-state {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--fg-muted);
+  font-size: 14px;
+}
+
+.panel {
+  background: var(--bg-card);
+  border-radius: var(--radius);
+  padding: 16px;
+  margin: 0 12px;
+}
+
+.device-list, .preset-list, .viewer-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.device-item, .preset-item, .viewer-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px;
+  background: var(--bg-input);
+  border-radius: var(--radius-sm);
+}
+
+.device-item .device-name {
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.device-item .device-type {
+  font-size: 11px;
+  color: var(--fg-muted);
+  text-transform: uppercase;
+}
+
+/* ─── Config Form ──────────────────────────────────────── */
+
+.config-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.config-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--bg-input);
+}
+
+.config-row label {
+  font-size: 14px;
+}
+
+.config-row select,
+.config-row input[type="range"] {
+  font-family: var(--font);
+  font-size: 14px;
+  background: var(--bg-input);
+  border: 1px solid var(--fg-muted);
+  border-radius: 4px;
+  color: var(--fg);
+  padding: 4px 8px;
+}
+
+.toggle-switch {
+  position: relative;
+  width: 44px;
+  height: 24px;
+  background: var(--fg-muted);
+  border-radius: 12px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.toggle-switch.active {
+  background: var(--primary);
+}
+
+.toggle-switch::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 20px;
+  height: 20px;
+  background: #fff;
+  border-radius: 50%;
+  transition: transform 0.2s;
+}
+
+.toggle-switch.active::after {
+  transform: translateX(20px);
+}
+
+/* ─── Viewer Page ──────────────────────────────────────── */
+
+.viewer-page {
+  background: #000;
+}
+
+.viewer-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 16px;
+  background: var(--bg-card);
+}
+
+.viewer-header h1 {
+  font-size: 18px;
+  flex: 1;
+}
+
+.source-list {
+  display: flex;
+  gap: 8px;
+  padding: 8px 16px;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.source-chip {
+  padding: 6px 14px;
+  background: var(--bg-card);
+  border: 1px solid var(--fg-muted);
+  border-radius: 20px;
+  font-size: 13px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: border-color 0.2s, background 0.2s;
+}
+
+.source-chip:active,
+.source-chip.active {
+  border-color: var(--primary);
+  background: var(--primary-dim);
+}
+
+.viewer-controls {
+  display: flex;
+  justify-content: center;
+  gap: 16px;
+  padding: 16px;
+}
+
+.status-bar {
+  display: flex;
+  justify-content: space-between;
+  padding: 8px 16px;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.video-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg-muted);
+  font-size: 14px;
+}
+
+/* ─── Status Dots ──────────────────────────────────────── */
+
+.status-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--fg-muted);
+  transition: background 0.3s;
+}
+
+.status-dot.online {
+  background: var(--success);
+  box-shadow: 0 0 6px var(--success);
+}
+
+.status-dot.offline {
+  background: var(--danger);
+}
+
+.status-dot.reconnecting {
+  background: var(--warning);
+  animation: pulse 1.5s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+/* ─── Utility ──────────────────────────────────────────── */
+
+.hidden {
+  display: none !important;
+}
+
+.error-message {
+  color: var(--danger);
+  font-size: 13px;
+  padding: 8px 12px;
+  background: var(--danger-dim);
+  border-radius: var(--radius-sm);
+}
+
+/* ─── Landscape tweaks ─────────────────────────────────── */
+
+@media (orientation: landscape) and (max-height: 500px) {
+  .screen {
+    padding: 12px;
+    gap: 8px;
+  }
+  .pairing-container,
+  .status-container {
+    gap: 10px;
+  }
+}
+
+/* ─── iPad / Larger screens ────────────────────────────── */
+
+@media (min-width: 768px) {
+  .card-grid {
+    flex-direction: row;
+    max-width: 600px;
+    margin: 0 auto;
+  }
+  .card {
+    flex: 1;
+  }
+  .video-grid {
+    aspect-ratio: 16/7;
+  }
+}

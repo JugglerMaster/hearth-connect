@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1.0, user-scalable=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <title>Viewer — Hearth-Connect</title>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <div class="page viewer-page" id="app">
+    <!-- Setup Screen -->
+    <div id="viewerSetupScreen" class="screen">
+      <div class="setup-container">
+        <h1>Viewer</h1>
+        <p class="subtitle">Watch your cameras remotely</p>
+
+        <div class="form-group">
+          <label for="viewerRoomInput">Room Name</label>
+          <input type="text" id="viewerRoomInput" placeholder="e.g. baby-monitor">
+        </div>
+
+        <p class="hint">Ask your Base Station for the room name</p>
+
+        <button id="viewerJoinBtn" class="btn btn-primary">Join Room</button>
+        <div id="viewerJoinError" class="error-message hidden"></div>
+      </div>
+    </div>
+
+    <!-- Viewer Main -->
+    <div id="viewerScreen" class="screen hidden">
+      <header class="viewer-header">
+        <h1 id="viewerRoomLabel">—</h1>
+        <span id="viewerConnectionDot" class="status-dot offline"></span>
+      </header>
+
+      <!-- Primary Video -->
+      <div id="viewerVideoContainer" class="video-container">
+        <video id="remoteVideo" autoplay playsinline poster="/css/placeholder.svg"></video>
+        <div class="video-overlay" id="noSourceOverlay">
+          <p>No active camera sources</p>
+        </div>
+      </div>
+
+      <!-- Source Selector -->
+      <div id="sourceList" class="source-list"></div>
+
+      <!-- Controls -->
+      <div class="viewer-controls">
+        <button id="talkBtn" class="btn btn-round" disabled title="Push to talk">
+          🎤
+        </button>
+        <button id="muteBtn" class="btn btn-round" title="Mute audio">
+          🔇
+        </button>
+        <button id="fullscreenBtn" class="btn btn-round" title="Full screen">
+          ⛶
+        </button>
+      </div>
+
+      <div class="status-bar">
+        <span id="viewerConnectionStatus">Disconnected</span>
+        <span id="viewerAudioStatus"></span>
+      </div>
+    </div>
+  </div>
+
+  <script src="/js/signaling.js"></script>
+  <script src="/js/webrtc.js"></script>
+  <script src="/js/viewer.js"></script>
+</body>
+</html>

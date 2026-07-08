@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1.0, user-scalable=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <title>Base Station — Hearth-Connect</title>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <div class="page base-page" id="app">
+    <!-- Room Setup (first visit) -->
+    <div id="setupScreen" class="screen">
+      <div class="setup-container">
+        <h1>Base Station</h1>
+        <p class="subtitle">Create or join a room</p>
+
+        <div class="form-group group">
+          <label for="roomIdInput">Room Name</label>
+          <input type="text" id="roomIdInput" value="baby-monitor" placeholder="e.g. baby-monitor">
+        </div>
+
+        <div class="setup-actions">
+          <button id="createRoomBtn" class="btn btn-primary">Create &amp; Join</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Main Control Panel -->
+    <div id="controlScreen" class="screen hidden">
+      <header class="control-header">
+        <div class="header-left">
+          <h1 id="baseRoomLabel">Baby Monitor</h1>
+          <span id="baseConnectionDot" class="status-dot offline"></span>
+        </div>
+        <div class="header-right">
+          <button id="pairingTokenBtn" class="btn btn-outline btn-small">Add Camera</button>
+          <span id="pairingCodeDisplay" class="pairing-code hidden"></span>
+        </div>
+      </header>
+
+      <!-- Video Grid -->
+      <div id="videoGrid" class="video-grid">
+        <div class="empty-state">
+          <p>No cameras connected</p>
+          <p class="hint">Click "Add Camera" and scan the code on a camera device</p>
+        </div>
+      </div>
+
+      <!-- Device List -->
+      <section class="panel">
+        <h2>Devices</h2>
+        <div id="deviceList" class="device-list"></div>
+      </section>
+
+      <!-- Camera Config Panel -->
+      <section id="configPanel" class="panel hidden">
+        <h2 id="configPanelTitle">Camera Settings</h2>
+        <div id="configForm" class="config-form"></div>
+      </section>
+
+      <!-- Presets -->
+      <section class="panel">
+        <h2>Presets</h2>
+        <div id="presetList" class="preset-list"></div>
+        <button id="addPresetBtn" class="btn btn-outline btn-small">+ Add Preset</button>
+      </section>
+
+      <!-- Viewers -->
+      <section class="panel">
+        <h2>Viewers</h2>
+        <div id="viewerList" class="viewer-list"></div>
+        <button id="inviteViewerBtn" class="btn btn-outline btn-small">Invite Viewer</button>
+      </section>
+    </div>
+  </div>
+
+  <script src="/js/signaling.js"></script>
+  <script src="/js/webrtc.js"></script>
+  <script src="/js/base-station.js"></script>
+</body>
+</html>

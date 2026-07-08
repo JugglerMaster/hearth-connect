@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1.0, user-scalable=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>Camera — Hearth-Connect</title>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <div class="page camera-page" id="app">
+    <!-- Pairing Screen (shown first) -->
+    <div id="pairingScreen" class="screen">
+      <div class="pairing-container">
+        <h1>Camera Setup</h1>
+        <p class="subtitle">Pair this device with a Base Station</p>
+
+        <div class="pairing-method">
+          <label>Enter Pairing Code</label>
+          <div class="code-input-group">
+            <input type="text" id="pairingCode" placeholder="HEARTH-XXXX-XXXX"
+                   maxlength="19" autocomplete="off" autocorrect="off" spellcheck="false">
+            <button id="pairBtn" class="btn btn-primary">Connect</button>
+          </div>
+        </div>
+
+        <p class="hint">Get the code from your Base Station → Room Settings → Add Camera</p>
+        <div id="pairError" class="error-message hidden"></div>
+      </div>
+    </div>
+
+    <!-- Status Screen (after pairing) -->
+    <div id="statusScreen" class="screen hidden">
+      <div class="status-container">
+        <div class="status-header">
+          <h1 id="roomLabel">Nursery</h1>
+          <span id="connectionDot" class="status-dot offline"></span>
+        </div>
+
+        <div id="videoPreview" class="video-container hidden">
+          <video id="localVideo" autoplay playsinline muted></video>
+        </div>
+
+        <div class="stream-controls">
+          <button id="startStreamBtn" class="btn btn-primary btn-large">
+            Start Streaming
+          </button>
+          <button id="stopStreamBtn" class="btn btn-danger btn-large hidden">
+            Stop Streaming
+          </button>
+        </div>
+
+        <div class="status-info">
+          <div class="info-row">
+            <span>Connected as:</span>
+            <span id="deviceLabel">Camera</span>
+          </div>
+          <div class="info-row">
+            <span>Room:</span>
+            <span id="roomName">—</span>
+          </div>
+          <div class="info-row">
+            <span>Stream:</span>
+            <span id="streamStatus">Idle</span>
+          </div>
+          <div class="info-row">
+            <span>Wake Lock:</span>
+            <span id="wakeLockStatus">Inactive</span>
+          </div>
+        </div>
+
+        <div class="device-actions">
+          <button id="disconnectBtn" class="btn btn-outline btn-small">Disconnect</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/js/signaling.js"></script>
+  <script src="/js/webrtc.js"></script>
+  <script src="/js/camera.js"></script>
+</body>
+</html>
