@@ -25,6 +25,14 @@
     <div id="debugEvent" class="debug-event">ev:--</div>
   </div>
 
+  <div id="cameraError" class="camera-error hidden">
+    <div class="camera-error-box">
+      <p class="camera-error-title">Camera unavailable</p>
+      <p id="cameraErrorMsg" class="camera-error-msg"></p>
+      <button id="retryCameraBtn" class="btn btn-primary">Retry Camera</button>
+    </div>
+  </div>
+
   <script src="/js/signaling.js"></script>
   <script src="/js/webrtc.js"></script>
   <script src="/js/camera.js"></script>

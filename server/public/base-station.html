@@ -18,27 +18,28 @@
     </header>
 
     <div id="monitorFeed" class="monitor-feed hidden">
-      <video id="monitorVideo" autoplay playsinline muted></video>
+      <video id="monitorVideo" autoplay playsinline></video>
+      <div id="monitorPlaceholder" class="monitor-placeholder hidden">
+        <div>🔊 Listening…</div>
+      </div>
+      <div id="monitorError" class="monitor-error hidden"></div>
       <div class="monitor-overlay">
         <span id="monitorLabel"></span>
+        <span id="monitorMode" class="monitor-mode"></span>
         <button id="stopMonitorBtn" class="btn btn-small btn-outline">Stop</button>
       </div>
     </div>
 
-    <div id="videoGrid" class="video-grid">
-      <div class="empty-state">
-        <p>No kiosks connected</p>
+    <div id="homeView">
+      <div class="panel devices-panel">
+        <h2>Devices</h2>
+        <div id="deviceList" class="device-list"></div>
       </div>
-    </div>
 
-    <div class="panel devices-panel">
-      <h2>Devices</h2>
-      <div id="deviceList" class="device-list"></div>
-    </div>
-
-    <div id="configPanel" class="panel hidden">
-      <h2 id="configTitle">Settings</h2>
-      <div id="configForm" class="config-form"></div>
+      <div id="configPanel" class="panel hidden">
+        <h2 id="configTitle">Settings</h2>
+        <div id="configForm" class="config-form"></div>
+      </div>
     </div>
   </div>
 

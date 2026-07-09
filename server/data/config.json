@@ -1,0 +1,690 @@
+{
+  "version": 1,
+  "rooms": {
+    "dad": {
+      "id": "dad",
+      "label": "dad",
+      "createdAt": 1783476806417,
+      "presets": [],
+      "pairingTokens": []
+    },
+    "desktop": {
+      "id": "desktop",
+      "label": "desktop",
+      "createdAt": 1783479188802,
+      "presets": [],
+      "pairingTokens": []
+    },
+    "baby-monitor": {
+      "id": "baby-monitor",
+      "label": "baby-monitor",
+      "createdAt": 1783514604757,
+      "presets": [],
+      "pairingTokens": [
+        {
+          "token": "HEARTH-78OM-IQG8",
+          "expiresAt": 1783514904757,
+          "used": false
+        },
+        {
+          "token": "HEARTH-D33A-L4KN",
+          "expiresAt": 1783515836010,
+          "used": false
+        },
+        {
+          "token": "HEARTH-G0CA-GUW8",
+          "expiresAt": 1783515889984,
+          "used": false
+        }
+      ]
+    },
+    "pc": {
+      "id": "pc",
+      "label": "pc",
+      "createdAt": 1783515549309,
+      "presets": [],
+      "pairingTokens": []
+    },
+    "iphone": {
+      "id": "iphone",
+      "label": "iphone",
+      "createdAt": 1783518599755,
+      "presets": [],
+      "pairingTokens": []
+    },
+    "test2": {
+      "id": "test2",
+      "label": "test2",
+      "createdAt": 1783519034951,
+      "presets": [],
+      "pairingTokens": []
+    }
+  },
+  "devices": {
+    "base-1783476799360-4g2b": {
+      "id": "base-1783476799360-4g2b",
+      "type": "base",
+      "label": "Base Station",
+      "roomId": "dad",
+      "createdAt": 1783476806417,
+      "lastSeenAt": 1783479583167,
+      "config": {
+        "label": "",
+        "visibleSources": [],
+        "audioFocusMode": "manual",
+        "gridLayout": "1x1",
+        "idleTimeout": 0
+      }
+    },
+    "base-1783479179855-lzgm": {
+      "id": "base-1783479179855-lzgm",
+      "type": "base",
+      "label": "Base Station",
+      "roomId": "desktop",
+      "createdAt": 1783479188802,
+      "lastSeenAt": 1783479996010,
+      "config": {
+        "label": "",
+        "visibleSources": [],
+        "audioFocusMode": "manual",
+        "gridLayout": "1x1",
+        "idleTimeout": 0
+      }
+    },
+    "base-1783514586100-23zb": {
+      "id": "base-1783514586100-23zb",
+      "type": "base",
+      "label": "Base Station",
+      "roomId": "dad",
+      "createdAt": 1783514595765,
+      "lastSeenAt": 1783518639623,
+      "config": {
+        "label": "",
+        "visibleSources": [],
+        "audioFocusMode": "manual",
+        "gridLayout": "1x1",
+        "idleTimeout": 0
+      }
+    },
+    "base-1783515544274-zoke": {
+      "id": "base-1783515544274-zoke",
+      "type": "base",
+      "label": "Base Station",
+      "roomId": "pc",
+      "createdAt": 1783515549309,
+      "lastSeenAt": 1783518664019,
+      "config": {
+        "label": "",
+        "visibleSources": [],
+        "audioFocusMode": "manual",
+        "gridLayout": "1x1",
+        "idleTimeout": 0
+      }
+    },
+    "kiosk-1783518599707-ufc8": {
+      "id": "kiosk-1783518599707-ufc8",
+      "type": "kiosk",
+      "label": "Kiosk",
+      "roomId": "iphone",
+      "createdAt": 1783518599755,
+      "lastSeenAt": 1783602500449,
+      "config": {
+        "label": "test2",
+        "camera": "front",
+        "resolution": "1080p",
+        "frameRate": 15,
+        "nightMode": false,
+        "torch": false,
+        "micSensitivity": 0.8,
+        "speakerVolume": 0.5,
+        "twoWayAudioEnabled": true,
+        "showFeed": false,
+        "keepAwake": true,
+        "feedSourceId": "base-1783518602794-add8"
+      }
+    },
+    "base-1783518602794-add8": {
+      "id": "base-1783518602794-add8",
+      "type": "base",
+      "label": "Base Station",
+      "roomId": "pc",
+      "createdAt": 1783518604146,
+      "lastSeenAt": 1783601404185,
+      "config": {
+        "label": "",
+        "visibleSources": [],
+        "audioFocusMode": "manual",
+        "gridLayout": "1x1",
+        "idleTimeout": 0
+      }
+    },
+    "base-1783518640110-4z4c": {
+      "id": "base-1783518640110-4z4c",
+      "type": "base",
+      "label": "Base Station",
+      "roomId": "baby-monitor",
+      "createdAt": 1783518643119,
+      "lastSeenAt": 1783570466095,
+      "config": {
+        "label": "",
+        "visibleSources": [],
+        "audioFocusMode": "manual",
+        "gridLayout": "1x1",
+        "idleTimeout": 0
+      }
+    },
+    "kiosk-1783519033629-ib4b": {
+      "id": "kiosk-1783519033629-ib4b",
+      "type": "kiosk",
+      "label": "Kiosk",
+      "roomId": "test2",
+      "createdAt": 1783519034951,
+      "lastSeenAt": 1783573872309,
+      "config": {
+        "label": "",
+        "camera": "rear",
+        "resolution": "720p",
+        "frameRate": 24,
+        "nightMode": false,
+        "torch": false,
+        "micSensitivity": 0.8,
+        "speakerVolume": 0.5,
+        "twoWayAudioEnabled": true,
+        "showFeed": false,
+        "keepAwake": true
+      }
+    },
+    "kiosk-1783523496261-tpk1": {
+      "id": "kiosk-1783523496261-tpk1",
+      "type": "kiosk",
+      "label": "Kiosk",
+      "roomId": "default",
+      "createdAt": 1783523497660,
+      "lastSeenAt": 1783525956639,
+      "config": {
+        "label": "",
+        "camera": "rear",
+        "resolution": "720p",
+        "frameRate": 24,
+        "nightMode": false,
+        "torch": false,
+        "micSensitivity": 0.8,
+        "speakerVolume": 0.5,
+        "twoWayAudioEnabled": true,
+        "showFeed": false,
+        "keepAwake": true
+      }
+    },
+    "base-1783523515496-u0cw": {
+      "id": "base-1783523515496-u0cw",
+      "type": "base",
+      "label": "Base Station",
+      "roomId": "default",
+      "createdAt": 1783523516889,
+      "lastSeenAt": 1783523605888,
+      "config": {
+        "label": "",
+        "visibleSources": [],
+        "audioFocusMode": "manual",
+        "gridLayout": "1x1",
+        "idleTimeout": 0
+      }
+    },
+    "test-1783565478270-1f0x": {
+      "id": "test-1783565478270-1f0x",
+      "type": "base",
+      "label": "Stream Test",
+      "roomId": "default",
+      "createdAt": 1783565478310,
+      "lastSeenAt": 1783565546175,
+      "config": {
+        "label": "",
+        "visibleSources": [],
+        "audioFocusMode": "manual",
+        "gridLayout": "1x1",
+        "idleTimeout": 0
+      }
+    },
+    "test-1783565486232-hpvx": {
+      "id": "test-1783565486232-hpvx",
+      "type": "base",
+      "label": "Stream Test",
+      "roomId": "default",
+      "createdAt": 1783565486274,
+      "lastSeenAt": 1783565894509,
+      "config": {
+        "label": "",
+        "visibleSources": [],
+        "audioFocusMode": "manual",
+        "gridLayout": "1x1",
+        "idleTimeout": 0
+      }
+    },
+    "test-1783565520247-f44e": {
+      "id": "test-1783565520247-f44e",
+      "type": "base",
+      "label": "Stream Test",
+      "roomId": "default",
+      "createdAt": 1783565520312,
+      "lastSeenAt": 1783565658306,
+      "config": {
+        "label": "",
+        "visibleSources": [],
+        "audioFocusMode": "manual",
+        "gridLayout": "1x1",
+        "idleTimeout": 0
+      }
+    },
+    "test-1783565598310-g9l6": {
+      "id": "test-1783565598310-g9l6",
+      "type": "base",
+      "label": "Stream Test",
+      "roomId": "default",
+      "createdAt": 1783565598377,
+      "lastSeenAt": 1783565798234,
+      "config": {
+        "label": "",
+        "visibleSources": [],
+        "audioFocusMode": "manual",
+        "gridLayout": "1x1",
+        "idleTimeout": 0
+      }
+    },
+    "test-1783565738269-b1xi": {
+      "id": "test-1783565738269-b1xi",
+      "type": "base",
+      "label": "Stream Test",
+      "roomId": "default",
+      "createdAt": 1783565738424,
+      "lastSeenAt": 1783565829583,
+      "config": {
+        "label": "",
+        "visibleSources": [],
+        "audioFocusMode": "manual",
+        "gridLayout": "1x1",
+        "idleTimeout": 0
+      }
+    },
+    "test-1783565769591-6tg3": {
+      "id": "test-1783565769591-6tg3",
+      "type": "base",
+      "label": "Stream Test",
+      "roomId": "default",
+      "createdAt": 1783565769689,
+      "lastSeenAt": 1783566005628,
+      "config": {
+        "label": "",
+        "visibleSources": [],
+        "audioFocusMode": "manual",
+        "gridLayout": "1x1",
+        "idleTimeout": 0
+      }
+    },
+    "test-1783565834556-o34w": {
+      "id": "test-1783565834556-o34w",
+      "type": "base",
+      "label": "Stream Test",
+      "roomId": "default",
+      "createdAt": 1783565834627,
+      "lastSeenAt": 1783565918760,
+      "config": {
+        "label": "",
+        "visibleSources": [],
+        "audioFocusMode": "manual",
+        "gridLayout": "1x1",
+        "idleTimeout": 0
+      }
+    },
+    "test-1783565858806-qkw5": {
+      "id": "test-1783565858806-qkw5",
+      "type": "base",
+      "label": "Stream Test",
+      "roomId": "default",
+      "createdAt": 1783565858856,
+      "lastSeenAt": 1783566365618,
+      "config": {
+        "label": "",
+        "visibleSources": [],
+        "audioFocusMode": "manual",
+        "gridLayout": "1x1",
+        "idleTimeout": 0
+      }
+    },
+    "test-1783565945656-sqly": {
+      "id": "test-1783565945656-sqly",
+      "type": "base",
+      "label": "Stream Test",
+      "roomId": "default",
+      "createdAt": 1783565945746,
+      "lastSeenAt": 1783566472926,
+      "config": {
+        "label": "",
+        "visibleSources": [],
+        "audioFocusMode": "manual",
+        "gridLayout": "1x1",
+        "idleTimeout": 0
+      }
+    },
+    "test-1783566412939-1rgd": {
+      "id": "test-1783566412939-1rgd",
+      "type": "base",
+      "label": "Stream Test",
+      "roomId": "default",
+      "createdAt": 1783566413039,
+      "lastSeenAt": 1783566489588,
+      "config": {
+        "label": "",
+        "visibleSources": [],
+        "audioFocusMode": "manual",
+        "gridLayout": "1x1",
+        "idleTimeout": 0
+      }
+    },
+    "test-1783566429594-gd7p": {
+      "id": "test-1783566429594-gd7p",
+      "type": "base",
+      "label": "Stream Test",
+      "roomId": "default",
+      "createdAt": 1783566429718,
+      "lastSeenAt": 1783566762406,
+      "config": {
+        "label": "",
+        "visibleSources": [],
+        "audioFocusMode": "manual",
+        "gridLayout": "1x1",
+        "idleTimeout": 0
+      }
+    },
+    "test-1783566702437-w245": {
+      "id": "test-1783566702437-w245",
+      "type": "base",
+      "label": "Stream Test",
+      "roomId": "default",
+      "createdAt": 1783566702558,
+      "lastSeenAt": 1783566983364,
+      "config": {
+        "label": "",
+        "visibleSources": [],
+        "audioFocusMode": "manual",
+        "gridLayout": "1x1",
+        "idleTimeout": 0
+      }
+    },
+    "test-1783566923372-acpq": {
+      "id": "test-1783566923372-acpq",
+      "type": "base",
+      "label": "Stream Test",
+      "roomId": "default",
+      "createdAt": 1783566923477,
+      "lastSeenAt": 1783567281638,
+      "config": {
+        "label": "",
+        "visibleSources": [],
+        "audioFocusMode": "manual",
+        "gridLayout": "1x1",
+        "idleTimeout": 0
+      }
+    },
+    "test-1783567221713-3dbu": {
+      "id": "test-1783567221713-3dbu",
+      "type": "base",
+      "label": "Stream Test",
+      "roomId": "default",
+      "createdAt": 1783567221852,
+      "lastSeenAt": 1783567680534,
+      "config": {
+        "label": "",
+        "visibleSources": [],
+        "audioFocusMode": "manual",
+        "gridLayout": "1x1",
+        "idleTimeout": 0
+      }
+    },
+    "test-1783567315039-k97n": {
+      "id": "test-1783567315039-k97n",
+      "type": "base",
+      "label": "Stream Test",
+      "roomId": "default",
+      "createdAt": 1783567315182,
+      "lastSeenAt": 1783567315182,
+      "config": {
+        "label": "",
+        "visibleSources": [],
+        "audioFocusMode": "manual",
+        "gridLayout": "1x1",
+        "idleTimeout": 0
+      }
+    },
+    "base-1783567326530-e2kq": {
+      "id": "base-1783567326530-e2kq",
+      "type": "base",
+      "label": "Base Station",
+      "roomId": "default",
+      "createdAt": 1783567326633,
+      "lastSeenAt": 1783602500448,
+      "config": {
+        "label": "",
+        "visibleSources": [],
+        "audioFocusMode": "manual",
+        "gridLayout": "1x1",
+        "idleTimeout": 0
+      }
+    },
+    "test-1783567620531-lew1": {
+      "id": "test-1783567620531-lew1",
+      "type": "base",
+      "label": "Stream Test",
+      "roomId": "default",
+      "createdAt": 1783567620667,
+      "lastSeenAt": 1783567751594,
+      "config": {
+        "label": "",
+        "visibleSources": [],
+        "audioFocusMode": "manual",
+        "gridLayout": "1x1",
+        "idleTimeout": 0
+      }
+    },
+    "test-1783567691586-2kbp": {
+      "id": "test-1783567691586-2kbp",
+      "type": "base",
+      "label": "Stream Test",
+      "roomId": "default",
+      "createdAt": 1783567691714,
+      "lastSeenAt": 1783569049804,
+      "config": {
+        "label": "",
+        "visibleSources": [],
+        "audioFocusMode": "manual",
+        "gridLayout": "1x1",
+        "idleTimeout": 0
+      }
+    },
+    "test-1783568989959-rdux": {
+      "id": "test-1783568989959-rdux",
+      "type": "base",
+      "label": "Stream Test",
+      "roomId": "default",
+      "createdAt": 1783568990178,
+      "lastSeenAt": 1783569098084,
+      "config": {
+        "label": "",
+        "visibleSources": [],
+        "audioFocusMode": "manual",
+        "gridLayout": "1x1",
+        "idleTimeout": 0
+      }
+    },
+    "test-1783569038233-gjwz": {
+      "id": "test-1783569038233-gjwz",
+      "type": "base",
+      "label": "Stream Test",
+      "roomId": "default",
+      "createdAt": 1783569038428,
+      "lastSeenAt": 1783569202861,
+      "config": {
+        "label": "",
+        "visibleSources": [],
+        "audioFocusMode": "manual",
+        "gridLayout": "1x1",
+        "idleTimeout": 0
+      }
+    },
+    "kiosk-1783569144714-zugg": {
+      "id": "kiosk-1783569144714-zugg",
+      "type": "kiosk",
+      "label": "Kiosk",
+      "roomId": "default",
+      "createdAt": 1783569144853,
+      "lastSeenAt": 1783570409531,
+      "config": {
+        "label": "",
+        "camera": "rear",
+        "resolution": "720p",
+        "frameRate": 24,
+        "nightMode": false,
+        "torch": false,
+        "micSensitivity": 0.8,
+        "speakerVolume": 0.5,
+        "twoWayAudioEnabled": true,
+        "showFeed": false,
+        "keepAwake": true
+      }
+    },
+    "test-kiosk-1783571518177": {
+      "id": "test-kiosk-1783571518177",
+      "type": "kiosk",
+      "label": "TestKiosk",
+      "roomId": "default",
+      "createdAt": 1783571518189,
+      "lastSeenAt": 1783571588187,
+      "config": {
+        "label": "",
+        "camera": "rear",
+        "resolution": "720p",
+        "frameRate": 24,
+        "nightMode": false,
+        "torch": false,
+        "micSensitivity": 0.8,
+        "speakerVolume": 0.5,
+        "twoWayAudioEnabled": true,
+        "showFeed": false,
+        "keepAwake": true
+      }
+    },
+    "test-kiosk-1783571552605": {
+      "id": "test-kiosk-1783571552605",
+      "type": "kiosk",
+      "label": "TestKiosk",
+      "roomId": "default",
+      "createdAt": 1783571552615,
+      "lastSeenAt": 1783571613433,
+      "config": {
+        "label": "",
+        "camera": "rear",
+        "resolution": "720p",
+        "frameRate": 24,
+        "nightMode": false,
+        "torch": false,
+        "micSensitivity": 0.8,
+        "speakerVolume": 0.5,
+        "twoWayAudioEnabled": true,
+        "showFeed": false,
+        "keepAwake": true
+      }
+    },
+    "test-base-1783571552605": {
+      "id": "test-base-1783571552605",
+      "type": "base",
+      "label": "TestBase",
+      "roomId": "default",
+      "createdAt": 1783571553423,
+      "lastSeenAt": 1783571613433,
+      "config": {
+        "label": "",
+        "visibleSources": [],
+        "audioFocusMode": "manual",
+        "gridLayout": "1x1",
+        "idleTimeout": 0
+      }
+    },
+    "test-kiosk-1783572487764": {
+      "id": "test-kiosk-1783572487764",
+      "type": "kiosk",
+      "label": "TestKiosk",
+      "roomId": "default",
+      "createdAt": 1783572487774,
+      "lastSeenAt": 1783572548610,
+      "config": {
+        "label": "",
+        "camera": "rear",
+        "resolution": "720p",
+        "frameRate": 24,
+        "nightMode": false,
+        "torch": false,
+        "micSensitivity": 0.8,
+        "speakerVolume": 0.5,
+        "twoWayAudioEnabled": true,
+        "showFeed": false,
+        "keepAwake": true
+      }
+    },
+    "test-base-1783572487764": {
+      "id": "test-base-1783572487764",
+      "type": "base",
+      "label": "TestBase",
+      "roomId": "default",
+      "createdAt": 1783572488592,
+      "lastSeenAt": 1783572548610,
+      "config": {
+        "label": "",
+        "visibleSources": [],
+        "audioFocusMode": "manual",
+        "gridLayout": "1x1",
+        "idleTimeout": 0
+      }
+    },
+    "kiosk-1783601459635-cuny": {
+      "id": "kiosk-1783601459635-cuny",
+      "type": "kiosk",
+      "label": "Kiosk",
+      "roomId": "default",
+      "createdAt": 1783601453641,
+      "lastSeenAt": 1783602625119,
+      "config": {
+        "label": "",
+        "camera": "rear",
+        "resolution": "720p",
+        "frameRate": 24,
+        "nightMode": false,
+        "torch": false,
+        "micSensitivity": 0.8,
+        "speakerVolume": 0.5,
+        "twoWayAudioEnabled": true,
+        "showFeed": false,
+        "keepAwake": true
+      }
+    },
+    "kiosk-1783601802362-0cnr": {
+      "id": "kiosk-1783601802362-0cnr",
+      "type": "kiosk",
+      "label": "Kiosk",
+      "roomId": "default",
+      "createdAt": 1783601802931,
+      "lastSeenAt": 1783601927014,
+      "config": {
+        "label": "Kiost",
+        "camera": "front",
+        "resolution": "480p",
+        "frameRate": 15,
+        "nightMode": false,
+        "torch": false,
+        "micSensitivity": 0.8,
+        "speakerVolume": 0.5,
+        "twoWayAudioEnabled": true,
+        "showFeed": false,
+        "keepAwake": true
+      }
+    }
+  }
+}

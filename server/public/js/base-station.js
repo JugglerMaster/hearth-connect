@@ -6,7 +6,8 @@
   let deviceId = localStorage.getItem('hearth_baseDeviceId') || 'base-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6);
   let sources = [];
   let devices = [];
-  let monitoringId = null;
+  let viewingId = null;
+  let viewMode = null; // 'video' | 'audio'
   let subscribed = new Set();
   let streams = {};
 
@@ -14,8 +15,11 @@
   const monitorFeed = document.getElementById('monitorFeed');
   const monitorVideo = document.getElementById('monitorVideo');
   const monitorLabel = document.getElementById('monitorLabel');
+  const monitorMode = document.getElementById('monitorMode');
+  const monitorError = document.getElementById('monitorError');
+  const monitorPlaceholder = document.getElementById('monitorPlaceholder');
   const stopMonitorBtn = document.getElementById('stopMonitorBtn');
-  const videoGrid = document.getElementById('videoGrid');
+  const homeView = document.getElementById('homeView');
   const deviceList = document.getElementById('deviceList');
   const configPanel = document.getElementById('configPanel');
   const configForm = document.getElementById('configForm');
@@ -29,11 +33,31 @@
     return Math.floor(diff / 86400000) + 'd ago';
   }
 
-  function attachVideo(peerId, stream) {
-    const el = document.getElementById('v-' + peerId);
-    if (el && el.srcObject !== stream) {
-      el.srcObject = stream;
-      el.play().catch(() => {});
+  function attachMonitorStream() {
+    if (!viewingId) return;
+    const stream = streams[viewingId];
+    if (!stream) return;
+    monitorVideo.srcObject = stream;
+    monitorVideo.muted = false;
+    monitorVideo.play().catch(() => {});
+    applyViewMode();
+  }
+
+  function applyViewMode() {
+    if (!viewingId) return;
+    const stream = streams[viewingId];
+    if (!stream) return;
+    const vTracks = stream.getVideoTracks();
+    if (viewMode === 'audio') {
+      vTracks.forEach(t => { t.enabled = false; });
+      monitorVideo.classList.add('hidden');
+      monitorPlaceholder.classList.remove('hidden');
+      monitorMode.textContent = '🔊 Listening';
+    } else {
+      vTracks.forEach(t => { t.enabled = true; });
+      monitorVideo.classList.remove('hidden');
+      monitorPlaceholder.classList.add('hidden');
+      monitorMode.textContent = '📹 Watching';
     }
   }
 
@@ -41,112 +65,94 @@
     const kiosks = devices.filter(d => d.type === 'kiosk' && d.id !== deviceId);
     if (kiosks.length === 0) {
       deviceList.innerHTML = '<p class="hint" style="padding:12px">No kiosks connected</p>';
-    } else {
-      deviceList.innerHTML = kiosks.map(d => `
-        <div class="device-item" data-id="${d.id}">
-          <div>
-            <div class="device-name">${d.label}</div>
-            <div class="device-last-seen">${d.online ? 'online' : formatTime(d.lastSeenAt)}</div>
-          </div>
-          <button class="btn btn-small ${monitoringId === d.id ? 'btn-danger' : 'btn-outline'} monitor-btn">${monitoringId === d.id ? 'Stop' : 'Monitor'}</button>
-        </div>
-      `).join('');
-    }
-  }
-
-  function renderGrid() {
-    if (monitoringId) return;
-
-    monitorFeed.classList.add('hidden');
-    videoGrid.classList.remove('hidden');
-
-    const live = sources.filter(s => s.status === 'live');
-    if (live.length === 0) {
-      videoGrid.innerHTML = '<div class="empty-state"><p>No kiosks connected</p></div>';
       return;
     }
-
-    videoGrid.innerHTML = live.map(s => `
-      <div class="video-tile">
-        <video id="v-${s.publisherId}" autoplay playsinline muted></video>
-        <div class="video-tile-label">${s.label}</div>
-      </div>
-    `).join('');
-
-    // Re-attach any streams we already have
-    live.forEach(s => {
-      if (streams[s.publisherId]) {
-        attachVideo(s.publisherId, streams[s.publisherId]);
-      }
-      // Subscribe if not already subscribed
-      if (!subscribed.has(s.publisherId)) {
-        subscribed.add(s.publisherId);
-        sig.subscribeSource(s.publisherId);
-      }
-    });
+    deviceList.innerHTML = kiosks.map(d => {
+      const isViewing = viewingId === d.id;
+      const vActive = isViewing && viewMode === 'video';
+      const aActive = isViewing && viewMode === 'audio';
+      return `
+        <div class="device-item" data-id="${d.id}">
+          <div class="device-info">
+            <div class="device-name">${d.label}</div>
+            <div class="device-last-seen ${d.online ? 'online' : 'offline'}">${d.online ? 'online' : formatTime(d.lastSeenAt)}</div>
+          </div>
+          <div class="btn-row">
+            <button class="btn btn-small ${aActive ? 'btn-danger' : 'btn-outline'} audio-btn" data-id="${d.id}">${aActive ? 'Stop' : 'Audio'}</button>
+            <button class="btn btn-small ${vActive ? 'btn-danger' : 'btn-outline'} video-btn" data-id="${d.id}">${vActive ? 'Stop' : 'Video'}</button>
+            <button class="btn btn-small btn-outline settings-btn" data-id="${d.id}">Settings</button>
+          </div>
+        </div>`;
+    }).join('');
   }
 
-  function renderMonitor() {
-    if (!monitoringId) return;
-
-    videoGrid.classList.add('hidden');
-    monitorFeed.classList.remove('hidden');
-    const src = sources.find(s => s.publisherId === monitoringId);
-    monitorLabel.textContent = src ? src.label : 'Unknown';
-
-    if (streams[monitoringId]) {
-      monitorVideo.srcObject = streams[monitoringId];
-      monitorVideo.play().catch(() => {});
-    }
-  }
-
-  function startMonitor(peerId) {
-    console.log('[monitor] start', peerId);
-    if (monitoringId === peerId) { stopMonitor(); return; }
+  function startView(peerId, mode) {
+    console.log('[view] start', peerId, mode);
+    if (viewingId === peerId && viewMode === mode) { stopView(); return; }
     if (devices.find(d => d.id === peerId && d.type !== 'kiosk')) return;
 
-    stopMonitor();
-    monitoringId = peerId;
+    stopView();
+    viewingId = peerId;
+    viewMode = mode;
 
-    // Always subscribe fresh for monitor — don't trust cached subscription
-    subscribed.add(peerId);
-    console.log('[monitor] subscribing to', peerId);
-    sig.subscribeSource(peerId);
+    if (!subscribed.has(peerId)) {
+      subscribed.add(peerId);
+      console.log('[view] subscribing', peerId);
+      sig.subscribeSource(peerId);
+    }
 
+    showMonitor();
     renderDevices();
-    renderMonitor();
+    attachMonitorStream();
+    // Unmute within the user gesture so iOS Safari allows audio playback
+    monitorVideo.muted = false;
+    monitorVideo.play().catch(() => {});
   }
 
-  function stopMonitor() {
-    const oldId = monitoringId;
-    console.log('[monitor] stop', oldId);
+  function stopView() {
+    const oldId = viewingId;
+    console.log('[view] stop', oldId);
     if (oldId) {
       rtc.closePeerConnection(oldId);
       subscribed.delete(oldId);
     }
-    monitoringId = null;
+    viewingId = null;
+    viewMode = null;
     monitorVideo.srcObject = null;
+    monitorVideo.muted = true;
+    monitorError.classList.add('hidden');
+    showHome();
     renderDevices();
-    renderGrid();
+  }
+
+  function showMonitor() {
+    homeView.classList.add('hidden');
+    monitorFeed.classList.remove('hidden');
+    const src = sources.find(s => s.publisherId === viewingId);
+    monitorLabel.textContent = src ? src.label : 'Unknown';
+    monitorError.classList.add('hidden');
+  }
+
+  function showHome() {
+    monitorFeed.classList.add('hidden');
+    homeView.classList.remove('hidden');
   }
 
   document.addEventListener('click', (e) => {
-    const btn = e.target.closest('.monitor-btn');
-    if (btn) {
-      const item = btn.closest('.device-item');
-      if (item) startMonitor(item.dataset.id);
-      return;
-    }
+    const t = e.target;
+    if (t.id === 'stopMonitorBtn') { stopView(); return; }
 
-    if (e.target.id === 'stopMonitorBtn') {
-      stopMonitor();
-      return;
-    }
+    const audioBtn = t.closest('.audio-btn');
+    if (audioBtn) { startView(audioBtn.dataset.id, 'audio'); return; }
 
-    const item = e.target.closest('.device-item');
-    if (item && !e.target.closest('button')) {
-      const d = devices.find(dev => dev.id === item.dataset.id);
-      if (d && d.type === 'kiosk') showConfig(d);
+    const videoBtn = t.closest('.video-btn');
+    if (videoBtn) { startView(videoBtn.dataset.id, 'video'); return; }
+
+    const settingsBtn = t.closest('.settings-btn');
+    if (settingsBtn) {
+      const d = devices.find(dev => dev.id === settingsBtn.dataset.id);
+      if (d) showConfig(d);
+      return;
     }
   });
 
@@ -159,10 +165,17 @@
         <input type="text" id="cfg-label" value="${device.label}">
       </div>
       <div class="config-row">
+        <label>Camera</label>
+        <select id="cfg-camera">
+          <option value="front">Front</option>
+          <option value="rear">Rear</option>
+        </select>
+      </div>
+      <div class="config-row">
         <label>Resolution</label>
         <select id="cfg-resolution">
           <option value="480p">480p</option>
-          <option value="720p" selected>720p</option>
+          <option value="720p">720p</option>
           <option value="1080p">1080p</option>
         </select>
       </div>
@@ -170,7 +183,7 @@
         <label>Frame Rate</label>
         <select id="cfg-framerate">
           <option value="15">15 fps</option>
-          <option value="24" selected>24 fps</option>
+          <option value="24">24 fps</option>
           <option value="30">30 fps</option>
         </select>
       </div>
@@ -190,6 +203,7 @@
     document.getElementById('saveConfigBtn').addEventListener('click', () => {
       sig.setConfig(device.id, {
         label: document.getElementById('cfg-label').value,
+        camera: document.getElementById('cfg-camera').value,
         resolution: document.getElementById('cfg-resolution').value,
         frameRate: parseInt(document.getElementById('cfg-framerate').value),
         twoWayAudioEnabled: document.getElementById('cfg-twoWay').classList.contains('active'),
@@ -202,11 +216,8 @@
 
   rtc.onRemoteTrack = (peerId, stream) => {
     streams[peerId] = stream;
-    if (peerId === monitoringId) {
-      monitorVideo.srcObject = stream;
-      monitorVideo.play().catch(() => {});
-    } else {
-      attachVideo(peerId, stream);
+    if (peerId === viewingId) {
+      attachMonitorStream();
     }
   };
 
@@ -239,7 +250,6 @@
       sources = data.sources || [];
       devices = data.recentlySeenDevices || [];
       renderDevices();
-      renderGrid();
     });
 
     sig.on('close', () => {
@@ -249,22 +259,24 @@
     sig.on('sourceAdded', (source) => {
       if (!sources.find(s => s.id === source.id)) {
         sources.push(source);
-        renderGrid();
       }
       renderDevices();
     });
 
     sig.on('sourceRemoved', (data) => {
+      const removed = sources.find(s => s.id === data.sourceId);
+      const pubId = removed ? removed.publisherId : data.sourceId;
       sources = sources.filter(s => s.id !== data.sourceId);
       delete streams[data.sourceId];
-      subscribed.delete(data.sourceId);
-      if (monitoringId) {
-        rtc.closePeerConnection(monitoringId);
-        monitoringId = null;
+      subscribed.delete(pubId);
+      if (pubId === viewingId) {
+        rtc.closePeerConnection(viewingId);
+        viewingId = null;
+        viewMode = null;
         monitorVideo.srcObject = null;
+        showHome();
       }
       renderDevices();
-      renderGrid();
     });
 
     sig.on('deviceStatus', (data) => {
@@ -283,11 +295,18 @@
           online: true,
         });
       }
+      if (data.deviceId === viewingId && data.status === 'offline') {
+        monitorError.textContent = 'Kiosk went offline.';
+        monitorError.classList.remove('hidden');
+      }
       renderDevices();
     });
 
     sig.on('error', (err) => {
       console.error('[signaling] ERROR:', err);
+      const msg = (err && (err.message || err.code)) || 'Unknown error';
+      monitorError.textContent = 'Cannot connect: ' + msg + '. The kiosk may be offline.';
+      monitorError.classList.remove('hidden');
     });
 
     sig.on('configResult', (data) => console.log('config result:', data));
