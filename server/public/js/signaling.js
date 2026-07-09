@@ -2,7 +2,7 @@ class SignalingClient {
   constructor(url) {
     this.url = url || this.getServerUrl();
     this.ws = null;
-    this.deviceId = localStorage.getItem('hearth_deviceId') || null;
+    this.deviceId = null;
     this.roomId = null;
     this.connected = false;
     this.reconnectAttempt = 0;
@@ -40,11 +40,6 @@ class SignalingClient {
       this.reconnectAttempt = 0;
       console.log('Signaling: connected');
       this.emit('open');
-
-      // If we have a stored deviceId, auto-join the room
-      if (this.deviceId && this.roomId) {
-        this.joinRoom(this.roomId, this.deviceId);
-      }
     };
 
     this.ws.onmessage = (event) => {
@@ -110,7 +105,6 @@ class SignalingClient {
       case 'WELCOME':
         this.deviceId = msg.payload.deviceId;
         this.roomId = msg.payload.roomId;
-        localStorage.setItem('hearth_deviceId', this.deviceId);
         this.emit('welcome', msg.payload);
         break;
 

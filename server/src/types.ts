@@ -2,12 +2,12 @@ import type WebSocket from 'ws';
 
 // ─── Device & Room types ────────────────────────────────────
 
-export type DeviceType = 'camera' | 'base' | 'viewer';
+export type DeviceType = 'kiosk' | 'base';
 export type SourceType = 'video+audio' | 'audio-only';
 export type AudioFocusMode = 'manual' | 'last-active';
 
 export interface DeviceConfig {
-  // Camera
+  // Kiosk
   camera?: 'front' | 'rear';
   resolution?: '480p' | '720p' | '1080p';
   frameRate?: 15 | 24 | 30;
@@ -16,7 +16,7 @@ export interface DeviceConfig {
   micSensitivity?: number;
   speakerVolume?: number;
   twoWayAudioEnabled?: boolean;
-  streamEnabled?: boolean;
+  showFeed?: boolean;
   keepAwake?: boolean;
   label?: string;
 
@@ -25,13 +25,6 @@ export interface DeviceConfig {
   audioFocusMode?: AudioFocusMode;
   gridLayout?: '1x1' | '2x2';
   idleTimeout?: number;
-
-  // Viewer
-  allowedSources?: string[];
-  defaultSource?: string | null;
-  audioAutoPlay?: boolean;
-  talkbackEnabled?: boolean;
-  pin?: string | null;
 }
 
 export interface DeviceRecord {

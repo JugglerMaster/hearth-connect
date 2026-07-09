@@ -6,6 +6,14 @@ import {
   SourceType,
 } from './types';
 
+export interface RecentlySeenDevice {
+  id: string;
+  label: string;
+  type: DeviceType;
+  lastSeenAt: number;
+  online: boolean;
+}
+
 export class ChannelManager {
   // roomId → Map<deviceId, ConnectedClient>
   private rooms = new Map<string, Map<string, ConnectedClient>>();
@@ -13,6 +21,9 @@ export class ChannelManager {
   private clients = new Map<string, ConnectedClient>();
   // ws → deviceId (reverse lookup for disconnect handling)
   private wsMap = new Map<WebSocket, string>();
+  // Recently seen devices (resets on server restart)
+  private recentlySeenDevices = new Map<string, RecentlySeenDevice>();
+  private readonly RECENT_SEEN_WINDOW = 24 * 60 * 60 * 1000; // 24 hours
 
   // ─── Client Lifecycle ───────────────────────────────────
 
@@ -42,6 +53,24 @@ export class ChannelManager {
     }
     this.rooms.get(roomId)!.set(deviceId, client);
 
+    // Track in recently seen
+    this.recentlySeenDevices.set(deviceId, {
+      id: deviceId,
+      label,
+      type: deviceType,
+      lastSeenAt: Date.now(),
+      online: true,
+    });
+
+    // Prune stale entries: if same device type joins with a new ID,
+    // remove old offline entries of that type to avoid duplicates
+    for (const [id, entry] of this.recentlySeenDevices.entries()) {
+      if (id !== deviceId && entry.type === deviceType && !entry.online) {
+        this.recentlySeenDevices.delete(id);
+        console.log(`Pruned stale device ${id} (${entry.label}) — replaced by ${deviceId}`);
+      }
+    }
+
     return client;
   }
 
@@ -66,6 +95,13 @@ export class ChannelManager {
 
     this.clients.delete(deviceId);
     this.wsMap.delete(ws);
+
+    // Mark as offline in recently seen
+    const seen = this.recentlySeenDevices.get(deviceId);
+    if (seen) {
+      seen.online = false;
+      seen.lastSeenAt = Date.now();
+    }
 
     return client;
   }
@@ -156,6 +192,30 @@ export class ChannelManager {
     }
   }
 
+  // ─── Recently Seen Devices ──────────────────────────────
+
+  getRecentlySeenDevices(): RecentlySeenDevice[] {
+    const now = Date.now();
+    const result: RecentlySeenDevice[] = [];
+    for (const device of this.recentlySeenDevices.values()) {
+      if (now - device.lastSeenAt <= this.RECENT_SEEN_WINDOW) {
+        result.push(device);
+      }
+    }
+    return result;
+  }
+
+  updateRecentlySeenLabel(deviceId: string, label: string): void {
+    const entry = this.recentlySeenDevices.get(deviceId);
+    if (entry) {
+      entry.label = label;
+    }
+  }
+
+  clearRecentlySeen(): void {
+    this.recentlySeenDevices.clear();
+  }
+
   // ─── Heartbeat ──────────────────────────────────────────
 
   updateHeartbeat(deviceId: string): void {
@@ -186,6 +246,16 @@ export class ChannelManager {
     const client = this.clients.get(deviceId);
     if (client && client.ws.readyState === WebSocket.OPEN) {
       client.ws.send(JSON.stringify(message));
+    }
+  }
+
+  broadcastAll(message: object, excludeDeviceId?: string): void {
+    const data = JSON.stringify(message);
+    for (const client of this.clients.values()) {
+      if (client.deviceId === excludeDeviceId) continue;
+      if (client.ws.readyState === WebSocket.OPEN) {
+        client.ws.send(data);
+      }
     }
   }
 }

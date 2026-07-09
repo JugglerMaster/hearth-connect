@@ -55,6 +55,9 @@ class WebRTCManager {
 
   createPeerConnection(peerId, direction = 'send') {
     // Close existing if any
+    if (this.peerConnections.has(peerId)) {
+      console.log('[webrtc] replacing existing pc for', peerId);
+    }
     this.closePeerConnection(peerId);
 
     const pc = new RTCPeerConnection(this.iceServers);
@@ -73,6 +76,7 @@ class WebRTCManager {
         this.remoteStreams.set(peerId, stream);
       }
       stream.addTrack(event.track);
+      console.log('[webrtc] ontrack', peerId, 'track kind:', event.track.kind, 'stream tracks:', stream.getTracks().length);
       this.onRemoteTrack(peerId, stream, event.track);
     };
 
@@ -133,19 +137,28 @@ class WebRTCManager {
 
   async createOffer(peerId) {
     const pc = this.peerConnections.get(peerId);
-    if (!pc) return;
+    if (!pc) {
+      console.warn('[webrtc] createOffer: no pc for', peerId);
+      return;
+    }
 
     try {
-      const offer = await pc.createOffer();
+      const offer = await pc.createOffer({
+        offerToReceiveAudio: true,
+        offerToReceiveVideo: true,
+      });
       await pc.setLocalDescription(offer);
+      console.log('[webrtc] createOffer for', peerId, 'sdp length:', offer.sdp?.length || 0);
       this.sig.sendOffer(peerId, offer);
     } catch (err) {
-      console.error('createOffer failed:', err);
+      console.error('[webrtc] createOffer failed for', peerId, err);
+      throw err;
     }
   }
 
   async handleOffer(data) {
     const { from, sdp } = data;
+    console.log('[webrtc] handleOffer from', from, 'sdp length:', sdp?.sdp?.length || 0);
     const pc = this.createPeerConnection(from, 'recv');
     if (this.additionalAudioStream) {
       this.addAudioTrackToPeer(from, this.additionalAudioStream);
@@ -163,6 +176,7 @@ class WebRTCManager {
 
   async handleAnswer(data) {
     const { from, sdp } = data;
+    console.log('[webrtc] handleAnswer from', from);
     const pc = this.peerConnections.get(from);
     if (!pc) return;
 

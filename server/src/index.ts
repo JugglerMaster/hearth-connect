@@ -4,13 +4,14 @@ import * as http from 'http';
 import * as https from 'https';
 import express from 'express';
 import { WebSocketServer, WebSocket } from 'ws';
+import QRCode from 'qrcode';
 import { ConfigManager } from './ConfigManager';
 import { ChannelManager } from './ChannelManager';
 import { SignalingHandler } from './SignalingHandler';
 
 // ─── Config ────────────────────────────────────────────────
 
-const PORT = parseInt(process.env.SERVER_PORT || '8080', 10);
+const PORT = parseInt(process.env.SERVER_PORT || '8090', 10);
 const HTTP_PORT = parseInt(process.env.SERVER_HTTP_PORT || '80', 10);
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, '..', 'data');
 const CERT_DIR = process.env.CERT_DIR || path.join(__dirname, '..', 'certs');
@@ -20,6 +21,7 @@ const TLS_ENABLED = process.env.TLS_ENABLED === 'true' || process.argv.includes(
 
 const configManager = new ConfigManager(path.join(DATA_DIR, 'config.json'));
 const channelManager = new ChannelManager();
+channelManager.clearRecentlySeen();
 const signalingHandler = new SignalingHandler(channelManager, configManager);
 
 // ─── Express App ───────────────────────────────────────────
@@ -36,6 +38,21 @@ app.get('/api/status', (_req, res) => {
     uptime: process.uptime(),
   });
 });
+
+// Generate camera URL with QR code for kiosk discovery
+app.post('/api/server-url', (_req, res) => {
+  const base = `${proto}://${_req.headers.host || 'localhost'}:${PORT}`;
+  const cameraUrl = `${base}/camera.html`;
+  const serverUrl = base;
+
+  // Generate QR code as base64 PNG (600px for easy scanning)
+  QRCode.toDataURL(cameraUrl, { width: 600, margin: 4 }).then((dataUrl) => {
+    res.json({ serverUrl, dataUrl });
+  }).catch(() => {
+    res.json({ serverUrl, dataUrl: null });
+  });
+});
+
 
 // ─── Server Creation ───────────────────────────────────────
 
@@ -99,13 +116,17 @@ if (!TLS_ENABLED) {
     console.log(`Hearth-Connect server running at https://0.0.0.0:${PORT}`);
   });
 
-  // Optional HTTP redirect server
+  // Optional HTTP redirect server (non-fatal if port unavailable)
   const httpApp = express();
   httpApp.use((req, res) => {
     const host = req.headers.host?.replace(/:\d+$/, '') || 'localhost';
     res.redirect(`https://${host}:${PORT}${req.url}`);
   });
-  http.createServer(httpApp).listen(HTTP_PORT, () => {
+  const httpServer = http.createServer(httpApp);
+  httpServer.on('error', () => {
+    console.log(`Skipping HTTP redirect (port ${HTTP_PORT} unavailable)`);
+  });
+  httpServer.listen(HTTP_PORT, () => {
     console.log(`HTTP redirect (→ HTTPS) on port ${HTTP_PORT}`);
   });
 }

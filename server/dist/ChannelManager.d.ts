@@ -1,9 +1,18 @@
 import WebSocket from 'ws';
 import { ConnectedClient, MediaSourceInfo, DeviceType, SourceType } from './types';
+export interface RecentlySeenDevice {
+    id: string;
+    label: string;
+    type: DeviceType;
+    lastSeenAt: number;
+    online: boolean;
+}
 export declare class ChannelManager {
     private rooms;
     private clients;
     private wsMap;
+    private recentlySeenDevices;
+    private readonly RECENT_SEEN_WINDOW;
     addClient(ws: WebSocket, deviceId: string, deviceType: DeviceType, roomId: string, label: string): ConnectedClient;
     removeClient(ws: WebSocket): ConnectedClient | null;
     getClient(deviceId: string): ConnectedClient | undefined;
@@ -16,8 +25,12 @@ export declare class ChannelManager {
     getActiveSources(roomId: string): MediaSourceInfo[];
     startDisconnectTimer(deviceId: string, callback: () => void, ms?: number): void;
     cancelDisconnectTimer(deviceId: string): void;
+    getRecentlySeenDevices(): RecentlySeenDevice[];
+    updateRecentlySeenLabel(deviceId: string, label: string): void;
+    clearRecentlySeen(): void;
     updateHeartbeat(deviceId: string): void;
     broadcastToRoom(roomId: string, message: object, excludeDeviceId?: string): void;
     sendTo(deviceId: string, message: object): void;
+    broadcastAll(message: object, excludeDeviceId?: string): void;
 }
 //# sourceMappingURL=ChannelManager.d.ts.map

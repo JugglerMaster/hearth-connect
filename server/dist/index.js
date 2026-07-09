@@ -42,11 +42,12 @@ const http = __importStar(require("http"));
 const https = __importStar(require("https"));
 const express_1 = __importDefault(require("express"));
 const ws_1 = require("ws");
+const qrcode_1 = __importDefault(require("qrcode"));
 const ConfigManager_1 = require("./ConfigManager");
 const ChannelManager_1 = require("./ChannelManager");
 const SignalingHandler_1 = require("./SignalingHandler");
 // ─── Config ────────────────────────────────────────────────
-const PORT = parseInt(process.env.SERVER_PORT || '8080', 10);
+const PORT = parseInt(process.env.SERVER_PORT || '8090', 10);
 const HTTP_PORT = parseInt(process.env.SERVER_HTTP_PORT || '80', 10);
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, '..', 'data');
 const CERT_DIR = process.env.CERT_DIR || path.join(__dirname, '..', 'certs');
@@ -54,6 +55,7 @@ const TLS_ENABLED = process.env.TLS_ENABLED === 'true' || process.argv.includes(
 // ─── State ─────────────────────────────────────────────────
 const configManager = new ConfigManager_1.ConfigManager(path.join(DATA_DIR, 'config.json'));
 const channelManager = new ChannelManager_1.ChannelManager();
+channelManager.clearRecentlySeen();
 const signalingHandler = new SignalingHandler_1.SignalingHandler(channelManager, configManager);
 // ─── Express App ───────────────────────────────────────────
 const app = (0, express_1.default)();
@@ -65,6 +67,18 @@ app.get('/api/status', (_req, res) => {
         ok: true,
         rooms: channelManager.getClientsInRoom('*').length,
         uptime: process.uptime(),
+    });
+});
+// Generate camera URL with QR code for kiosk discovery
+app.post('/api/server-url', (_req, res) => {
+    const base = `${proto}://${_req.headers.host || 'localhost'}:${PORT}`;
+    const cameraUrl = `${base}/camera.html`;
+    const serverUrl = base;
+    // Generate QR code as base64 PNG (600px for easy scanning)
+    qrcode_1.default.toDataURL(cameraUrl, { width: 600, margin: 4 }).then((dataUrl) => {
+        res.json({ serverUrl, dataUrl });
+    }).catch(() => {
+        res.json({ serverUrl, dataUrl: null });
     });
 });
 // ─── Server Creation ───────────────────────────────────────
@@ -113,13 +127,17 @@ else {
     server.listen(PORT, () => {
         console.log(`Hearth-Connect server running at https://0.0.0.0:${PORT}`);
     });
-    // Optional HTTP redirect server
+    // Optional HTTP redirect server (non-fatal if port unavailable)
     const httpApp = (0, express_1.default)();
     httpApp.use((req, res) => {
         const host = req.headers.host?.replace(/:\d+$/, '') || 'localhost';
         res.redirect(`https://${host}:${PORT}${req.url}`);
     });
-    http.createServer(httpApp).listen(HTTP_PORT, () => {
+    const httpServer = http.createServer(httpApp);
+    httpServer.on('error', () => {
+        console.log(`Skipping HTTP redirect (port ${HTTP_PORT} unavailable)`);
+    });
+    httpServer.listen(HTTP_PORT, () => {
         console.log(`HTTP redirect (→ HTTPS) on port ${HTTP_PORT}`);
     });
 }

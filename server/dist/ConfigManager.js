@@ -188,7 +188,7 @@ class ConfigManager {
     defaultConfig(type) {
         const common = { label: '' };
         switch (type) {
-            case 'camera':
+            case 'kiosk':
                 return {
                     ...common,
                     camera: 'rear',
@@ -199,7 +199,7 @@ class ConfigManager {
                     micSensitivity: 0.8,
                     speakerVolume: 0.5,
                     twoWayAudioEnabled: true,
-                    streamEnabled: true,
+                    showFeed: false,
                     keepAwake: true,
                 };
             case 'base':
@@ -209,15 +209,6 @@ class ConfigManager {
                     audioFocusMode: 'manual',
                     gridLayout: '1x1',
                     idleTimeout: 0,
-                };
-            case 'viewer':
-                return {
-                    ...common,
-                    allowedSources: [],
-                    defaultSource: null,
-                    audioAutoPlay: true,
-                    talkbackEnabled: false,
-                    pin: null,
                 };
         }
     }

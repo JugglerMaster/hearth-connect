@@ -1,5 +1,5 @@
 import type WebSocket from 'ws';
-export type DeviceType = 'camera' | 'base' | 'viewer';
+export type DeviceType = 'kiosk' | 'base';
 export type SourceType = 'video+audio' | 'audio-only';
 export type AudioFocusMode = 'manual' | 'last-active';
 export interface DeviceConfig {
@@ -11,18 +11,13 @@ export interface DeviceConfig {
     micSensitivity?: number;
     speakerVolume?: number;
     twoWayAudioEnabled?: boolean;
-    streamEnabled?: boolean;
+    showFeed?: boolean;
     keepAwake?: boolean;
     label?: string;
     visibleSources?: string[];
     audioFocusMode?: AudioFocusMode;
     gridLayout?: '1x1' | '2x2';
     idleTimeout?: number;
-    allowedSources?: string[];
-    defaultSource?: string | null;
-    audioAutoPlay?: boolean;
-    talkbackEnabled?: boolean;
-    pin?: string | null;
 }
 export interface DeviceRecord {
     id: string;

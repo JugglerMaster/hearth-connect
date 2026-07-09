@@ -19,6 +19,10 @@ class SignalingHandler {
             this.sendError(ws, 'INVALID_JSON', 'Malformed message');
             return;
         }
+        // Get device context for logging
+        const client = this.channels.getClientByWs(ws);
+        const ctx = client ? `${client.deviceId}@${client.roomId}` : 'unauthenticated';
+        console.log(`[SIGNAL] ${msg.type} from ${ctx}`);
         try {
             this.route(ws, msg);
         }
@@ -31,13 +35,13 @@ class SignalingHandler {
         const client = this.channels.getClientByWs(ws);
         if (!client)
             return;
-        const { deviceId, roomId, deviceType, sources } = client;
+        const { deviceId, deviceType, sources } = client;
         console.log(`Device disconnected: ${deviceId} (${deviceType})`);
         // Start 60s grace period before removing sources
         this.channels.startDisconnectTimer(deviceId, () => {
-            // Notify room that sources are removed
+            // Notify all clients that sources are removed
             for (const source of sources) {
-                this.channels.broadcastToRoom(roomId, {
+                this.channels.broadcastAll({
                     type: 'SOURCE_REMOVED',
                     payload: { sourceId: source.id },
                 }, deviceId);
@@ -46,7 +50,7 @@ class SignalingHandler {
             this.channels.removeClient(ws);
             // Mark device offline in config
             this.config.updateDevice(deviceId, { lastSeenAt: Date.now() });
-            this.channels.broadcastToRoom(roomId, {
+            this.channels.broadcastAll({
                 type: 'DEVICE_STATUS',
                 payload: { deviceId, status: 'offline' },
             });
@@ -123,29 +127,27 @@ class SignalingHandler {
         this.send(ws, { type: 'HEARTBEAT', payload: {} });
     }
     handleJoinRoom(ws, payload) {
-        const roomId = payload.roomId;
         const deviceId = payload.deviceId;
         const deviceType = payload.deviceType;
         const label = payload.label || deviceId;
+        const roomId = 'default'; // Single-room mode
         // Validate
-        if (!roomId || !deviceId || !deviceType) {
-            this.sendError(ws, 'INVALID_PARAMS', 'roomId, deviceId, and deviceType required');
+        if (!deviceId || !deviceType) {
+            this.sendError(ws, 'INVALID_PARAMS', 'deviceId and deviceType required');
             return;
         }
-        const validTypes = ['camera', 'base', 'viewer'];
+        const validTypes = ['kiosk', 'base'];
         if (!validTypes.includes(deviceType)) {
             this.sendError(ws, 'INVALID_TYPE', `deviceType must be one of: ${validTypes.join(', ')}`);
             return;
-        }
-        // Ensure room exists
-        if (!this.config.getRoom(roomId)) {
-            this.config.createRoom(roomId, roomId);
         }
         // Ensure device exists in config
         let device = this.config.getDevice(deviceId);
         if (!device) {
             device = this.config.createDevice(deviceId, deviceType, label, roomId);
         }
+        // Use config label if set (overrides the join-time label)
+        const effectiveLabel = (device.config?.label && device.config.label.trim()) ? device.config.label : label;
         // Cancel any grace-period disconnect timer
         this.channels.cancelDisconnectTimer(deviceId);
         // Add to in-memory state (may already exist if reconnecting within grace period)
@@ -154,10 +156,11 @@ class SignalingHandler {
             // Update the WS reference for reconnecting client
             this.channels.removeClient(existingClient.ws);
         }
-        const client = this.channels.addClient(ws, deviceId, deviceType, roomId, label);
+        const client = this.channels.addClient(ws, deviceId, deviceType, roomId, effectiveLabel);
         this.config.updateDevice(deviceId, { lastSeenAt: Date.now() });
         // Send current state to the joining client
         const activeSources = this.channels.getActiveSources(roomId);
+        const recentlySeenDevices = this.channels.getRecentlySeenDevices();
         this.send(ws, {
             type: 'WELCOME',
             payload: {
@@ -165,29 +168,30 @@ class SignalingHandler {
                 roomId,
                 config: device.config,
                 sources: activeSources,
+                recentlySeenDevices,
             },
         });
-        // Notify others in room
-        this.channels.broadcastToRoom(roomId, {
+        // Notify all clients
+        this.channels.broadcastAll({
             type: 'DEVICE_STATUS',
-            payload: { deviceId, status: 'online' },
+            payload: { deviceId, status: 'online', type: deviceType, label: effectiveLabel, lastSeenAt: Date.now() },
         }, deviceId);
-        console.log(`Device joined: ${deviceId} (${deviceType}) in room ${roomId}`);
+        console.log(`Device joined: ${deviceId} (${deviceType}) as label="${effectiveLabel}"`);
     }
     handleLeaveRoom(ws) {
         const client = this.channels.getClientByWs(ws);
         if (!client)
             return;
-        const { deviceId, roomId } = client;
-        // Remove sources
+        const { deviceId } = client;
+        // Notify all clients that sources are removed
         for (const source of client.sources) {
-            this.channels.broadcastToRoom(roomId, {
+            this.channels.broadcastAll({
                 type: 'SOURCE_REMOVED',
                 payload: { sourceId: source.id },
             }, deviceId);
         }
         this.channels.removeClient(ws);
-        this.channels.broadcastToRoom(roomId, {
+        this.channels.broadcastAll({
             type: 'DEVICE_STATUS',
             payload: { deviceId, status: 'offline' },
         });
@@ -225,7 +229,7 @@ class SignalingHandler {
             this.sendError(ws, 'NOT_IN_ROOM', 'Join a room first');
             return;
         }
-        if (client.deviceType !== 'camera' && client.deviceType !== 'base') {
+        if (client.deviceType !== 'kiosk' && client.deviceType !== 'base') {
             this.sendError(ws, 'NOT_ALLOWED', 'Only cameras and base stations can publish');
             return;
         }
@@ -241,8 +245,8 @@ class SignalingHandler {
             this.sendError(ws, 'INTERNAL_ERROR', 'Failed to add source');
             return;
         }
-        // Notify all other clients in the room
-        this.channels.broadcastToRoom(client.roomId, {
+        // Notify all clients (cross-room source visibility)
+        this.channels.broadcastAll({
             type: 'SOURCE_ADDED',
             payload: source,
         }, client.deviceId);
@@ -257,7 +261,7 @@ class SignalingHandler {
             return;
         const removed = this.channels.removeSource(client.deviceId, sourceId);
         if (removed) {
-            this.channels.broadcastToRoom(client.roomId, {
+            this.channels.broadcastAll({
                 type: 'SOURCE_REMOVED',
                 payload: { sourceId },
             }, client.deviceId);
@@ -273,10 +277,11 @@ class SignalingHandler {
         if (!publisherId)
             return;
         const publisher = this.channels.getClient(publisherId);
-        if (!publisher || publisher.roomId !== client.roomId) {
-            this.sendError(ws, 'NOT_FOUND', 'Publisher not found in this room');
+        if (!publisher) {
+            this.sendError(ws, 'NOT_FOUND', 'Publisher not found');
             return;
         }
+        console.log(`Cross-room subscribe: ${client.deviceId}@${client.roomId} → ${publisherId}@${publisher.roomId}`);
         // Notify publisher that a new subscriber wants their stream
         this.channels.sendTo(publisherId, {
             type: 'SUBSCRIBER_JOINED',
@@ -344,6 +349,26 @@ class SignalingHandler {
         catch (err) {
             this.sendError(ws, 'CONFIG_ERROR', 'Failed to save config');
             return;
+        }
+        // If label changed, update recentlySeenDevices and broadcast DEVICE_STATUS
+        if (config.label && typeof config.label === 'string') {
+            const targetClient = this.channels.getClient(targetDeviceId);
+            if (targetClient) {
+                targetClient.label = config.label;
+            }
+            // Update recentlySeenDevices label
+            this.channels.updateRecentlySeenLabel(targetDeviceId, config.label);
+            // Broadcast label change to all clients (cross-room)
+            this.channels.broadcastAll({
+                type: 'DEVICE_STATUS',
+                payload: {
+                    deviceId: targetDeviceId,
+                    status: 'online',
+                    type: targetDevice.type,
+                    label: config.label,
+                    lastSeenAt: Date.now(),
+                },
+            });
         }
         // Push config to target if connected
         const targetClient = this.channels.getClient(targetDeviceId);

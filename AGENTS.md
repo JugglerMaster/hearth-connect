@@ -28,11 +28,17 @@ HTML5 video intercom / baby monitor system. Runs on iPads/iPhones via Safari. Se
 - All configuration originates from the base station
 - Server is authoritative config store; config persists across disconnects
 
-### Pairing Flow
-- Base station generates time-limited pairing token
-- Camera scans QR code or manually enters code on first launch
-- Server assigns camera to room, returns deviceId
-- Subsequent launches: deviceId from localStorage → auto-reconnect
+### Device Discovery & Room Entry
+- Base station generates QR code via `/api/server-url` encoding the server URL (e.g. `https://host:8090`)
+- QR code is 600px wide for easy scanning on iOS cameras
+- Kiosk opens `camera.html?room=<roomId>` from QR scan or manual room name entry
+- No pairing tokens — kiosks join the room directly via `JOIN_ROOM` WebSocket message
+- Server assigns a deviceId on first connection, persists to localStorage
+- Subsequent launches: deviceId + roomId from localStorage → auto-reconnect
+- Base station maintains `recentlySeenDevices` list (24h window) for device discovery
+- Base station shows "Monitor" button per kiosk to select which feed to watch
+- Monitor selection creates a recv WebRTC peer connection from base station to kiosk
+- Kiosk responds to `SUBSCRIBER_JOINED` by creating a send peer connection and offering its camera
 
 ### Remote Configuration
 - **Camera**: camera (front/rear), resolution, framerate, nightMode, torch, micSensitivity, speakerVolume, twoWayAudioEnabled, streamEnabled, keepAwake, label
@@ -94,5 +100,6 @@ hearth-connect/
 ├── deploy/
 │   ├── docker-compose.yml
 │   └── gen-cert.sh
+├── favicon.svg
 └── README.md
 ```
