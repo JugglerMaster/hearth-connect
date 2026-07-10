@@ -151,7 +151,7 @@
       "label": "Base Station",
       "roomId": "pc",
       "createdAt": 1783518604146,
-      "lastSeenAt": 1783715263594,
+      "lastSeenAt": 1783715791661,
       "config": {
         "label": "",
         "visibleSources": [],
@@ -774,9 +774,9 @@
       "label": "Kiosk",
       "roomId": "default",
       "createdAt": 1783712943598,
-      "lastSeenAt": 1783715274569,
+      "lastSeenAt": 1783715799474,
       "config": {
-        "label": "ios12",
+        "label": "Kiosk",
         "camera": "front",
         "resolution": "480p",
         "frameRate": 30,

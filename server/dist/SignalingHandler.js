@@ -457,43 +457,45 @@ class SignalingHandler {
             this.sendError(transport, 'CONFIG_ERROR', 'Failed to save config');
             return;
         }
-        // If label changed, update recentlySeenDevices and broadcast DEVICE_STATUS
+        const fullConfig = this.config.getDeviceConfig(targetDeviceId);
+        // If label changed, update recentlySeenDevices
         if (config.label && typeof config.label === 'string') {
-            const targetClient = this.channels.getClient(targetDeviceId);
-            if (targetClient) {
-                targetClient.label = config.label;
+            const targetClientInner = this.channels.getClient(targetDeviceId);
+            if (targetClientInner) {
+                targetClientInner.label = config.label;
             }
-            // Update recentlySeenDevices label
             this.channels.updateRecentlySeenLabel(targetDeviceId, config.label);
-            // Broadcast label change to all clients (cross-room)
-            this.channels.broadcastAll({
-                type: 'DEVICE_STATUS',
-                payload: {
-                    deviceId: targetDeviceId,
-                    status: 'online',
-                    type: targetDevice.type,
-                    label: config.label,
-                    lastSeenAt: Date.now(),
-                },
-            });
         }
+        // Broadcast updated device status to all clients (includes full config
+        // so every base station's local cache stays in sync).
+        this.channels.broadcastAll({
+            type: 'DEVICE_STATUS',
+            payload: {
+                deviceId: targetDeviceId,
+                status: 'online',
+                type: targetDevice.type,
+                label: targetDevice.label,
+                config: fullConfig,
+                lastSeenAt: Date.now(),
+            },
+        });
         // Push config to target if connected
         const targetClient = this.channels.getClient(targetDeviceId);
         if (targetClient) {
             this.channels.sendTo(targetDeviceId, {
                 type: 'CONFIG_UPDATED',
-                payload: { config: this.config.getDeviceConfig(targetDeviceId) },
+                payload: { config: fullConfig },
             });
             this.send(transport, {
                 type: 'CONFIG_RESULT',
-                payload: { targetDeviceId, ok: true },
+                payload: { targetDeviceId, ok: true, config: fullConfig },
             });
         }
         else {
             // Device offline — config queued, will be applied on reconnect
             this.send(transport, {
                 type: 'CONFIG_RESULT',
-                payload: { targetDeviceId, ok: true, offline: true },
+                payload: { targetDeviceId, ok: true, offline: true, config: fullConfig },
             });
         }
         console.log(`Config updated for ${targetDeviceId} by ${client.deviceId}`);

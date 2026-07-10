@@ -482,8 +482,6 @@
         payload.audioAlertThresholdDb = parseFloat(document.getElementById('cfg-audioThreshold').value);
       }
       sig.setConfig(device.id, payload);
-      // Optimistically update local cache so reopening shows current values.
-      device.config = Object.assign({}, device.config || {}, payload);
       configPanel.classList.add('hidden');
     });
     document.getElementById('removeDeviceBtn').addEventListener('click', () => {
@@ -655,7 +653,12 @@
       monitorError.classList.remove('hidden');
     });
 
-    sig.on('configResult', (data) => console.log('config result:', data));
+    sig.on('configResult', (data) => {
+      if (data.config) {
+        const d = devices.find(dev => dev.id === data.targetDeviceId);
+        if (d) d.config = data.config;
+      }
+    });
   }
 
   document.addEventListener('DOMContentLoaded', init);
