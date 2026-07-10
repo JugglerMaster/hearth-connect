@@ -1,0 +1,16 @@
+[Unit]
+Description=Hearth-Connect Pi Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/opt/hearth-pi-agent
+EnvironmentFile=/opt/hearth-pi-agent/config.env
+ExecStart=/usr/bin/python3 /opt/hearth-pi-agent/pi-agent.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
