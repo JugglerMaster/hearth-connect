@@ -565,13 +565,14 @@ export class SignalingHandler {
 
     const fullConfig = this.config.getDeviceConfig(targetDeviceId);
 
-    // If label changed, update recentlySeenDevices
+    // If label changed, update recentlySeenDevices and DeviceRecord
     if (config.label && typeof config.label === 'string') {
       const targetClientInner = this.channels.getClient(targetDeviceId);
       if (targetClientInner) {
         targetClientInner.label = config.label;
       }
       this.channels.updateRecentlySeenLabel(targetDeviceId, config.label);
+      this.config.updateDevice(targetDeviceId, { label: config.label });
     }
 
     // Broadcast updated device status to all clients (includes full config
@@ -582,8 +583,8 @@ export class SignalingHandler {
         deviceId: targetDeviceId,
         status: 'online',
         type: targetDevice.type,
-        label: targetDevice.label,
-        config: fullConfig,
+        label: fullConfig?.label || targetDevice.label,
+        config: fullConfig || targetDevice.config,
         lastSeenAt: Date.now(),
       },
     });
@@ -593,17 +594,17 @@ export class SignalingHandler {
     if (targetClient) {
       this.channels.sendTo(targetDeviceId, {
         type: 'CONFIG_UPDATED',
-        payload: { config: fullConfig },
+        payload: { config: fullConfig || targetDevice.config },
       });
       this.send(transport, {
         type: 'CONFIG_RESULT',
-        payload: { targetDeviceId, ok: true, config: fullConfig },
+        payload: { targetDeviceId, ok: true, config: fullConfig || targetDevice.config },
       });
     } else {
       // Device offline — config queued, will be applied on reconnect
       this.send(transport, {
         type: 'CONFIG_RESULT',
-        payload: { targetDeviceId, ok: true, offline: true, config: fullConfig },
+        payload: { targetDeviceId, ok: true, offline: true, config: fullConfig || targetDevice.config },
       });
     }
 
