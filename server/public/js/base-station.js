@@ -47,14 +47,16 @@
   const configPanel = document.getElementById('configPanel');
   const configForm = document.getElementById('configForm');
   const configTitle = document.getElementById('configTitle');
+  let configDeviceId = null;
 
   // ─── Volume control ──
-  // Slider 0–150 → gain 0–1.5×.
-  // When the GainNode is connected (via ensureAudioGraph) it owns full-range
-  // control and video.volume stays at 1.  Fallback to video.volume capped at
-  // 1× when no GainNode is available.
+  // Slider 0–200 → gain 0–2×.  100 = unity, 200 = double (+6 dB).
+  // Audio is routed through a MediaStreamSource + GainNode (NOT through the
+  // video element).  The video element is muted so its direct Safari audio path
+  // doesn't bypass the GainNode.
   let audioCtx = null;
   let gainNode = null;
+  let audioSourceNode = null; // MediaStreamAudioSourceNode (disconnected on stop)
 
   function ensureAudioGraph() {
     if (audioCtx) {
@@ -64,33 +66,41 @@
     try {
       audioCtx = new (window.AudioContext || window.webkitAudioContext)();
       gainNode = audioCtx.createGain();
-      const src = audioCtx.createMediaElementSource(monitorVideo);
-      src.connect(gainNode);
       gainNode.connect(audioCtx.destination);
     } catch (e) {
       console.error('[volume] audio graph setup failed', e);
     }
   }
 
+  function connectAudioSource(stream) {
+    if (!gainNode || !audioCtx) return;
+    if (audioSourceNode) {
+      try { audioSourceNode.disconnect(); } catch {}
+      audioSourceNode = null;
+    }
+    const track = stream.getAudioTracks()[0];
+    if (!track) return;
+    const audioStream = new MediaStream([track]);
+    audioSourceNode = audioCtx.createMediaStreamSource(audioStream);
+    audioSourceNode.connect(gainNode);
+  }
+
   function applyVolume(value) {
     const n = parseFloat(value);
-    const v = Math.max(0, Math.min(150, isNaN(n) ? 100 : n));
-    const gain = v / 100; // 0→0, 100→1.0, 150→1.5
+    const v = Math.max(0, Math.min(200, isNaN(n) ? 100 : n));
+    const gain = v / 100; // 0→0, 100→1.0, 200→2.0
     if (gainNode) {
-      monitorVideo.volume = 1;
       gainNode.gain.value = gain;
-    } else {
-      monitorVideo.volume = Math.min(1, gain);
     }
   }
 
   let initVol = parseFloat(localStorage.getItem('hearth_baseVolume'));
-  if (!isFinite(initVol) || initVol < 0 || initVol > 150) initVol = 100;
+  if (!isFinite(initVol) || initVol < 0 || initVol > 200) initVol = 100;
   monitorVolume.value = initVol;
   applyVolume(initVol);
 
   function updateTrackFill() {
-    monitorVolume.style.setProperty('--vol-pct', (monitorVolume.value / 150 * 100) + '%');
+    monitorVolume.style.setProperty('--vol-pct', (monitorVolume.value / 200 * 100) + '%');
   }
 
   updateTrackFill();
@@ -150,8 +160,9 @@
     monitorVideo.srcObject = stream;
     applyViewMode();
     ensureAudioGraph();
+    connectAudioSource(stream);
     applyVolume(monitorVolume.value);
-    monitorVideo.muted = false;
+    monitorVideo.muted = true; // Video element renders video only; audio goes through GainNode
     monitorVideo.play().catch(() => {});
   }
 
@@ -244,9 +255,6 @@
     showMonitor();
     renderDevices();
     attachMonitorStream();
-    // Unmute within the user gesture so iOS Safari allows audio playback
-    monitorVideo.muted = false;
-    monitorVideo.play().catch(() => {});
   }
 
   function stopView() {
@@ -263,6 +271,10 @@
     viewMode = null;
     recovering = false;
     if (recoverTimer) { clearTimeout(recoverTimer); recoverTimer = null; }
+    if (audioSourceNode) {
+      try { audioSourceNode.disconnect(); } catch {}
+      audioSourceNode = null;
+    }
     monitorVideo.srcObject = null;
     monitorVideo.muted = true;
     monitorError.classList.add('hidden');
@@ -345,14 +357,21 @@
 
     const settingsBtn = t.closest('.settings-btn');
     if (settingsBtn) {
-      const d = devices.find(dev => dev.id === settingsBtn.dataset.id);
-      if (d) showConfig(d);
+      const id = settingsBtn.dataset.id;
+      if (configDeviceId === id && !configPanel.classList.contains('hidden')) {
+        configPanel.classList.add('hidden');
+        configDeviceId = null;
+      } else {
+        const d = devices.find(dev => dev.id === id);
+        if (d) showConfig(d);
+      }
       return;
     }
   });
 
   function showConfig(device) {
     configPanel.classList.remove('hidden');
+    configDeviceId = device.id;
     configTitle.textContent = device.label + ' Settings';
     const caps = capabilitiesByDevice[device.id];
     const cfg = device.config || {};
@@ -463,6 +482,9 @@
         payload.audioAlertThresholdDb = parseFloat(document.getElementById('cfg-audioThreshold').value);
       }
       sig.setConfig(device.id, payload);
+      // Optimistically update local cache so reopening shows current values.
+      device.config = Object.assign({}, device.config || {}, payload);
+      configPanel.classList.add('hidden');
     });
     document.getElementById('removeDeviceBtn').addEventListener('click', () => {
       if (confirm('Remove ' + device.label + ' from the list?')) {
@@ -556,6 +578,10 @@
       subscribed.delete(pubId);
       if (pubId === viewingId) {
         rtc.closePeerConnection(viewingId);
+        if (audioSourceNode) {
+          try { audioSourceNode.disconnect(); } catch {}
+          audioSourceNode = null;
+        }
         viewingId = null;
         viewMode = null;
         recovering = false;

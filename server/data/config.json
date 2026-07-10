@@ -127,7 +127,7 @@
       "label": "Kiosk",
       "roomId": "iphone",
       "createdAt": 1783518599755,
-      "lastSeenAt": 1783713816342,
+      "lastSeenAt": 1783715224672,
       "config": {
         "label": "test2",
         "camera": "front",
@@ -151,7 +151,7 @@
       "label": "Base Station",
       "roomId": "pc",
       "createdAt": 1783518604146,
-      "lastSeenAt": 1783713821125,
+      "lastSeenAt": 1783715263594,
       "config": {
         "label": "",
         "visibleSources": [],
@@ -774,7 +774,7 @@
       "label": "Kiosk",
       "roomId": "default",
       "createdAt": 1783712943598,
-      "lastSeenAt": 1783713653857,
+      "lastSeenAt": 1783715274569,
       "config": {
         "label": "ios12",
         "camera": "front",
