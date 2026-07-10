@@ -11,172 +11,203 @@ HTML5 video intercom / baby monitor system. Runs on iPads/iPhones via Safari. Se
 
 ## Features
 
-### Core Streaming
-- **WebRTC P2P mesh** — sub-500ms latency, two-way audio
-- **Multi-publisher rooms** — multiple camera devices per room
-- **Per-source subscription** — base station watches one feed at a time
-- **Source types**: `video+audio`, `video-only`, `audio-only`, `none`
+### Core Architecture
+- **WebRTC P2P mesh** — sub-500ms latency, two-way audio, no media relay through server
+- **Server = matchmaker only** — signaling via WebSocket (or SSE fallback for iOS ≤12); no SFU needed for 2–3 cameras
+- **Single-room model** — multiple kiosks per room; base station subscribes to any source
+- **Self-signed TLS** — CA cert installed once per iOS device via Settings → VPN & Device Management
 
 ### Device Roles
-| Role | Page | Purpose |
+| Page | Role | Purpose |
 |------|------|---------|
-| **Base Station** | `/base-station.html` | Control hub: create rooms, monitor feeds, configure all cameras |
-| **Kiosk (Camera)** | `/camera.html` | Thin client — broadcasts video/audio, minimal UI, auto-reconnects |
+| `camera.html` | **Kiosk** (publisher) | Thin client — captures camera/mic, publishes to room, minimal UI |
+| `base-station.html` | **Base Station** (subscriber + admin) | Full control hub — monitors kiosks, pushes config, manages devices |
+| `index.html` | Landing | Role selector + server status |
+| `test.html` | Dev tool | Ad-hoc stream viewer for debugging |
 
-### Discovery & Pairing
-- **QR code pairing** — base station generates QR with server URL; kiosk scans to join
-- **No pairing tokens** — direct room join via WebSocket
-- **Persistent device IDs** — stored in localStorage, auto-reconnect on reload
-- **24-hour device history** — base station shows recently seen devices (even offline)
+### Kiosk (Camera Device) — `camera.html`
+- **Auto-reconnect** — deviceId persisted in localStorage; rejoins room on reload
+- **User gesture required** — iOS ≤12 shows "Tap to enable camera" overlay; iOS 13+ auto-starts
+- **Media constraints** — front/rear camera, 480p/720p/1080p, 15/24/30 fps
+- **Night mode / torch** — toggles via config (torch on rear camera)
+- **Audio alerting** — real-time RMS dB monitoring; peak detection with configurable threshold/hysteresis; relays `AUDIO_PEAK` to base station
+- **Wake Lock API** — keeps screen on (iOS 16.4+)
+- **Device enumeration** — reports available cameras/mics to base station for remote selection
+- **Track sync** — resolution/framerate/camera changes swap tracks on live peer connections without reconnecting
+- **Legacy iOS (≤12) support** — SSE signaling fallback, combined `getUserMedia`, AudioContext created inside gesture
 
-### Base Station Features
-- **Live device list** — shows online/offline status, last seen, audio level (dB)
-- **Audio alerts** — configurable threshold (dB) with hysteresis; visual alert badge
-- **Monitor modes** — `Video` (full video+audio) or `Audio-only` (background listening)
-- **Volume control** — 0–200% gain (slider persisted in localStorage)
-- **Grid layout** — `1×1` or `2×2` multi-view (planned)
-- **Audio focus** — `manual` (one at a time) or `last-active` mode
-- **Idle timeout** — auto-stop monitor after inactivity
-- **Watch recovery** — auto-reconnects if stream stalls (8s dead → ICE restart → 10s timeout)
+### Base Station — `base-station.html`
+- **Device dashboard** — lists all kiosks with label, online/offline status, last-seen timestamp
+- **Per-device audio level** — live dB readout; visual alert highlight when threshold exceeded
+- **Monitor modes** — Video (full stream) or Audio-only (keeps audio track, hides video)
+- **Volume control** — 0–200% gain via Web Audio `GainNode` (video element muted; audio routed through graph)
+- **Remote config panel** — per-kiosk settings:
+  - Label, camera (by deviceId or front/rear), resolution, frame rate
+  - Microphone selection (by deviceId)
+  - Two-way audio toggle, keep-awake toggle
+  - Audio alert enable + threshold (dB)
+- **Device removal** — purges from recently-seen list and persisted config
+- **Toast notifications** — "Device joined", "Source online"
+- **Watchdog + auto-recover** — detects stalled tracks (8s no activity) → ICE restart → resubscribes + re-offers
 
-### Camera (Kiosk) Features
-| Setting | Options / Range |
-|---------|-----------------|
-| Camera | Front / Rear |
-| Resolution | 480p / 720p / 1080p |
-| Frame rate | 15 / 24 / 30 fps |
-| Night mode | On / Off |
-| Torch (flashlight) | On / Off |
-| Mic sensitivity | 0–100 |
-| Speaker volume | 0–100 |
-| Two-way audio | Enabled / Disabled |
-| Show local feed | On / Off (preview) |
-| Keep awake (Wake Lock) | On / Off (iOS 16.4+) |
-| Custom label | Free text |
-| Audio alert threshold | dB level + enable/disable |
-| Media device selection | Specific camera/mic by deviceId |
-
-### Two-Way Talkback
-- **Push-to-talk** on base station → adds audio track to existing peer connection
-- Only the **audio-focused** source receives talkback
-- Configurable per-camera (`twoWayAudioEnabled`)
+### Signaling & Discovery
+- **QR code** — base station calls `POST /api/server-url` → returns `serverUrl` + 600px base64 PNG data URL
+- **Kiosk entry** — scans QR (opens `camera.html`) or manually enters room name
+- **No pairing tokens required** — room join is direct via `JOIN_ROOM`
+- **Recently-seen devices** — 24h in-memory window (survives server restart via persisted config)
 
 ### Configuration & Persistence
-- **JSON file storage** (`server/config.json`) — no database needed
-- **Per-device config** persisted server-side, survives restarts
-- **Local fallback** — kiosk remembers last settings in localStorage before server sync
-- **Remote config push** — base station changes apply instantly if online, queued if offline
-- **Presets** — named profiles (Daytime, Nighttime, Naptime, Away) with optional cron schedules
+- **JSON file storage** (`server/data/config.json`) — no database
+- **Per-device config** — camera, resolution, framerate, nightMode, torch, mic/speaker levels, twoWayAudio, keepAwake, label, audioAlert*, device selection
+- **Base station config** — visibleSources, audioFocusMode (manual/last-active), gridLayout, idleTimeout
+- **Presets** — named profiles (Daytime, Nighttime, Naptime, Away) with optional cron schedule
+- **Config queuing** — changes pushed to offline devices applied on next reconnect
 
-### Signaling Protocol (WebSocket)
-Message types:
-- `JOIN_ROOM` / `LEAVE_ROOM` — room membership
-- `PUBLISH_SOURCE` / `UNPUBLISH_SOURCE` — camera publishes media
-- `SUBSCRIBE_SOURCE` / `UNSUBSCRIBE_SOURCE` — base station watches feed
-- `OFFER` / `ANSWER` / `ICE_CANDIDATE` / `ICE_RESTART` — WebRTC signaling
-- `SET_CONFIG` / `GET_CONFIG` / `CONFIG_UPDATED` — remote configuration
-- `REQUEST_TALK` / `STOP_TALK` — two-way audio
-- `CAPABILITIES` — device enumeration (camera/mic selection)
-- `AUDIO_PEAK` — real-time dB level for alerting
-- `DEVICE_STATUS` / `SOURCE_ADDED` / `SOURCE_REMOVED` — presence
-- `REMOVE_DEVICE` / `DEVICE_REMOVED` — device management
-
-### Reconnection & Resilience
-| Layer | Strategy |
+### Reconnection Strategy
+| Layer | Behavior |
 |-------|----------|
-| WebSocket | Exponential backoff (1s → 30s cap); SSE fallback for legacy iOS ≤12 |
-| WebRTC | ICE restart before full peer connection teardown |
-| Device offline | 60s grace period before removing source from room |
-| Config changes | Queued server-side, applied atomically on reconnect |
+| WebSocket | Exponential backoff (1s → 30s cap) |
+| WebRTC (ICE) | ICE restart before full peer connection teardown |
+| Device offline | 60s grace period before source removed from room |
 
-### iOS-Specific Handling
-- **HTTPS required** for `getUserMedia` (localhost exempt)
-- **User gesture required** for camera permission on every page load
-- **WebRTC dies in background** — kiosk must stay foregrounded
-- **Wake Lock API** (iOS 16.4+) keeps screen on
-- **"Add to Home Screen"** improves tab persistence vs Safari tabs
-- **Legacy iOS ≤12** — WebSocket unreliable (close code 1006); uses SSE fallback; camera start gated behind tap-to-enable button
+### Two-Way Talkback
+- Base station presses **Talk** → sends `REQUEST_TALK` → kiosk adds audio track to existing `RTCPeerConnection` → plays base station audio through kiosk speaker
+- Only the **audio-focused** source receives talkback (manual or last-active mode)
+
+### Legacy iOS Support (≤12)
+- SSE downstream + HTTPS POST upstream (WebSocket unreliable → close code 1006)
+- Combined `getUserMedia` (separate video/audio calls break audio on old WebKit)
+- AudioContext created inside user gesture to avoid suspended state
+
+---
 
 ## Quick Start
 
 ```bash
-# Install dependencies
-cd server && npm install
+# Generate self-signed CA + cert (run once)
+cd deploy && ./gen-cert.sh
 
-# Start without TLS (localhost only — getUserMedia works via localhost)
-npm start
+# Build & run
+docker compose up --build
 
-# Start with TLS (requires self-signed certs)
-npm run gen-cert
-npm run start:tls
+# Or locally
+cd server && npm install && npm run build && npm start
 ```
 
-Open `http://localhost:8090` on your base station device, create a room, and click **Add Kiosk** to show the QR code. Scan it on your kiosk device to connect.
-
-## Development
-
-```bash
-npm run dev    # TypeScript watch + auto-restart
-```
+Open `https://<host>:8090` on base station iPad → scan QR with camera iPads.
 
 ## Deployment
 
 ```bash
+cd deploy
 docker compose up -d
 ```
 
-Ports: `8090` (HTTPS), `8091` (HTTP redirect).
+- Ports: `8090` (HTTPS), `8091` (HTTP → HTTPS redirect)
+- Certs in `deploy/certs/` — install `ca.crt` profile on each iOS device (Settings → General → VPN & Device Management)
 
-Certificates in `deploy/certs/` — install `ca.crt` profile on each iOS device (Settings → General → VPN & Device Management).
+## Development
+
+```bash
+cd server
+npm install
+npm run dev   # ts-node-dev with hot reload
+```
+
+## Project Structure
+
+```
+hearth-connect/
+├── AGENTS.md
+├── server/
+│   ├── package.json
+│   ├── tsconfig.json
+│   ├── Dockerfile
+│   └── src/
+│       ├── index.ts              # Express + WS/SSE server, TLS, QR endpoint
+│       ├── types.ts              # Shared type definitions
+│       ├── ConfigManager.ts      # JSON file config persistence
+│       ├── ChannelManager.ts     # In-memory room/device state
+│       └── SignalingHandler.ts   # WebSocket message routing
+│   └── public/
+│       ├── index.html            # Landing / role selector
+│       ├── camera.html           # Kiosk (publisher)
+│       ├── base-station.html     # Base station (subscriber + admin)
+│       ├── test.html             # Dev stream viewer
+│       ├── css/style.css
+│       └── js/
+│           ├── signaling.js      # WS/SSE client + reconnection
+│           ├── webrtc.js         # getUserMedia + RTCPeerConnection
+│           ├── camera.js         # Kiosk page logic
+│           └── base-station.js   # Base station page logic
+├── deploy/
+│   ├── docker-compose.yml
+│   └── gen-cert.sh
+├── favicon.svg
+└── README.md
+```
 
 ---
 
 ## Roadmap
 
-### Near Term (v0.3–v0.4)
-- [ ] **Multi-room support** — separate rooms per base station (currently single `default` room)
-- [ ] **2×2 grid view** — simultaneous monitoring of up to 4 feeds on base station
-- [ ] **Viewer page** (`/viewer.html`) — read-only remote access with optional PIN
-- [ ] **Preset scheduling** — cron-based auto-apply (Daytime 7am–7pm, Nighttime 7pm–7am, etc.)
-- [ ] **Audio alert webhook** — POST to Home Assistant / n8n / custom endpoint on threshold breach
+### v0.2 — Multi-Room & Auth
+- [ ] Multiple named rooms (create/join from base station)
+- [ ] Optional PIN per room (viewer access control)
+- [ ] Pairing tokens for kiosk provisioning (QR contains token, not just URL)
+- [ ] Device ownership (prevent unauthorized config pushes)
 
-### Medium Term (v0.5–v0.6)
-- [ ] **SFU (mediasoup/LiveKit)** — scale beyond 3–4 cameras; server-side mixing
-- [ ] **Recording** — optional HLS/MP4 segment recording to disk or S3
-- [ ] **Push notifications** — iOS push (APNs) for audio alerts when base station backgrounded
-- [ ] **Raspberry Pi Camera Module** support — native V4L2/ALSA capture via headless kiosk client
-- [ ] **Admin API** — REST endpoints for external automation (Home Assistant, etc.)
+### v0.3 — Two-Way Audio & Video
+- [ ] **Two-way audio** — base station mic → kiosk speaker (currently only kiosk→base implemented via `REQUEST_TALK`)
+- [ ] **Two-way video** — base station camera → kiosk display (requires kiosk to render incoming video)
+- [ ] Talkback audio routing — ensure only audio-focused source receives return audio
+- [ ] Video call UI on base station (self-view, mute, camera toggle)
 
-### Long Term (v1.0+)
-- [ ] **End-to-end encryption** — DTLS-SRTP key rotation, optional passphrase
-- [ ] **Multi-base station** — shared room state across multiple control hubs
-- [ ] **Android/Chrome support** — test & fix any WebKit-only assumptions
-- [ ] **WebRTC data channel** — low-latency control channel (PTZ, config, events)
+### v0.4 — Smart Audio Notifications
+- [ ] **Audio gating** — base station audio muted until kiosk dB exceeds threshold (baby cry detection)
+- [ ] Configurable trigger level, hysteresis, and cooldown period
+- [ ] Optional push notification (APNs / web push) when threshold breached while base station backgrounded
+- [ ] Per-source alert profiles (daytime vs nighttime sensitivity)
 
-### Nice-to-Have
-- [ ] **Dark mode** UI theme
-- [ ] **Bandwidth adaptation** — simulcast/SVC for variable networks
-- [ ] **Metrics endpoint** — Prometheus `/metrics` for uptime/latency tracking
-- [ ] **OTA config updates** — signed config bundles for air-gapped deployments
+### v0.5 — Battery-Aware Client
+- [ ] **Battery Status API** integration — detect charging state & level
+- [ ] Auto-reduce resolution/framerate when unplugged (e.g., 1080p→480p, 30→15 fps)
+- [ ] Disable torch, night mode, keep-awake when on battery
+- [ ] Optional aggressive mode: audio-only when battery < 20%
+- [ ] Visual indicator on base station showing kiosk power state
+
+### v0.6 — Alternative Host Platforms
+- [ ] **Raspberry Pi** — headless kiosk via V4L2/ALSA (USB camera + mic), systemd service, no browser
+- [ ] **iOS Native App** — Swift/Capacitor wrapper for background WebRTC, push notifications, no Safari limitations
+- [ ] **Android App** — same capabilities as iOS native
+- [ ] **Linux/macOS/Windows** — Electron or Tauri desktop client for base station
+
+### v0.7 — QR Code Sharing & Provisioning
+- [ ] QR contains pairing token + room + server URL (not just URL)
+- [ ] One-scan kiosk enrollment — no manual room entry
+- [ ] Token expiry & single-use enforcement
+- [ ] Base station "Invite Kiosk" generates printable/shareable QR
+
+### v0.8 — Scaling (SFU)
+- [ ] Integrate **mediasoup** or **LiveKit** as optional SFU
+- [ ] Base station subscribes to SFU instead of P2P mesh
+- [ ] Enable 5+ simultaneous cameras without mesh explosion
+
+### v0.9 — Viewer App
+- [ ] Dedicated `viewer.html` — read-only monitor (no admin controls)
+- [ ] Viewer config: allowedSources, defaultSource, audioAutoPlay, talkbackEnabled, PIN
+- [ ] "Add to Home Screen" PWA manifest for kiosk/viewer
+
+### v1.0 — Recording & Platform Polish
+- [ ] Optional MediaRecorder → segment to disk (WebM/MP4)
+- [ ] Audio alert webhooks (Home Assistant, ntfy, Pushover)
+- [ ] Motion detection via canvas diff (browser-side) → trigger recording
+- [ ] Raspberry Pi 4/5 + USB camera + `v4l2loopback` as headless kiosk
+- [ ] systemd service + nginx reverse proxy guide
+- [ ] Health check endpoint + Prometheus metrics
+- [ ] Automated cert renewal (Let's Encrypt for public hosts)
 
 ---
-
-## Architecture
-
-```
-┌─────────────┐     WebSocket      ┌──────────────┐     WebRTC P2P     ┌─────────────┐
-│  Base       │ ◄─────────────────► │   Server     │ ◄────────────────► │  Kiosk      │
-│  Station    │   Signaling only   │  (matchmaker)│   Media flows      │  (Camera)   │
-└─────────────┘                    └──────────────┘   directly         └─────────────┘
-       ▲                                  ▲
-       │                          JSON config file
-       │                          (no database)
-       └──────────────────────────────────┘
-```
-
-- **Single Node.js process** — Express (static + API) + `ws` (WebSocket)
-- **TypeScript** — strict mode, shared types between server/client
-- **Docker** — multi-stage build, non-root user, health checks
 
 ## License
 
