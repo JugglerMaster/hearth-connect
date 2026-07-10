@@ -18,11 +18,18 @@
       <span id="deviceLabel" class="device-label">Kiosk</span>
     </div>
     <div class="debug-bar">
+      <span id="debugMethod">method:--</span>
       <span id="debugCamStatus">cam:--</span>
       <span id="debugTracks">tracks:--</span>
       <span id="debugSubs">subs:0</span>
+      <span id="debugDbLevel">audio:--</span>
     </div>
     <div id="debugEvent" class="debug-event">ev:--</div>
+  </div>
+
+  <div id="enableCamOverlay" class="enable-cam-overlay hidden">
+    <button id="enableCamBtn" class="btn btn-primary btn-large">📷 Tap to enable camera</button>
+    <p class="enable-cam-note">iOS requires a tap before the camera can be accessed. Tap to start the kiosk.</p>
   </div>
 
   <div id="cameraError" class="camera-error hidden">

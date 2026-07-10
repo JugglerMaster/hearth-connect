@@ -1,9 +1,9 @@
-import type WebSocket from 'ws';
+
 
 // ─── Device & Room types ────────────────────────────────────
 
 export type DeviceType = 'kiosk' | 'base';
-export type SourceType = 'video+audio' | 'audio-only';
+export type SourceType = 'video+audio' | 'video-only' | 'audio-only' | 'none';
 export type AudioFocusMode = 'manual' | 'last-active';
 
 export interface DeviceConfig {
@@ -20,11 +20,31 @@ export interface DeviceConfig {
   keepAwake?: boolean;
   label?: string;
 
+  // Media device selection (browser deviceId or Pi V4L2/ALSA path)
+  videoDevice?: string;
+  audioDevice?: string;
+
+  // Audio threshold alerting
+  audioAlertEnabled?: boolean;
+  audioAlertThresholdDb?: number;
+  audioAlertHysteresisDb?: number;
+
   // Base station
   visibleSources?: string[];
   audioFocusMode?: AudioFocusMode;
   gridLayout?: '1x1' | '2x2';
   idleTimeout?: number;
+}
+
+export interface MediaDeviceDescriptor {
+  id: string;
+  label: string;
+  facingMode?: 'user' | 'environment' | null;
+}
+
+export interface DeviceCapabilities {
+  videoDevices: MediaDeviceDescriptor[];
+  audioDevices: MediaDeviceDescriptor[];
 }
 
 export interface DeviceRecord {
@@ -74,8 +94,18 @@ export interface PresetRecord {
 
 // ─── Runtime (in-memory) types ──────────────────────────────
 
+// ─── Transport abstraction ──────────────────────────────────────
+// A Transport carries signaling messages to one connected client. It is
+// implemented over WebSocket (modern clients) or over Server-Sent Events
+// (legacy iOS 12, whose WebSocket stack is unreliable — close code 1006).
+export interface Transport {
+  connId: string;
+  send(msg: object): void;
+  close(): void;
+}
+
 export interface ConnectedClient {
-  ws: WebSocket;
+  connId: string;
   deviceId: string;
   deviceType: DeviceType;
   roomId: string;
@@ -84,6 +114,7 @@ export interface ConnectedClient {
   connectedAt: number;
   lastHeartbeat: number;
   disconnectTimer?: NodeJS.Timeout;
+  capabilities?: DeviceCapabilities;
 }
 
 export interface MediaSourceInfo {
@@ -124,7 +155,11 @@ export type MessageType =
   | 'DEVICE_STATUS'
   | 'ROOM_STATE'
   | 'TALK_ENABLED'
-  | 'TALK_DISABLED';
+  | 'TALK_DISABLED'
+  | 'CAPABILITIES'
+  | 'AUDIO_PEAK'
+  | 'REMOVE_DEVICE'
+  | 'DEVICE_REMOVED';
 
 export interface Message {
   type: MessageType;

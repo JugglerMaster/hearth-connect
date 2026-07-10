@@ -20,7 +20,7 @@ export declare class ConfigManager {
     getDevice(id: string): DeviceRecord | undefined;
     getDevicesByRoom(roomId: string): DeviceRecord[];
     getDevicesByType(roomId: string, type: DeviceType): DeviceRecord[];
-    createDevice(id: string, type: DeviceType, label: string, roomId: string, pairingToken?: string): DeviceRecord;
+    createDevice(id: string, type: DeviceType, label: string, roomId: string, pairingToken?: string, legacyIOS?: boolean): DeviceRecord;
     updateDevice(id: string, updates: Partial<DeviceRecord>): void;
     updateDeviceConfig(id: string, config: Partial<DeviceConfig>): DeviceConfig;
     getDeviceConfig(id: string): DeviceConfig | undefined;

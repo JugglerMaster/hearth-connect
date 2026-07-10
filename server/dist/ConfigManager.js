@@ -144,7 +144,7 @@ class ConfigManager {
     getDevicesByType(roomId, type) {
         return this.getDevicesByRoom(roomId).filter(d => d.type === type);
     }
-    createDevice(id, type, label, roomId, pairingToken) {
+    createDevice(id, type, label, roomId, pairingToken, legacyIOS = false) {
         const existing = this.getDevice(id);
         if (existing)
             return existing;
@@ -156,7 +156,7 @@ class ConfigManager {
             pairingToken,
             createdAt: Date.now(),
             lastSeenAt: null,
-            config: this.defaultConfig(type),
+            config: this.defaultConfig(type, legacyIOS),
         };
         this.data.devices[id] = device;
         this.markDirty();
@@ -185,15 +185,15 @@ class ConfigManager {
         this.markDirty();
     }
     // ─── Defaults ───────────────────────────────────────────
-    defaultConfig(type) {
+    defaultConfig(type, legacyIOS = false) {
         const common = { label: '' };
         switch (type) {
             case 'kiosk':
                 return {
                     ...common,
-                    camera: 'rear',
-                    resolution: '720p',
-                    frameRate: 24,
+                    camera: 'front',
+                    resolution: legacyIOS ? '480p' : '720p',
+                    frameRate: 30,
                     nightMode: false,
                     torch: false,
                     micSensitivity: 0.8,

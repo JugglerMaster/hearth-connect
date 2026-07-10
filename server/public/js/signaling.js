@@ -1,7 +1,19 @@
+// iOS ≤12 has an unreliable WebSocket stack (closes with code 1006 even over
+// TLS 1.2 with compression disabled). For those clients we use Server-Sent
+// Events (server→client) plus fetch POST (client→server) instead.
+function isLegacyIOS() {
+  const m = navigator.userAgent.match(/OS (\d+)_(\d+)_?(\d+)? like Mac OS X/);
+  if (!m) return false;
+  return parseInt(m[1], 10) < 13;
+}
+
 class SignalingClient {
   constructor(url) {
     this.url = url || this.getServerUrl();
     this.ws = null;
+    this.es = null;
+    this.connId = null;
+    this.useSSE = isLegacyIOS();
     this.deviceId = null;
     this.roomId = null;
     this.connected = false;
@@ -23,7 +35,14 @@ class SignalingClient {
 
   // ─── Connection ──────────────────────────────────────
 
+  genConnId() {
+    if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
+    return 'c-' + Date.now() + '-' + Math.random().toString(16).slice(2);
+  }
+
   connect() {
+    if (this.useSSE) return this.connectSSE();
+
     if (this.ws && this.ws.readyState === WebSocket.OPEN) return;
     this.intentionalClose = false;
 
@@ -51,9 +70,10 @@ class SignalingClient {
       }
     };
 
-    this.ws.onclose = () => {
+    this.ws.onclose = (event) => {
       this.connected = false;
-      this.emit('close');
+      console.error('Signaling: disconnected', 'code=' + event.code, 'reason=' + (event.reason || ''), 'clean=' + event.wasClean);
+      this.emit('close', { code: event.code, reason: event.reason });
 
       if (!this.intentionalClose) {
         console.log('Signaling: disconnected, reconnecting...');
@@ -62,7 +82,7 @@ class SignalingClient {
     };
 
     this.ws.onerror = (err) => {
-      console.error('Signaling: error', err);
+      console.error('Signaling: error', err && (err.code || err.message) || err);
     };
   }
 
@@ -76,7 +96,60 @@ class SignalingClient {
       this.ws.close();
       this.ws = null;
     }
+    if (this.es) {
+      this.es.close();
+      this.es = null;
+    }
     this.connected = false;
+  }
+
+  // ─── SSE (legacy iOS ≤12) connection ────────────────
+  // Downstream (server→client) uses EventSource; upstream (client→server)
+  // uses fetch POST to /api/signal. EventSource's built-in reconnect is
+  // disabled — we manage reconnection ourselves with backoff so a new
+  // connId is issued each time (the server drops the old transport on close).
+
+  connectSSE() {
+    // Don't stack connections or reconnect timers.
+    if (this.reconnectTimer) return;
+    if (this.es && this.es.readyState !== EventSource.CLOSED) return;
+    this.intentionalClose = false;
+
+    this.connId = this.genConnId();
+
+    try {
+      this.es = new EventSource('/api/events?connId=' + encodeURIComponent(this.connId));
+    } catch (err) {
+      console.error('EventSource creation failed:', err);
+      this.scheduleReconnect();
+      return;
+    }
+
+    this.es.onopen = () => {
+      this.connected = true;
+      this.reconnectAttempt = 0;
+      console.log('Signaling (SSE): connected connId=' + this.connId);
+      this.emit('open');
+    };
+
+    this.es.onmessage = (event) => {
+      try {
+        const msg = JSON.parse(event.data);
+        this.handleMessage(msg);
+      } catch (err) {
+        console.error('Signaling (SSE): bad message', err);
+      }
+    };
+
+    this.es.onerror = () => {
+      // EventSource auto-reconnects, but we close it and run our own backoff
+      // so a fresh connId is issued. Treat as a disconnect.
+      this.connected = false;
+      if (this.es) { this.es.close(); this.es = null; }
+      console.error('Signaling (SSE): stream error/closed connId=' + this.connId);
+      this.emit('close', { code: null, reason: 'sse' });
+      if (!this.intentionalClose) this.scheduleReconnect();
+    };
   }
 
   scheduleReconnect() {
@@ -153,6 +226,18 @@ class SignalingClient {
         this.emit('deviceStatus', msg.payload);
         break;
 
+      case 'CAPABILITIES':
+        this.emit('capabilities', msg.payload);
+        break;
+
+      case 'AUDIO_PEAK':
+        this.emit('audioPeak', msg.payload);
+        break;
+
+      case 'DEVICE_REMOVED':
+        this.emit('deviceRemoved', msg.payload);
+        break;
+
       case 'TALK_ENABLED':
         this.emit('talkEnabled', msg.payload);
         break;
@@ -169,6 +254,21 @@ class SignalingClient {
   // ─── Send ────────────────────────────────────────────
 
   send(type, payload = {}) {
+    if (this.useSSE) {
+      if (!this.connId || !this.connected) {
+        console.warn('Signaling (SSE): cannot send, not connected');
+        return false;
+      }
+      fetch('/api/signal', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ connId: this.connId, type, payload }),
+      }).catch((err) => {
+        console.error('Signaling (SSE): POST failed', err);
+      });
+      return true;
+    }
+
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       console.warn('Signaling: cannot send, not connected');
       return false;
@@ -183,7 +283,7 @@ class SignalingClient {
 
   joinRoom(roomId, deviceId) {
     this.roomId = roomId;
-    this.send('JOIN_ROOM', { roomId, deviceId, deviceType: this.deviceType, label: this.deviceLabel });
+    this.send('JOIN_ROOM', { roomId, deviceId, deviceType: this.deviceType, label: this.deviceLabel, legacyIOS: isLegacyIOS() });
   }
 
   leaveRoom() {
@@ -243,6 +343,10 @@ class SignalingClient {
 
   stopTalk(targetPublisherId) {
     this.send('STOP_TALK', { targetPublisherId });
+  }
+
+  removeDevice(targetDeviceId) {
+    this.send('REMOVE_DEVICE', { targetDeviceId });
   }
 
   // ─── Event System ────────────────────────────────────

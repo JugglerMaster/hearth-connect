@@ -1,12 +1,12 @@
-import WebSocket from 'ws';
 import { ChannelManager } from './ChannelManager';
 import { ConfigManager } from './ConfigManager';
+import { Transport } from './types';
 export declare class SignalingHandler {
     private channels;
     private config;
     constructor(channels: ChannelManager, config: ConfigManager);
-    handle(ws: WebSocket, raw: string): void;
-    handleDisconnect(ws: WebSocket): void;
+    handle(transport: Transport, raw: string): void;
+    handleDisconnect(transport: Transport): void;
     private route;
     private sendError;
     private send;
@@ -18,6 +18,9 @@ export declare class SignalingHandler {
     private handleUnpublishSource;
     private handleSubscribeSource;
     private handleUnsubscribeSource;
+    private handleCapabilities;
+    private handleAudioPeak;
+    private handleRemoveDevice;
     private handleRelay;
     private handleSetConfig;
     private handleGetConfig;

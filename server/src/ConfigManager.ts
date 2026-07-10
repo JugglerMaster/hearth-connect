@@ -150,7 +150,8 @@ export class ConfigManager {
     type: DeviceType,
     label: string,
     roomId: string,
-    pairingToken?: string
+    pairingToken?: string,
+    legacyIOS = false
   ): DeviceRecord {
     const existing = this.getDevice(id);
     if (existing) return existing;
@@ -163,7 +164,7 @@ export class ConfigManager {
       pairingToken,
       createdAt: Date.now(),
       lastSeenAt: null,
-      config: this.defaultConfig(type),
+      config: this.defaultConfig(type, legacyIOS),
     };
     this.data.devices[id] = device;
     this.markDirty();
@@ -197,15 +198,15 @@ export class ConfigManager {
 
   // ─── Defaults ───────────────────────────────────────────
 
-  private defaultConfig(type: DeviceType): DeviceConfig {
+  private defaultConfig(type: DeviceType, legacyIOS = false): DeviceConfig {
     const common = { label: '' };
     switch (type) {
       case 'kiosk':
         return {
           ...common,
-          camera: 'rear',
-          resolution: '720p',
-          frameRate: 24,
+          camera: 'front',
+          resolution: legacyIOS ? '480p' : '720p',
+          frameRate: 30,
           nightMode: false,
           torch: false,
           micSensitivity: 0.8,

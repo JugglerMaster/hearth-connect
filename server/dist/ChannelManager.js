@@ -1,26 +1,36 @@
 "use strict";
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.ChannelManager = void 0;
-const ws_1 = __importDefault(require("ws"));
 class ChannelManager {
     constructor() {
         // roomId → Map<deviceId, ConnectedClient>
         this.rooms = new Map();
         // deviceId → ConnectedClient (global lookup)
         this.clients = new Map();
-        // ws → deviceId (reverse lookup for disconnect handling)
-        this.wsMap = new Map();
         // Recently seen devices (resets on server restart)
         this.recentlySeenDevices = new Map();
         this.RECENT_SEEN_WINDOW = 24 * 60 * 60 * 1000; // 24 hours
+        // Active transports (WebSocket or SSE), keyed by connection id
+        this.transports = new Map();
+    }
+    registerTransport(transport) {
+        this.transports.set(transport.connId, transport);
+    }
+    unregisterTransport(connId) {
+        this.transports.delete(connId);
+    }
+    getTransport(connId) {
+        return this.transports.get(connId);
+    }
+    sendToConn(connId, message) {
+        const t = this.transports.get(connId);
+        if (t)
+            t.send(message);
     }
     // ─── Client Lifecycle ───────────────────────────────────
-    addClient(ws, deviceId, deviceType, roomId, label) {
+    addClient(connId, deviceId, deviceType, roomId, label) {
         const client = {
-            ws,
+            connId,
             deviceId,
             deviceType,
             roomId,
@@ -30,7 +40,6 @@ class ChannelManager {
             lastHeartbeat: Date.now(),
         };
         this.clients.set(deviceId, client);
-        this.wsMap.set(ws, deviceId);
         if (!this.rooms.has(roomId)) {
             this.rooms.set(roomId, new Map());
         }
@@ -53,13 +62,18 @@ class ChannelManager {
         }
         return client;
     }
-    removeClient(ws) {
-        const deviceId = this.wsMap.get(ws);
-        if (!deviceId)
-            return null;
-        const client = this.clients.get(deviceId);
+    removeClientByConn(connId) {
+        // Find the client owning this connId
+        let client;
+        for (const c of this.clients.values()) {
+            if (c.connId === connId) {
+                client = c;
+                break;
+            }
+        }
         if (!client)
             return null;
+        const deviceId = client.deviceId;
         const room = this.rooms.get(client.roomId);
         if (room) {
             room.delete(deviceId);
@@ -71,23 +85,27 @@ class ChannelManager {
             clearTimeout(client.disconnectTimer);
         }
         this.clients.delete(deviceId);
-        this.wsMap.delete(ws);
         // Mark as offline in recently seen
         const seen = this.recentlySeenDevices.get(deviceId);
         if (seen) {
             seen.online = false;
             seen.lastSeenAt = Date.now();
         }
+        this.unregisterTransport(connId);
         return client;
     }
     getClient(deviceId) {
         return this.clients.get(deviceId);
     }
-    getClientByWs(ws) {
-        const deviceId = this.wsMap.get(ws);
-        if (!deviceId)
-            return undefined;
-        return this.clients.get(deviceId);
+    getClientByConnId(connId) {
+        for (const c of this.clients.values()) {
+            if (c.connId === connId)
+                return c;
+        }
+        return undefined;
+    }
+    getAllClients() {
+        return this.clients;
     }
     // ─── Room Queries ───────────────────────────────────────
     getClientsInRoom(roomId) {
@@ -110,6 +128,14 @@ class ChannelManager {
         const client = this.clients.get(deviceId);
         if (!client)
             return null;
+        // Update an existing source in place if the id already exists (e.g. media set changed)
+        const existing = client.sources.find(s => s.id === sourceId);
+        if (existing) {
+            existing.type = type;
+            existing.label = label;
+            existing.status = 'live';
+            return existing;
+        }
         const source = {
             id: sourceId,
             publisherId: deviceId,
@@ -164,6 +190,18 @@ class ChannelManager {
             entry.label = label;
         }
     }
+    removeRecentlySeen(deviceId) {
+        this.recentlySeenDevices.delete(deviceId);
+    }
+    getCapabilities(deviceId) {
+        return this.clients.get(deviceId)?.capabilities;
+    }
+    setCapabilities(deviceId, capabilities) {
+        const client = this.clients.get(deviceId);
+        if (client) {
+            client.capabilities = capabilities;
+        }
+    }
     clearRecentlySeen() {
         this.recentlySeenDevices.clear();
     }
@@ -177,29 +215,22 @@ class ChannelManager {
     // ─── Broadcast helpers ──────────────────────────────────
     broadcastToRoom(roomId, message, excludeDeviceId) {
         const clients = this.getClientsInRoom(roomId);
-        const data = JSON.stringify(message);
         for (const client of clients) {
             if (client.deviceId === excludeDeviceId)
                 continue;
-            if (client.ws.readyState === ws_1.default.OPEN) {
-                client.ws.send(data);
-            }
+            this.sendToConn(client.connId, message);
         }
     }
     sendTo(deviceId, message) {
         const client = this.clients.get(deviceId);
-        if (client && client.ws.readyState === ws_1.default.OPEN) {
-            client.ws.send(JSON.stringify(message));
-        }
+        if (client)
+            this.sendToConn(client.connId, message);
     }
     broadcastAll(message, excludeDeviceId) {
-        const data = JSON.stringify(message);
         for (const client of this.clients.values()) {
             if (client.deviceId === excludeDeviceId)
                 continue;
-            if (client.ws.readyState === ws_1.default.OPEN) {
-                client.ws.send(data);
-            }
+            this.sendToConn(client.connId, message);
         }
     }
 }

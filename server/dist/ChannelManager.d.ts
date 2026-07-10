@@ -1,22 +1,27 @@
-import WebSocket from 'ws';
-import { ConnectedClient, MediaSourceInfo, DeviceType, SourceType } from './types';
+import { ConnectedClient, MediaSourceInfo, DeviceType, SourceType, Transport } from './types';
 export interface RecentlySeenDevice {
     id: string;
     label: string;
     type: DeviceType;
     lastSeenAt: number;
     online: boolean;
+    config?: Record<string, unknown>;
 }
 export declare class ChannelManager {
     private rooms;
     private clients;
-    private wsMap;
     private recentlySeenDevices;
     private readonly RECENT_SEEN_WINDOW;
-    addClient(ws: WebSocket, deviceId: string, deviceType: DeviceType, roomId: string, label: string): ConnectedClient;
-    removeClient(ws: WebSocket): ConnectedClient | null;
+    private transports;
+    registerTransport(transport: Transport): void;
+    unregisterTransport(connId: string): void;
+    getTransport(connId: string): Transport | undefined;
+    sendToConn(connId: string, message: object): void;
+    addClient(connId: string, deviceId: string, deviceType: DeviceType, roomId: string, label: string): ConnectedClient;
+    removeClientByConn(connId: string): ConnectedClient | null;
     getClient(deviceId: string): ConnectedClient | undefined;
-    getClientByWs(ws: WebSocket): ConnectedClient | undefined;
+    getClientByConnId(connId: string): ConnectedClient | undefined;
+    getAllClients(): Map<string, ConnectedClient>;
     getClientsInRoom(roomId: string): ConnectedClient[];
     getClientsByType(roomId: string, type: DeviceType): ConnectedClient[];
     isClientInRoom(deviceId: string, roomId: string): boolean;
@@ -27,6 +32,9 @@ export declare class ChannelManager {
     cancelDisconnectTimer(deviceId: string): void;
     getRecentlySeenDevices(): RecentlySeenDevice[];
     updateRecentlySeenLabel(deviceId: string, label: string): void;
+    removeRecentlySeen(deviceId: string): void;
+    getCapabilities(deviceId: string): import('./types').DeviceCapabilities | undefined;
+    setCapabilities(deviceId: string, capabilities: import('./types').DeviceCapabilities): void;
     clearRecentlySeen(): void;
     updateHeartbeat(deviceId: string): void;
     broadcastToRoom(roomId: string, message: object, excludeDeviceId?: string): void;

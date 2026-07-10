@@ -34,6 +34,26 @@ class WebRTCManager {
     }
   }
 
+  // Acquire video only (independent of audio) — used for degraded/graceful capture
+  async startVideo(constraints) {
+    try {
+      return await navigator.mediaDevices.getUserMedia(constraints);
+    } catch (err) {
+      console.error('getUserMedia (video) failed:', err);
+      throw err;
+    }
+  }
+
+  // Acquire audio only (independent of video)
+  async startAudio(constraints) {
+    try {
+      return await navigator.mediaDevices.getUserMedia(constraints);
+    } catch (err) {
+      console.error('getUserMedia (audio) failed:', err);
+      throw err;
+    }
+  }
+
   stopCamera() {
     if (this.localStream) {
       this.localStream.getTracks().forEach(t => t.stop());
@@ -92,6 +112,13 @@ class WebRTCManager {
 
     pc.oniceconnectionstatechange = () => {
       this.onIceConnectionStateChange(peerId, pc.iceConnectionState);
+      // iOS 12 Safari (≤12.x) has no connectionState/onconnectionstatechange,
+      // so mirror the failed-state ICE restart trigger here for that platform.
+      // Only act on 'failed' — 'disconnected' is usually transient and recovers.
+      if (pc.iceConnectionState === 'failed' && pc.connectionState === undefined) {
+        console.warn('[webrtc] ICE failed for', peerId, '(iOS<13 path), attempting restart...');
+        this.attemptIceRestart(peerId);
+      }
     };
 
     // If we have a local stream, add tracks
@@ -106,6 +133,24 @@ class WebRTCManager {
     if (!this.localStream) return;
     for (const track of this.localStream.getTracks()) {
       pc.addTrack(track, this.localStream);
+    }
+  }
+
+  // Add/remove senders so the pc's tracks exactly match the current localStream.
+  // Handles hotplug where a kind appears/disappears at runtime.
+  syncTracksToPeer(peerId) {
+    const pc = this.peerConnections.get(peerId);
+    if (!pc || !this.localStream) return;
+    const wanted = new Set(this.localStream.getTracks());
+    for (const sender of pc.getSenders()) {
+      if (sender.track && !wanted.has(sender.track)) {
+        try { pc.removeTrack(sender); } catch (e) { console.error('removeTrack failed', e); }
+      }
+    }
+    for (const track of wanted) {
+      if (!pc.getSenders().some(s => s.track === track)) {
+        pc.addTrack(track, this.localStream);
+      }
     }
   }
 
@@ -148,7 +193,7 @@ class WebRTCManager {
         offerToReceiveVideo: true,
       });
       await pc.setLocalDescription(offer);
-      console.log('[webrtc] createOffer for', peerId, 'sdp length:', offer.sdp?.length || 0);
+      console.log('[webrtc] createOffer for', peerId, 'sdp length:', offer.sdp ? offer.sdp.length : 0);
       this.sig.sendOffer(peerId, offer);
     } catch (err) {
       console.error('[webrtc] createOffer failed for', peerId, err);
@@ -158,7 +203,7 @@ class WebRTCManager {
 
   async handleOffer(data) {
     const { from, sdp } = data;
-    console.log('[webrtc] handleOffer from', from, 'sdp length:', sdp?.sdp?.length || 0);
+    console.log('[webrtc] handleOffer from', from, 'sdp length:', sdp && sdp.sdp ? sdp.sdp.length : 0);
     const pc = this.createPeerConnection(from, 'recv');
     if (this.additionalAudioStream) {
       this.addAudioTrackToPeer(from, this.additionalAudioStream);

@@ -127,12 +127,12 @@
       "label": "Kiosk",
       "roomId": "iphone",
       "createdAt": 1783518599755,
-      "lastSeenAt": 1783602500449,
+      "lastSeenAt": 1783713816342,
       "config": {
         "label": "test2",
         "camera": "front",
         "resolution": "1080p",
-        "frameRate": 15,
+        "frameRate": 24,
         "nightMode": false,
         "torch": false,
         "micSensitivity": 0.8,
@@ -140,7 +140,9 @@
         "twoWayAudioEnabled": true,
         "showFeed": false,
         "keepAwake": true,
-        "feedSourceId": "base-1783518602794-add8"
+        "feedSourceId": "base-1783518602794-add8",
+        "audioAlertEnabled": true,
+        "audioAlertThresholdDb": -40
       }
     },
     "base-1783518602794-add8": {
@@ -149,7 +151,7 @@
       "label": "Base Station",
       "roomId": "pc",
       "createdAt": 1783518604146,
-      "lastSeenAt": 1783601404185,
+      "lastSeenAt": 1783713821125,
       "config": {
         "label": "",
         "visibleSources": [],
@@ -179,7 +181,7 @@
       "label": "Kiosk",
       "roomId": "test2",
       "createdAt": 1783519034951,
-      "lastSeenAt": 1783573872309,
+      "lastSeenAt": 1783657209904,
       "config": {
         "label": "",
         "camera": "rear",
@@ -461,7 +463,7 @@
       "label": "Base Station",
       "roomId": "default",
       "createdAt": 1783567326633,
-      "lastSeenAt": 1783602500448,
+      "lastSeenAt": 1783702677944,
       "config": {
         "label": "",
         "visibleSources": [],
@@ -684,6 +686,111 @@
         "twoWayAudioEnabled": true,
         "showFeed": false,
         "keepAwake": true
+      }
+    },
+    "sse-test-dev": {
+      "id": "sse-test-dev",
+      "type": "kiosk",
+      "label": "SSETest",
+      "roomId": "default",
+      "createdAt": 1783693092055,
+      "lastSeenAt": 1783693154080,
+      "config": {
+        "label": "",
+        "camera": "rear",
+        "resolution": "720p",
+        "frameRate": 24,
+        "nightMode": false,
+        "torch": false,
+        "micSensitivity": 0.8,
+        "speakerVolume": 0.5,
+        "twoWayAudioEnabled": true,
+        "showFeed": false,
+        "keepAwake": true
+      }
+    },
+    "e2e-dev": {
+      "id": "e2e-dev",
+      "type": "kiosk",
+      "label": "E2ETest",
+      "roomId": "default",
+      "createdAt": 1783693130074,
+      "lastSeenAt": 1783693192089,
+      "config": {
+        "label": "",
+        "camera": "rear",
+        "resolution": "720p",
+        "frameRate": 24,
+        "nightMode": false,
+        "torch": false,
+        "micSensitivity": 0.8,
+        "speakerVolume": 0.5,
+        "twoWayAudioEnabled": true,
+        "showFeed": false,
+        "keepAwake": true
+      }
+    },
+    "xport-base-1": {
+      "id": "xport-base-1",
+      "type": "base",
+      "label": "XBase",
+      "roomId": "default",
+      "createdAt": 1783693468306,
+      "lastSeenAt": 1783693530813,
+      "config": {
+        "label": "",
+        "visibleSources": [],
+        "audioFocusMode": "manual",
+        "gridLayout": "1x1",
+        "idleTimeout": 0
+      }
+    },
+    "xport-kiosk-1": {
+      "id": "xport-kiosk-1",
+      "type": "kiosk",
+      "label": "XKiosk",
+      "roomId": "default",
+      "createdAt": 1783693468903,
+      "lastSeenAt": 1783693530801,
+      "config": {
+        "label": "XKiosk",
+        "camera": "front",
+        "resolution": "720p",
+        "frameRate": 24,
+        "nightMode": false,
+        "torch": false,
+        "micSensitivity": 0.8,
+        "speakerVolume": 0.5,
+        "twoWayAudioEnabled": true,
+        "showFeed": false,
+        "keepAwake": true,
+        "audioAlertEnabled": true,
+        "audioAlertThresholdDb": -40
+      }
+    },
+    "kiosk-1783655029572-6468": {
+      "id": "kiosk-1783655029572-6468",
+      "type": "kiosk",
+      "label": "Kiosk",
+      "roomId": "default",
+      "createdAt": 1783712943598,
+      "lastSeenAt": 1783713653857,
+      "config": {
+        "label": "ios12",
+        "camera": "front",
+        "resolution": "480p",
+        "frameRate": 30,
+        "nightMode": false,
+        "torch": false,
+        "micSensitivity": 0.8,
+        "speakerVolume": 0.5,
+        "twoWayAudioEnabled": true,
+        "showFeed": false,
+        "keepAwake": true,
+        "videoDevice": "27CA79793E04F80B8825112A196B552FF324FAF7",
+        "audioDevice": "FFCBE2D76CB9B7AC1FED4DAB35910BC5EB1DBBFE",
+        "audioAlertEnabled": true,
+        "audioAlertThresholdDb": -40
       }
     }
   }

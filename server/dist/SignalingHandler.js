@@ -1,40 +1,40 @@
 "use strict";
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.SignalingHandler = void 0;
-const ws_1 = __importDefault(require("ws"));
 class SignalingHandler {
     constructor(channels, config) {
         this.channels = channels;
         this.config = config;
     }
-    handle(ws, raw) {
+    handle(transport, raw) {
         let msg;
         try {
             msg = JSON.parse(raw);
         }
         catch {
-            this.sendError(ws, 'INVALID_JSON', 'Malformed message');
+            this.sendError(transport, 'INVALID_JSON', 'Malformed message');
             return;
         }
         // Get device context for logging
-        const client = this.channels.getClientByWs(ws);
+        const client = this.channels.getClientByConnId(transport.connId);
         const ctx = client ? `${client.deviceId}@${client.roomId}` : 'unauthenticated';
-        console.log(`[SIGNAL] ${msg.type} from ${ctx}`);
+        if (msg.type !== 'AUDIO_PEAK') {
+            console.log(`[SIGNAL] ${msg.type} from ${ctx}`);
+        }
         try {
-            this.route(ws, msg);
+            this.route(transport, msg);
         }
         catch (err) {
             console.error('Handler error:', err);
-            this.sendError(ws, 'INTERNAL_ERROR', 'Unexpected server error');
+            this.sendError(transport, 'INTERNAL_ERROR', 'Unexpected server error');
         }
     }
-    handleDisconnect(ws) {
-        const client = this.channels.getClientByWs(ws);
-        if (!client)
+    handleDisconnect(transport) {
+        const client = this.channels.getClientByConnId(transport.connId);
+        if (!client) {
+            this.channels.unregisterTransport(transport.connId);
             return;
+        }
         const { deviceId, deviceType, sources } = client;
         console.log(`Device disconnected: ${deviceId} (${deviceType})`);
         // Start 60s grace period before removing sources
@@ -47,7 +47,7 @@ class SignalingHandler {
                 }, deviceId);
             }
             // Remove from in-memory state
-            this.channels.removeClient(ws);
+            this.channels.removeClientByConn(transport.connId);
             // Mark device offline in config
             this.config.updateDevice(deviceId, { lastSeenAt: Date.now() });
             this.channels.broadcastAll({
@@ -56,95 +56,103 @@ class SignalingHandler {
             });
         });
     }
-    route(ws, msg) {
+    route(transport, msg) {
         switch (msg.type) {
             case 'HEARTBEAT':
-                this.handleHeartbeat(ws);
+                this.handleHeartbeat(transport);
                 break;
             case 'JOIN_ROOM':
-                this.handleJoinRoom(ws, msg.payload);
+                this.handleJoinRoom(transport, msg.payload);
                 break;
             case 'LEAVE_ROOM':
-                this.handleLeaveRoom(ws);
+                this.handleLeaveRoom(transport);
                 break;
             case 'PAIR_DEVICE':
-                this.handlePairDevice(ws, msg.payload);
+                this.handlePairDevice(transport, msg.payload);
                 break;
             case 'PUBLISH_SOURCE':
-                this.handlePublishSource(ws, msg.payload);
+                this.handlePublishSource(transport, msg.payload);
                 break;
             case 'UNPUBLISH_SOURCE':
-                this.handleUnpublishSource(ws, msg.payload);
+                this.handleUnpublishSource(transport, msg.payload);
                 break;
             case 'SUBSCRIBE_SOURCE':
-                this.handleSubscribeSource(ws, msg.payload);
+                this.handleSubscribeSource(transport, msg.payload);
                 break;
             case 'UNSUBSCRIBE_SOURCE':
-                this.handleUnsubscribeSource(ws, msg.payload);
+                this.handleUnsubscribeSource(transport, msg.payload);
                 break;
             case 'OFFER':
-                this.handleRelay(ws, msg, 'OFFER');
+                this.handleRelay(transport, msg, 'OFFER');
                 break;
             case 'ANSWER':
-                this.handleRelay(ws, msg, 'ANSWER');
+                this.handleRelay(transport, msg, 'ANSWER');
                 break;
             case 'ICE_CANDIDATE':
-                this.handleRelay(ws, msg, 'ICE_CANDIDATE');
+                this.handleRelay(transport, msg, 'ICE_CANDIDATE');
                 break;
             case 'ICE_RESTART':
-                this.handleRelay(ws, msg, 'ICE_RESTART');
+                this.handleRelay(transport, msg, 'ICE_RESTART');
                 break;
             case 'SET_CONFIG':
-                this.handleSetConfig(ws, msg.payload);
+                this.handleSetConfig(transport, msg.payload);
                 break;
             case 'GET_CONFIG':
-                this.handleGetConfig(ws);
+                this.handleGetConfig(transport);
                 break;
             case 'REQUEST_TALK':
-                this.handleRequestTalk(ws, msg.payload);
+                this.handleRequestTalk(transport, msg.payload);
                 break;
             case 'STOP_TALK':
-                this.handleStopTalk(ws, msg.payload);
+                this.handleStopTalk(transport, msg.payload);
+                break;
+            case 'CAPABILITIES':
+                this.handleCapabilities(transport, msg.payload);
+                break;
+            case 'AUDIO_PEAK':
+                this.handleAudioPeak(transport, msg.payload);
+                break;
+            case 'REMOVE_DEVICE':
+                this.handleRemoveDevice(transport, msg.payload);
                 break;
             default:
-                this.sendError(ws, 'UNKNOWN_TYPE', `Unknown message type: ${msg.type}`);
+                this.sendError(transport, 'UNKNOWN_TYPE', `Unknown message type: ${msg.type}`);
         }
     }
-    sendError(ws, code, message) {
-        this.send(ws, { type: 'ERROR', payload: { code, message } });
+    sendError(transport, code, message) {
+        this.send(transport, { type: 'ERROR', payload: { code, message } });
     }
-    send(ws, msg) {
-        if (ws.readyState === ws_1.default.OPEN) {
-            ws.send(JSON.stringify(msg));
-        }
+    send(transport, msg) {
+        transport.send(msg);
     }
     // ─── Handlers ───────────────────────────────────────────
-    handleHeartbeat(ws) {
-        const client = this.channels.getClientByWs(ws);
+    handleHeartbeat(transport) {
+        const client = this.channels.getClientByConnId(transport.connId);
         if (client) {
             this.channels.updateHeartbeat(client.deviceId);
         }
-        this.send(ws, { type: 'HEARTBEAT', payload: {} });
+        this.send(transport, { type: 'HEARTBEAT', payload: {} });
     }
-    handleJoinRoom(ws, payload) {
+    handleJoinRoom(transport, payload) {
         const deviceId = payload.deviceId;
         const deviceType = payload.deviceType;
         const label = payload.label || deviceId;
+        const legacyIOS = !!payload.legacyIOS;
         const roomId = 'default'; // Single-room mode
         // Validate
         if (!deviceId || !deviceType) {
-            this.sendError(ws, 'INVALID_PARAMS', 'deviceId and deviceType required');
+            this.sendError(transport, 'INVALID_PARAMS', 'deviceId and deviceType required');
             return;
         }
         const validTypes = ['kiosk', 'base'];
         if (!validTypes.includes(deviceType)) {
-            this.sendError(ws, 'INVALID_TYPE', `deviceType must be one of: ${validTypes.join(', ')}`);
+            this.sendError(transport, 'INVALID_TYPE', `deviceType must be one of: ${validTypes.join(', ')}`);
             return;
         }
         // Ensure device exists in config
         let device = this.config.getDevice(deviceId);
         if (!device) {
-            device = this.config.createDevice(deviceId, deviceType, label, roomId);
+            device = this.config.createDevice(deviceId, deviceType, label, roomId, undefined, legacyIOS);
         }
         // Use config label if set (overrides the join-time label)
         const effectiveLabel = (device.config?.label && device.config.label.trim()) ? device.config.label : label;
@@ -153,15 +161,20 @@ class SignalingHandler {
         // Add to in-memory state (may already exist if reconnecting within grace period)
         const existingClient = this.channels.getClient(deviceId);
         if (existingClient) {
-            // Update the WS reference for reconnecting client
-            this.channels.removeClient(existingClient.ws);
+            // Remove the previous connection for a reconnecting client
+            this.channels.removeClientByConn(existingClient.connId);
         }
-        const client = this.channels.addClient(ws, deviceId, deviceType, roomId, effectiveLabel);
+        const client = this.channels.addClient(transport.connId, deviceId, deviceType, roomId, effectiveLabel);
         this.config.updateDevice(deviceId, { lastSeenAt: Date.now() });
         // Send current state to the joining client
         const activeSources = this.channels.getActiveSources(roomId);
-        const recentlySeenDevices = this.channels.getRecentlySeenDevices();
-        this.send(ws, {
+        // Enrich recentlySeenDevices with stored config so the base station's
+        // config panel shows the actual device defaults instead of hardcoded values.
+        const recentlySeenDevices = this.channels.getRecentlySeenDevices().map(d => ({
+            ...d,
+            config: this.config.getDeviceConfig(d.id),
+        }));
+        this.send(transport, {
             type: 'WELCOME',
             payload: {
                 deviceId,
@@ -174,12 +187,35 @@ class SignalingHandler {
         // Notify all clients
         this.channels.broadcastAll({
             type: 'DEVICE_STATUS',
-            payload: { deviceId, status: 'online', type: deviceType, label: effectiveLabel, lastSeenAt: Date.now() },
+            payload: {
+                deviceId,
+                status: 'online',
+                type: deviceType,
+                label: effectiveLabel,
+                lastSeenAt: Date.now(),
+                config: device.config,
+            },
         }, deviceId);
+        // Send capabilities of already-connected devices to this new joiner (so a late-joining
+        // base station immediately sees source pickers without waiting for a re-report)
+        for (const [otherId, otherClient] of this.channels.getAllClients()) {
+            if (otherId === deviceId)
+                continue;
+            if (otherClient.capabilities) {
+                this.send(transport, {
+                    type: 'CAPABILITIES',
+                    payload: {
+                        deviceId: otherId,
+                        videoDevices: otherClient.capabilities.videoDevices,
+                        audioDevices: otherClient.capabilities.audioDevices,
+                    },
+                });
+            }
+        }
         console.log(`Device joined: ${deviceId} (${deviceType}) as label="${effectiveLabel}"`);
     }
-    handleLeaveRoom(ws) {
-        const client = this.channels.getClientByWs(ws);
+    handleLeaveRoom(transport) {
+        const client = this.channels.getClientByConnId(transport.connId);
         if (!client)
             return;
         const { deviceId } = client;
@@ -190,29 +226,29 @@ class SignalingHandler {
                 payload: { sourceId: source.id },
             }, deviceId);
         }
-        this.channels.removeClient(ws);
+        this.channels.removeClientByConn(transport.connId);
         this.channels.broadcastAll({
             type: 'DEVICE_STATUS',
             payload: { deviceId, status: 'offline' },
         });
     }
-    handlePairDevice(ws, payload) {
+    handlePairDevice(transport, payload) {
         const token = payload.token;
         const deviceType = payload.deviceType;
         const label = payload.label || 'Unnamed Device';
         if (!token || !deviceType) {
-            this.sendError(ws, 'INVALID_PARAMS', 'token and deviceType required');
+            this.sendError(transport, 'INVALID_PARAMS', 'token and deviceType required');
             return;
         }
         const room = this.config.consumePairingToken(token);
         if (!room) {
-            this.sendError(ws, 'INVALID_TOKEN', 'Token invalid or expired');
+            this.sendError(transport, 'INVALID_TOKEN', 'Token invalid or expired');
             return;
         }
         // Generate a device ID
         const deviceId = `dev-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
         const device = this.config.createDevice(deviceId, deviceType, label, room.id, token);
-        this.send(ws, {
+        this.send(transport, {
             type: 'WELCOME',
             payload: {
                 deviceId: device.id,
@@ -223,26 +259,30 @@ class SignalingHandler {
         });
         console.log(`Device paired: ${deviceId} (${deviceType}) in room ${room.id}`);
     }
-    handlePublishSource(ws, payload) {
-        const client = this.channels.getClientByWs(ws);
+    handlePublishSource(transport, payload) {
+        const client = this.channels.getClientByConnId(transport.connId);
         if (!client) {
-            this.sendError(ws, 'NOT_IN_ROOM', 'Join a room first');
+            this.sendError(transport, 'NOT_IN_ROOM', 'Join a room first');
             return;
         }
         if (client.deviceType !== 'kiosk' && client.deviceType !== 'base') {
-            this.sendError(ws, 'NOT_ALLOWED', 'Only cameras and base stations can publish');
+            this.sendError(transport, 'NOT_ALLOWED', 'Only cameras and base stations can publish');
             return;
         }
         const sourceId = payload.sourceId;
         const label = payload.label || 'Camera';
-        const type = payload.type || 'video+audio';
+        const rawType = payload.type || 'video+audio';
+        const validTypes = ['video+audio', 'video-only', 'audio-only', 'none'];
+        const type = validTypes.includes(rawType)
+            ? rawType
+            : 'video+audio';
         if (!sourceId) {
-            this.sendError(ws, 'INVALID_PARAMS', 'sourceId required');
+            this.sendError(transport, 'INVALID_PARAMS', 'sourceId required');
             return;
         }
         const source = this.channels.addSource(client.deviceId, sourceId, label, type);
         if (!source) {
-            this.sendError(ws, 'INTERNAL_ERROR', 'Failed to add source');
+            this.sendError(transport, 'INTERNAL_ERROR', 'Failed to add source');
             return;
         }
         // Notify all clients (cross-room source visibility)
@@ -252,8 +292,8 @@ class SignalingHandler {
         }, client.deviceId);
         console.log(`Source published: ${sourceId} by ${client.deviceId}`);
     }
-    handleUnpublishSource(ws, payload) {
-        const client = this.channels.getClientByWs(ws);
+    handleUnpublishSource(transport, payload) {
+        const client = this.channels.getClientByConnId(transport.connId);
         if (!client)
             return;
         const sourceId = payload.sourceId;
@@ -267,10 +307,10 @@ class SignalingHandler {
             }, client.deviceId);
         }
     }
-    handleSubscribeSource(ws, payload) {
-        const client = this.channels.getClientByWs(ws);
+    handleSubscribeSource(transport, payload) {
+        const client = this.channels.getClientByConnId(transport.connId);
         if (!client) {
-            this.sendError(ws, 'NOT_IN_ROOM', 'Join a room first');
+            this.sendError(transport, 'NOT_IN_ROOM', 'Join a room first');
             return;
         }
         const publisherId = payload.publisherId;
@@ -278,7 +318,7 @@ class SignalingHandler {
             return;
         const publisher = this.channels.getClient(publisherId);
         if (!publisher) {
-            this.sendError(ws, 'NOT_FOUND', 'Publisher not found');
+            this.sendError(transport, 'NOT_FOUND', 'Publisher not found');
             return;
         }
         console.log(`Cross-room subscribe: ${client.deviceId}@${client.roomId} → ${publisherId}@${publisher.roomId}`);
@@ -289,8 +329,8 @@ class SignalingHandler {
         });
         console.log(`Subscriber ${client.deviceId} subscribed to ${publisherId}`);
     }
-    handleUnsubscribeSource(ws, payload) {
-        const client = this.channels.getClientByWs(ws);
+    handleUnsubscribeSource(transport, payload) {
+        const client = this.channels.getClientByConnId(transport.connId);
         if (!client)
             return;
         const publisherId = payload.publisherId;
@@ -301,15 +341,82 @@ class SignalingHandler {
             payload: { subscriberId: client.deviceId },
         });
     }
-    handleRelay(ws, msg, originalType) {
-        const client = this.channels.getClientByWs(ws);
+    handleCapabilities(transport, payload) {
+        const client = this.channels.getClientByConnId(transport.connId);
+        if (!client)
+            return;
+        const videoDevices = payload.videoDevices || [];
+        const audioDevices = payload.audioDevices || [];
+        const capabilities = { videoDevices, audioDevices };
+        this.channels.setCapabilities(client.deviceId, capabilities);
+        // Relay to all other clients (base stations render source pickers from this)
+        this.channels.broadcastAll({
+            type: 'CAPABILITIES',
+            payload: { deviceId: client.deviceId, videoDevices, audioDevices },
+        }, client.deviceId);
+        console.log(`Capabilities reported: ${client.deviceId} (${videoDevices.length}v ${audioDevices.length}a)`);
+    }
+    handleAudioPeak(transport, payload) {
+        const client = this.channels.getClientByConnId(transport.connId);
+        if (!client)
+            return;
+        // Relay the peak notification to all other clients (no storage needed)
+        this.channels.broadcastAll({
+            type: 'AUDIO_PEAK',
+            payload: {
+                deviceId: client.deviceId,
+                levelDb: payload.levelDb,
+                peak: payload.peak,
+                ts: payload.ts ?? Date.now(),
+            },
+        }, client.deviceId);
+    }
+    handleRemoveDevice(transport, payload) {
+        const client = this.channels.getClientByConnId(transport.connId);
+        if (!client)
+            return;
+        // Only base stations can remove devices
+        if (client.deviceType !== 'base') {
+            this.sendError(transport, 'NOT_ALLOWED', 'Only base stations can remove devices');
+            return;
+        }
+        const targetDeviceId = payload.targetDeviceId;
+        if (!targetDeviceId) {
+            this.sendError(transport, 'INVALID_PARAMS', 'targetDeviceId required');
+            return;
+        }
+        // If the target is currently connected, close its transport cleanly
+        const target = this.channels.getClient(targetDeviceId);
+        if (target) {
+            const t = this.channels.getTransport(target.connId);
+            if (t) {
+                try {
+                    t.close();
+                }
+                catch {
+                    // ignore close errors
+                }
+            }
+        }
+        // Remove from in-memory recently-seen list and persisted config
+        this.channels.removeRecentlySeen(targetDeviceId);
+        this.config.deleteDevice(targetDeviceId);
+        // Notify all clients so every base station drops the row
+        this.channels.broadcastAll({
+            type: 'DEVICE_REMOVED',
+            payload: { deviceId: targetDeviceId },
+        });
+        console.log(`Device removed: ${targetDeviceId} by ${client.deviceId}`);
+    }
+    handleRelay(transport, msg, originalType) {
+        const client = this.channels.getClientByConnId(transport.connId);
         if (!client) {
-            this.sendError(ws, 'NOT_IN_ROOM', 'Join a room first');
+            this.sendError(transport, 'NOT_IN_ROOM', 'Join a room first');
             return;
         }
         const targetId = msg.payload.to;
         if (!targetId) {
-            this.sendError(ws, 'INVALID_PARAMS', 'Target device ID required');
+            this.sendError(transport, 'INVALID_PARAMS', 'Target device ID required');
             return;
         }
         // Relay the message to the target, keeping the original type
@@ -322,24 +429,24 @@ class SignalingHandler {
             id: msg.id,
         });
     }
-    handleSetConfig(ws, payload) {
-        const client = this.channels.getClientByWs(ws);
+    handleSetConfig(transport, payload) {
+        const client = this.channels.getClientByConnId(transport.connId);
         if (!client)
             return;
         // Only base stations can push config
         if (client.deviceType !== 'base') {
-            this.sendError(ws, 'NOT_ALLOWED', 'Only base stations can push configuration');
+            this.sendError(transport, 'NOT_ALLOWED', 'Only base stations can push configuration');
             return;
         }
         const targetDeviceId = payload.targetDeviceId;
         const config = payload.config;
         if (!targetDeviceId || !config) {
-            this.sendError(ws, 'INVALID_PARAMS', 'targetDeviceId and config required');
+            this.sendError(transport, 'INVALID_PARAMS', 'targetDeviceId and config required');
             return;
         }
         const targetDevice = this.config.getDevice(targetDeviceId);
         if (!targetDevice) {
-            this.sendError(ws, 'NOT_FOUND', 'Target device not found');
+            this.sendError(transport, 'NOT_FOUND', 'Target device not found');
             return;
         }
         // Persist the config
@@ -347,7 +454,7 @@ class SignalingHandler {
             this.config.updateDeviceConfig(targetDeviceId, config);
         }
         catch (err) {
-            this.sendError(ws, 'CONFIG_ERROR', 'Failed to save config');
+            this.sendError(transport, 'CONFIG_ERROR', 'Failed to save config');
             return;
         }
         // If label changed, update recentlySeenDevices and broadcast DEVICE_STATUS
@@ -377,32 +484,32 @@ class SignalingHandler {
                 type: 'CONFIG_UPDATED',
                 payload: { config: this.config.getDeviceConfig(targetDeviceId) },
             });
-            this.send(ws, {
+            this.send(transport, {
                 type: 'CONFIG_RESULT',
                 payload: { targetDeviceId, ok: true },
             });
         }
         else {
             // Device offline — config queued, will be applied on reconnect
-            this.send(ws, {
+            this.send(transport, {
                 type: 'CONFIG_RESULT',
                 payload: { targetDeviceId, ok: true, offline: true },
             });
         }
         console.log(`Config updated for ${targetDeviceId} by ${client.deviceId}`);
     }
-    handleGetConfig(ws) {
-        const client = this.channels.getClientByWs(ws);
+    handleGetConfig(transport) {
+        const client = this.channels.getClientByConnId(transport.connId);
         if (!client)
             return;
         const config = this.config.getDeviceConfig(client.deviceId);
-        this.send(ws, {
+        this.send(transport, {
             type: 'CONFIG_UPDATED',
             payload: { config },
         });
     }
-    handleRequestTalk(ws, payload) {
-        const client = this.channels.getClientByWs(ws);
+    handleRequestTalk(transport, payload) {
+        const client = this.channels.getClientByConnId(transport.connId);
         if (!client)
             return;
         const targetPublisherId = payload.targetPublisherId;
@@ -410,7 +517,7 @@ class SignalingHandler {
             return;
         const targetConfig = this.config.getDeviceConfig(targetPublisherId);
         if (!targetConfig?.twoWayAudioEnabled) {
-            this.sendError(ws, 'TALK_DISABLED', 'Two-way audio is disabled on the target device');
+            this.sendError(transport, 'TALK_DISABLED', 'Two-way audio is disabled on the target device');
             return;
         }
         // Notify the target publisher to enable their talkback speaker
@@ -419,8 +526,8 @@ class SignalingHandler {
             payload: { from: client.deviceId },
         });
     }
-    handleStopTalk(ws, payload) {
-        const client = this.channels.getClientByWs(ws);
+    handleStopTalk(transport, payload) {
+        const client = this.channels.getClientByConnId(transport.connId);
         if (!client)
             return;
         const targetPublisherId = payload.targetPublisherId;

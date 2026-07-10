@@ -1,6 +1,5 @@
-import type WebSocket from 'ws';
 export type DeviceType = 'kiosk' | 'base';
-export type SourceType = 'video+audio' | 'audio-only';
+export type SourceType = 'video+audio' | 'video-only' | 'audio-only' | 'none';
 export type AudioFocusMode = 'manual' | 'last-active';
 export interface DeviceConfig {
     camera?: 'front' | 'rear';
@@ -14,10 +13,24 @@ export interface DeviceConfig {
     showFeed?: boolean;
     keepAwake?: boolean;
     label?: string;
+    videoDevice?: string;
+    audioDevice?: string;
+    audioAlertEnabled?: boolean;
+    audioAlertThresholdDb?: number;
+    audioAlertHysteresisDb?: number;
     visibleSources?: string[];
     audioFocusMode?: AudioFocusMode;
     gridLayout?: '1x1' | '2x2';
     idleTimeout?: number;
+}
+export interface MediaDeviceDescriptor {
+    id: string;
+    label: string;
+    facingMode?: 'user' | 'environment' | null;
+}
+export interface DeviceCapabilities {
+    videoDevices: MediaDeviceDescriptor[];
+    audioDevices: MediaDeviceDescriptor[];
 }
 export interface DeviceRecord {
     id: string;
@@ -57,8 +70,13 @@ export interface PresetRecord {
         timezone: string;
     };
 }
+export interface Transport {
+    connId: string;
+    send(msg: object): void;
+    close(): void;
+}
 export interface ConnectedClient {
-    ws: WebSocket;
+    connId: string;
     deviceId: string;
     deviceType: DeviceType;
     roomId: string;
@@ -67,6 +85,7 @@ export interface ConnectedClient {
     connectedAt: number;
     lastHeartbeat: number;
     disconnectTimer?: NodeJS.Timeout;
+    capabilities?: DeviceCapabilities;
 }
 export interface MediaSourceInfo {
     id: string;
@@ -75,7 +94,7 @@ export interface MediaSourceInfo {
     type: SourceType;
     status: 'live' | 'idle';
 }
-export type MessageType = 'JOIN_ROOM' | 'LEAVE_ROOM' | 'PAIR_DEVICE' | 'PUBLISH_SOURCE' | 'UNPUBLISH_SOURCE' | 'SUBSCRIBE_SOURCE' | 'UNSUBSCRIBE_SOURCE' | 'OFFER' | 'ANSWER' | 'ICE_CANDIDATE' | 'ICE_RESTART' | 'SET_CONFIG' | 'GET_CONFIG' | 'HEARTBEAT' | 'REQUEST_TALK' | 'STOP_TALK' | 'WELCOME' | 'ERROR' | 'SOURCE_ADDED' | 'SOURCE_REMOVED' | 'SUBSCRIBER_JOINED' | 'SUBSCRIBER_LEFT' | 'CONFIG_UPDATED' | 'CONFIG_RESULT' | 'DEVICE_STATUS' | 'ROOM_STATE' | 'TALK_ENABLED' | 'TALK_DISABLED';
+export type MessageType = 'JOIN_ROOM' | 'LEAVE_ROOM' | 'PAIR_DEVICE' | 'PUBLISH_SOURCE' | 'UNPUBLISH_SOURCE' | 'SUBSCRIBE_SOURCE' | 'UNSUBSCRIBE_SOURCE' | 'OFFER' | 'ANSWER' | 'ICE_CANDIDATE' | 'ICE_RESTART' | 'SET_CONFIG' | 'GET_CONFIG' | 'HEARTBEAT' | 'REQUEST_TALK' | 'STOP_TALK' | 'WELCOME' | 'ERROR' | 'SOURCE_ADDED' | 'SOURCE_REMOVED' | 'SUBSCRIBER_JOINED' | 'SUBSCRIBER_LEFT' | 'CONFIG_UPDATED' | 'CONFIG_RESULT' | 'DEVICE_STATUS' | 'ROOM_STATE' | 'TALK_ENABLED' | 'TALK_DISABLED' | 'CAPABILITIES' | 'AUDIO_PEAK' | 'REMOVE_DEVICE' | 'DEVICE_REMOVED';
 export interface Message {
     type: MessageType;
     payload: Record<string, unknown>;

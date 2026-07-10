@@ -1,9 +1,9 @@
-import WebSocket from 'ws';
 import {
   ConnectedClient,
   MediaSourceInfo,
   DeviceType,
   SourceType,
+  Transport,
 } from './types';
 
 export interface RecentlySeenDevice {
@@ -12,6 +12,7 @@ export interface RecentlySeenDevice {
   type: DeviceType;
   lastSeenAt: number;
   online: boolean;
+  config?: Record<string, unknown>;
 }
 
 export class ChannelManager {
@@ -19,23 +20,41 @@ export class ChannelManager {
   private rooms = new Map<string, Map<string, ConnectedClient>>();
   // deviceId → ConnectedClient (global lookup)
   private clients = new Map<string, ConnectedClient>();
-  // ws → deviceId (reverse lookup for disconnect handling)
-  private wsMap = new Map<WebSocket, string>();
   // Recently seen devices (resets on server restart)
   private recentlySeenDevices = new Map<string, RecentlySeenDevice>();
   private readonly RECENT_SEEN_WINDOW = 24 * 60 * 60 * 1000; // 24 hours
 
+  // Active transports (WebSocket or SSE), keyed by connection id
+  private transports = new Map<string, Transport>();
+
+  registerTransport(transport: Transport): void {
+    this.transports.set(transport.connId, transport);
+  }
+
+  unregisterTransport(connId: string): void {
+    this.transports.delete(connId);
+  }
+
+  getTransport(connId: string): Transport | undefined {
+    return this.transports.get(connId);
+  }
+
+  sendToConn(connId: string, message: object): void {
+    const t = this.transports.get(connId);
+    if (t) t.send(message);
+  }
+
   // ─── Client Lifecycle ───────────────────────────────────
 
   addClient(
-    ws: WebSocket,
+    connId: string,
     deviceId: string,
     deviceType: DeviceType,
     roomId: string,
     label: string
   ): ConnectedClient {
     const client: ConnectedClient = {
-      ws,
+      connId,
       deviceId,
       deviceType,
       roomId,
@@ -46,7 +65,6 @@ export class ChannelManager {
     };
 
     this.clients.set(deviceId, client);
-    this.wsMap.set(ws, deviceId);
 
     if (!this.rooms.has(roomId)) {
       this.rooms.set(roomId, new Map());
@@ -74,13 +92,15 @@ export class ChannelManager {
     return client;
   }
 
-  removeClient(ws: WebSocket): ConnectedClient | null {
-    const deviceId = this.wsMap.get(ws);
-    if (!deviceId) return null;
-
-    const client = this.clients.get(deviceId);
+  removeClientByConn(connId: string): ConnectedClient | null {
+    // Find the client owning this connId
+    let client: ConnectedClient | undefined;
+    for (const c of this.clients.values()) {
+      if (c.connId === connId) { client = c; break; }
+    }
     if (!client) return null;
 
+    const deviceId = client.deviceId;
     const room = this.rooms.get(client.roomId);
     if (room) {
       room.delete(deviceId);
@@ -94,7 +114,6 @@ export class ChannelManager {
     }
 
     this.clients.delete(deviceId);
-    this.wsMap.delete(ws);
 
     // Mark as offline in recently seen
     const seen = this.recentlySeenDevices.get(deviceId);
@@ -103,6 +122,7 @@ export class ChannelManager {
       seen.lastSeenAt = Date.now();
     }
 
+    this.unregisterTransport(connId);
     return client;
   }
 
@@ -110,10 +130,15 @@ export class ChannelManager {
     return this.clients.get(deviceId);
   }
 
-  getClientByWs(ws: WebSocket): ConnectedClient | undefined {
-    const deviceId = this.wsMap.get(ws);
-    if (!deviceId) return undefined;
-    return this.clients.get(deviceId);
+  getClientByConnId(connId: string): ConnectedClient | undefined {
+    for (const c of this.clients.values()) {
+      if (c.connId === connId) return c;
+    }
+    return undefined;
+  }
+
+  getAllClients(): Map<string, ConnectedClient> {
+    return this.clients;
   }
 
   // ─── Room Queries ───────────────────────────────────────
@@ -144,6 +169,15 @@ export class ChannelManager {
   ): MediaSourceInfo | null {
     const client = this.clients.get(deviceId);
     if (!client) return null;
+
+    // Update an existing source in place if the id already exists (e.g. media set changed)
+    const existing = client.sources.find(s => s.id === sourceId);
+    if (existing) {
+      existing.type = type;
+      existing.label = label;
+      existing.status = 'live';
+      return existing;
+    }
 
     const source: MediaSourceInfo = {
       id: sourceId,
@@ -212,6 +246,21 @@ export class ChannelManager {
     }
   }
 
+  removeRecentlySeen(deviceId: string): void {
+    this.recentlySeenDevices.delete(deviceId);
+  }
+
+  getCapabilities(deviceId: string): import('./types').DeviceCapabilities | undefined {
+    return this.clients.get(deviceId)?.capabilities;
+  }
+
+  setCapabilities(deviceId: string, capabilities: import('./types').DeviceCapabilities): void {
+    const client = this.clients.get(deviceId);
+    if (client) {
+      client.capabilities = capabilities;
+    }
+  }
+
   clearRecentlySeen(): void {
     this.recentlySeenDevices.clear();
   }
@@ -233,29 +282,21 @@ export class ChannelManager {
     excludeDeviceId?: string
   ): void {
     const clients = this.getClientsInRoom(roomId);
-    const data = JSON.stringify(message);
     for (const client of clients) {
       if (client.deviceId === excludeDeviceId) continue;
-      if (client.ws.readyState === WebSocket.OPEN) {
-        client.ws.send(data);
-      }
+      this.sendToConn(client.connId, message);
     }
   }
 
   sendTo(deviceId: string, message: object): void {
     const client = this.clients.get(deviceId);
-    if (client && client.ws.readyState === WebSocket.OPEN) {
-      client.ws.send(JSON.stringify(message));
-    }
+    if (client) this.sendToConn(client.connId, message);
   }
 
   broadcastAll(message: object, excludeDeviceId?: string): void {
-    const data = JSON.stringify(message);
     for (const client of this.clients.values()) {
       if (client.deviceId === excludeDeviceId) continue;
-      if (client.ws.readyState === WebSocket.OPEN) {
-        client.ws.send(data);
-      }
+      this.sendToConn(client.connId, message);
     }
   }
 }

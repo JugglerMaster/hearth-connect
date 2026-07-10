@@ -318,6 +318,35 @@ input[type="text"]:focus {
   padding: 24px;
 }
 
+.enable-cam-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  background: rgba(0, 0, 0, 0.92);
+  padding: 24px;
+  text-align: center;
+}
+
+.enable-cam-note {
+  font-size: 13px;
+  color: var(--fg-dim);
+  line-height: 1.4;
+  max-width: 280px;
+}
+
+.btn-large {
+  font-size: 18px;
+  padding: 16px 28px;
+}
+
 .camera-error-box {
   background: var(--bg-card);
   border: 1px solid var(--danger-dim);
@@ -621,6 +650,96 @@ input[type="text"]:focus {
   text-align: center;
 }
 
+.monitor-status {
+  background: rgba(247, 200, 74, 0.92);
+  color: #1a1a1a;
+  font-weight: 600;
+}
+
+.volume-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(0, 0, 0, 0.6);
+  padding: 2px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.volume-control .volume-icon {
+  font-size: 12px;
+  line-height: 1;
+}
+
+.volume-control input[type="range"] {
+  --vol-pct: 50%;
+  width: 90px;
+  height: 16px;
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  border: none;
+  accent-color: #fff;
+  cursor: pointer;
+}
+
+.volume-control input[type="range"]::-webkit-slider-runnable-track {
+  height: 3px;
+  background: linear-gradient(to right, #fff 0%, #fff var(--vol-pct), rgba(255,255,255,0.35) var(--vol-pct));
+  border-radius: 2px;
+}
+
+.volume-control input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #fff;
+  margin-top: -5.5px;
+}
+
+.volume-control input[type="range"]::-moz-range-track {
+  height: 3px;
+  background: rgba(255, 255, 255, 0.35);
+  border-radius: 2px;
+  border: none;
+}
+
+.volume-control input[type="range"]::-moz-range-progress {
+  height: 3px;
+  background: #fff;
+  border-radius: 2px;
+}
+
+.volume-control input[type="range"]::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #fff;
+  border: none;
+}
+
+/* Audio threshold alert — red box around the device list item */
+.device-item.audio-alert {
+  outline: 2px solid var(--danger);
+  box-shadow: 0 0 0 2px var(--danger);
+  border-color: var(--danger);
+}
+
+.device-item .db-readout {
+  margin-left: 8px;
+  font-size: 11px;
+  color: var(--fg-dim);
+  font-weight: 400;
+}
+
+/* Disabled (greyed-out) buttons, e.g. Video when no video stream */
+.btn-disabled {
+  opacity: 0.4;
+  pointer-events: none;
+  cursor: default;
+}
+
 /* ─── Config Form ──────────────────────────────────────── */
 
 .config-form {
@@ -721,6 +840,23 @@ input[type="text"]:focus {
 .status-dot.online {
   background: var(--success);
   box-shadow: 0 0 6px var(--success);
+}
+
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  z-index: 50;
+  background: var(--bg-card);
+  border: 1px solid var(--accent-dim, #3a86ff);
+  color: var(--fg);
+  padding: 12px 18px;
+  border-radius: var(--radius, 10px);
+  font-size: 14px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+  max-width: 90vw;
+  text-align: center;
 }
 
 .status-dot.offline {
