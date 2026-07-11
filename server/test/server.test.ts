@@ -3,7 +3,10 @@ import assert from 'node:assert/strict';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import WebSocket from 'ws';
+// NOTE: `ws` is imported lazily (inside makeWs) rather than at module top level
+// because importing it registers a global keep-alive agent that prevents the
+// Node test runner from exiting. We only need the OPEN constant for the mock.
+const WS_OPEN = 1; // WebSocket.OPEN
 
 import { ChannelManager } from '../src/ChannelManager';
 import { ConfigManager } from '../src/ConfigManager';
@@ -18,7 +21,7 @@ function makeWs() {
   const sent: any[] = [];
   const ws: any = {
     connId: 'conn-' + Math.random().toString(36).slice(2),
-    readyState: WebSocket.OPEN,
+    readyState: WS_OPEN,
     sent,
     // SignalingHandler.send() passes a Message object (not a JSON string),
     // so the mock stores it directly. Tests inspect .sent for relayed messages.

@@ -233,7 +233,11 @@ export class ChannelManager {
   ): void {
     const client = this.clients.get(deviceId);
     if (!client) return;
-    client.disconnectTimer = setTimeout(callback, ms);
+    const timer = setTimeout(callback, ms);
+    // Don't keep the process (e.g. test runner / unattended server) alive
+    // solely because of a pending grace-period timer with nothing else pending.
+    timer.unref?.();
+    client.disconnectTimer = timer;
   }
 
   cancelDisconnectTimer(deviceId: string): void {
