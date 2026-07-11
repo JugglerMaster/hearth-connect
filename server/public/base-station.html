@@ -31,6 +31,9 @@
           <span class="volume-icon">🔊</span>
           <input type="range" id="monitorVolume" min="0" max="200" step="1" value="100">
         </label>
+        <button id="monitorMuteBtn" class="btn btn-small btn-outline" title="Mute/unmute">🔇 Mute</button>
+        <button id="monitorTalkBtn" class="btn btn-small btn-outline" title="Talk to this device">🎙 Talk</button>
+        <span id="monitorQuality" class="monitor-quality"></span>
         <button id="stopMonitorBtn" class="btn btn-small btn-outline">Stop</button>
       </div>
     </div>
@@ -49,6 +52,17 @@
   </div>
 
   <div id="toast" class="toast hidden"></div>
+
+  <div id="incomingCall" class="call-modal hidden">
+    <div class="call-box">
+      <div class="call-title">🔔 Incoming call</div>
+      <div id="incomingCallFrom" class="call-from"></div>
+      <div class="call-actions">
+        <button id="answerCallBtn" class="btn btn-primary">Answer</button>
+        <button id="dismissCallBtn" class="btn btn-outline">Dismiss</button>
+      </div>
+    </div>
+  </div>
 
   <script src="/js/signaling.js"></script>
   <script src="/js/webrtc.js"></script>

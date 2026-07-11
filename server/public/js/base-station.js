@@ -37,14 +37,11 @@
   let gridMode = false; // false = single view, true = 2x2 grid
   let gridViewingIds = new Set(); // Set of kioskIds being viewed in grid
 
-  // Grid view state
-  let gridMode = false;
+  // Grid view state (sources)
   let gridSources = []; // Array of {deviceId, label, stream} for grid
 
-  // Broadcast state
-  let isBroadcasting = false;
-  let broadcastSourceId = null;
-  let broadcastStream = null;
+  // Additional broadcast media-selection state (localBroadcastStream is the
+  // live preview/broadcast stream owned by the base station).
   let broadcastVideoDevice = null;
   let broadcastAudioDevice = null;
   let localBroadcastStream = null;
@@ -65,13 +62,26 @@
   const monitorPlaceholder = document.getElementById('monitorPlaceholder');
   const stopMonitorBtn = document.getElementById('stopMonitorBtn');
   const monitorVolume = document.getElementById('monitorVolume');
+  const monitorMuteBtn = document.getElementById('monitorMuteBtn');
+  const monitorTalkBtn = document.getElementById('monitorTalkBtn');
+  const monitorQuality = document.getElementById('monitorQuality');
   const toast = document.getElementById('toast');
   const homeView = document.getElementById('homeView');
   const deviceList = document.getElementById('deviceList');
   const configPanel = document.getElementById('configPanel');
   const configForm = document.getElementById('configForm');
   const configTitle = document.getElementById('configTitle');
+  const incomingCall = document.getElementById('incomingCall');
+  const incomingCallFrom = document.getElementById('incomingCallFrom');
+  const answerCallBtn = document.getElementById('answerCallBtn');
+  const dismissCallBtn = document.getElementById('dismissCallBtn');
   let configDeviceId = null;
+
+  // Talk / mute / call state (per active view)
+  let talkingTo = null;       // deviceId we are currently talking to
+  let monitorMuted = false;   // base station speaker mute for the live stream
+  let statsStop = null;       // getStats polling cleanup for the active view
+  let mutedVolume = 100;      // volume to restore after unmute
 
   // Broadcast UI elements (created dynamically)
   let broadcastPanel = null;
@@ -123,6 +133,115 @@
     if (gainNode) {
       gainNode.gain.value = gain;
     }
+  }
+
+  // ─── Two-way talkback (base → kiosk reverse audio) ─────
+  // enableTalkback() acquires the base mic and adds it as a track to the live
+  // monitor PC; webrtc.js's onnegotiationneeded then renegotiates so the audio
+  // actually flows to the kiosk. We also tell the kiosk to unmute its speaker.
+  async function startTalk(peerId) {
+    if (talkingTo === peerId) return;
+    try {
+      await rtc.enableTalkback(peerId);
+      sig.requestTalk(peerId);
+      talkingTo = peerId;
+      if (monitorTalkBtn) {
+        monitorTalkBtn.textContent = '🎙 Talking…';
+        monitorTalkBtn.classList.add('btn-danger');
+        monitorTalkBtn.classList.remove('btn-outline');
+      }
+      console.log('[base] talkback ON to', peerId);
+    } catch (err) {
+      console.error('[base] startTalk failed', err);
+      showToast('Microphone unavailable for talkback');
+    }
+  }
+
+  function stopTalk(peerId) {
+    if (!talkingTo) return;
+    rtc.disableTalkback(peerId);
+    sig.stopTalk(peerId);
+    talkingTo = null;
+    if (monitorTalkBtn) {
+      monitorTalkBtn.textContent = '🎙 Talk';
+      monitorTalkBtn.classList.remove('btn-danger');
+      monitorTalkBtn.classList.add('btn-outline');
+    }
+    console.log('[base] talkback OFF to', peerId);
+  }
+
+  function toggleTalk() {
+    if (!viewingId) { showToast('Open a device feed first'); return; }
+    if (talkingTo) stopTalk(viewingId);
+    else startTalk(viewingId);
+  }
+
+  // ─── Speaker mute (affects the live GainNode, not just stored config) ──
+  function toggleMute() {
+    monitorMuted = !monitorMuted;
+    if (monitorMuted) {
+      mutedVolume = parseFloat(monitorVolume.value) || 100;
+      applyVolume(0);
+      if (monitorMuteBtn) {
+        monitorMuteBtn.textContent = '🔈 Unmute';
+        monitorMuteBtn.classList.add('btn-danger');
+        monitorMuteBtn.classList.remove('btn-outline');
+      }
+    } else {
+      applyVolume(mutedVolume);
+      if (monitorMuteBtn) {
+        monitorMuteBtn.textContent = '🔇 Mute';
+        monitorMuteBtn.classList.remove('btn-danger');
+        monitorMuteBtn.classList.add('btn-outline');
+      }
+    }
+  }
+
+  // ─── Connection-quality indicator (getStats) ──────────
+  function updateQuality(stats) {
+    if (!monitorQuality) return;
+    if (!stats || stats.state !== 'connected') {
+      monitorQuality.textContent = stats ? `(${stats.state})` : '';
+      return;
+    }
+    const parts = [];
+    if (stats.bitrateKbps) parts.push(`${stats.bitrateKbps} kbps`);
+    if (stats.rttMs) parts.push(`RTT ${stats.rttMs} ms`);
+    if (stats.packetsLost) parts.push(`lost ${stats.packetsLost}`);
+    if (stats.jitterMs) parts.push(`jit ${stats.jitterMs} ms`);
+    monitorQuality.textContent = parts.length ? `▮ ${parts.join(' · ')}` : '▮ connected';
+  }
+
+  // ─── Incoming doorbell / call ─────────────────────────
+  function showIncomingCall(data) {
+    if (!incomingCall) return;
+    incomingCallFrom.textContent = (data.label || data.from) + ' is calling';
+    incomingCall.dataset.from = data.from;
+    incomingCall.classList.remove('hidden');
+    // Auto-dismiss the modal prompt after 30s if not answered.
+    if (incomingCall._timer) clearTimeout(incomingCall._timer);
+    incomingCall._timer = setTimeout(() => {
+      incomingCall.classList.add('hidden');
+    }, 30000);
+  }
+
+  function answerCall() {
+    if (!incomingCall) return;
+    const from = incomingCall.dataset.from;
+    incomingCall.classList.add('hidden');
+    if (!from) return;
+    // Open the feed (subscribe + watch) and start two-way talkback.
+    startView(from, 'video');
+    startTalk(from);
+    sig.sendCallState(from, 'connected');
+    showToast('Call connected to ' + (devices.find(d => d.id === from)?.label || from));
+  }
+
+  function dismissCall() {
+    if (!incomingCall) return;
+    const from = incomingCall.dataset.from;
+    incomingCall.classList.add('hidden');
+    if (from) sig.sendCallState(from, 'ended');
   }
 
   let initVol = parseFloat(localStorage.getItem('hearth_baseVolume'));
@@ -658,6 +777,10 @@
     showMonitor();
     renderDevices();
     attachMonitorStream();
+
+    // Begin connection-quality polling for this peer.
+    if (statsStop) { statsStop(); statsStop = null; }
+    statsStop = rtc.startStats(peerId, updateQuality);
   }
 
   function stopView() {
@@ -684,6 +807,11 @@
     showMonitorStatus(null);
     showHome();
     renderDevices();
+
+    // Tear down talkback + quality polling tied to the closed view.
+    if (talkingTo) stopTalk(talkingTo);
+    if (statsStop) { statsStop(); statsStop = null; }
+    if (monitorQuality) monitorQuality.textContent = '';
   }
 
   function showMonitor() {
@@ -751,6 +879,10 @@
   document.addEventListener('click', (e) => {
     const t = e.target;
     if (t.id === 'stopMonitorBtn') { stopView(); return; }
+    if (t.id === 'monitorTalkBtn') { toggleTalk(); return; }
+    if (t.id === 'monitorMuteBtn') { toggleMute(); return; }
+    if (t.id === 'answerCallBtn') { answerCall(); return; }
+    if (t.id === 'dismissCallBtn') { dismissCall(); return; }
 
     const audioBtn = t.closest('.audio-btn');
     if (audioBtn && !audioBtn.disabled) { startView(audioBtn.dataset.id, 'audio'); return; }
@@ -1044,6 +1176,12 @@
         audioDevices: data.audioDevices || [],
       };
       renderDevices();
+    });
+
+    sig.on('doorbell', (data) => {
+      console.log('[base] DOORBELL from', data.from, data.label);
+      showIncomingCall(data);
+      showToast('🔔 ' + (data.label || data.from) + ' is calling');
     });
 
     sig.on('audioPeak', (data) => {

@@ -11,6 +11,8 @@
 </head>
 <body class="kiosk-page">
   <video id="cameraFeed" class="fullscreen-video" autoplay playsinline muted></video>
+  <!-- Remote (talkback / announcement) audio from the base station -->
+  <audio id="remoteAudio" autoplay playsinline></audio>
 
   <div class="kiosk-overlay">
     <div class="status-row">
@@ -27,10 +29,16 @@
     <div id="debugEvent" class="debug-event">ev:--</div>
   </div>
 
+  <div class="kiosk-actions">
+    <button id="doorbellBtn" class="btn btn-primary btn-large">🔔 Ring Doorbell</button>
+  </div>
+
   <div id="enableCamOverlay" class="enable-cam-overlay hidden">
     <button id="enableCamBtn" class="btn btn-primary btn-large">📷 Tap to enable camera</button>
     <p class="enable-cam-note">iOS requires a tap before the camera can be accessed. Tap to start the kiosk.</p>
   </div>
+
+  <div id="kioskToast" class="toast hidden"></div>
 
   <div id="cameraError" class="camera-error hidden">
     <div class="camera-error-box">

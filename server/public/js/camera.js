@@ -80,6 +80,8 @@
   const retryCameraBtn = document.getElementById('retryCameraBtn');
   const enableCamOverlay = document.getElementById('enableCamOverlay');
   const enableCamBtn = document.getElementById('enableCamBtn');
+  const remoteAudio = document.getElementById('remoteAudio');
+  const doorbellBtn = document.getElementById('doorbellBtn');
 
   function logEvent(msg) {
     if (debugEvent) debugEvent.textContent = 'ev:' + msg;
@@ -546,6 +548,96 @@
       logEvent((sig.useSSE ? 'sse:close' : 'ws:close') + (code != null ? ':' + code : ''));
     });
 
+    // ─── Remote (talkback / broadcast / announcement) audio + video ─────
+    // The base station sends its own audio/video to us over a broadcast PC (or,
+    // during a two-way call, the same monitor PC). We must attach those tracks
+    // to playable elements — without this the base's voice/announcement never
+    // reaches the kiosk speaker.
+    let talkbackActive = false;       // base is actively talking to us
+    let callActive = false;           // we are in a call with the base
+
+    function applyRemoteAudio() {
+      if (!remoteAudio) return;
+      // Speaker volume from config (0..1). Applied live to the element.
+      const vol = (currentConfig.speakerVolume != null) ? currentConfig.speakerVolume : 0.5;
+      remoteAudio.volume = Math.max(0, Math.min(1, vol));
+      // Play base audio only when it is allowed by the display/audio mode and
+      // we are either in a call or the base has enabled talkback, OR the base
+      // is broadcasting audio to us ('base' audio mode).
+      const audioMode = currentConfig.audioMode || 'mute';
+      const allowed = audioMode === 'base' || talkbackActive || callActive;
+      remoteAudio.muted = !allowed;
+      if (allowed) {
+        remoteAudio.play().catch(() => {});
+      }
+    }
+
+    rtc.onRemoteTrack = (peerId, stream, track) => {
+      console.log('[kiosk] onRemoteTrack', peerId, track.kind);
+      if (peerId.startsWith('broadcast-') || peerId === broadcastPeerId) {
+        if (track.kind === 'video') {
+          // Show the base's broadcast video when in 'base' display mode.
+          if ((currentConfig.displayMode || 'self') === 'base' && !callActive) {
+            video.srcObject = stream;
+            video.muted = true;
+            video.play().catch(() => {});
+          }
+        } else if (track.kind === 'audio') {
+          remoteAudio.srcObject = stream;
+          applyRemoteAudio();
+        }
+      } else {
+        // Monitor PC: base→kiosk reverse audio during a call / talkback.
+        if (track.kind === 'audio') {
+          remoteAudio.srcObject = stream;
+          applyRemoteAudio();
+        }
+      }
+    };
+
+    // Talkback: base tells us to enable (unmute) our speaker so we can hear it.
+    sig.on('talkEnabled', (data) => {
+      console.log('[kiosk] TALK_ENABLED from', data.from);
+      talkbackActive = true;
+      applyRemoteAudio();
+    });
+    sig.on('talkDisabled', (data) => {
+      console.log('[kiosk] TALK_DISABLED from', data.from);
+      talkbackActive = false;
+      applyRemoteAudio();
+    });
+
+    // Call state relayed from the base (answer/hangup) — reflect it on screen.
+    sig.on('callState', (data) => {
+      console.log('[kiosk] CALL_STATE', data.state, 'from', data.from);
+      if (data.state === 'connected') {
+        callActive = true;
+        applyRemoteAudio();
+        showToast('Call connected');
+      } else if (data.state === 'ended') {
+        callActive = false;
+        applyRemoteAudio();
+        showToast('Call ended');
+      }
+    });
+
+    function showToast(msg, ms = 3000) {
+      // Lightweight toast reused from base — define locally for kiosk.
+      const el = document.getElementById('kioskToast');
+      if (!el) return;
+      el.textContent = msg;
+      el.classList.remove('hidden');
+      setTimeout(() => el.classList.add('hidden'), ms);
+    }
+
+    if (doorbellBtn) {
+      doorbellBtn.addEventListener('click', () => {
+        sig.ringDoorbell(sig.deviceLabel || 'Kiosk');
+        showToast('🔔 Doorbell sent');
+        logEvent('doorbell');
+      });
+    }
+
     sig.on('configUpdated', (data) => {
       applyConfig(data.config);
     });
@@ -576,6 +668,8 @@
     sig.on('setDisplayConfig', (data) => {
       console.log('[kiosk] setDisplayConfig:', data);
       applyDisplayConfig(data.displayMode, data.audioMode);
+      // Re-apply speaker volume / audio-mode gating to any live remote audio.
+      if (typeof applyRemoteAudio === 'function') applyRemoteAudio();
     });
 
     // Handle broadcast subscriber joined (kiosk receiving base's broadcast)
@@ -584,9 +678,9 @@
         // Base station is sending its broadcast to us
         console.log('[kiosk] broadcast subscriberJoined from', data.subscriberId);
         broadcastPeerId = data.subscriberId;
-        // Create a recv peer connection to receive base's broadcast
-        const pc = rtc.createPeerConnection(broadcastPeerId, 'recv');
-        // We'll send answer after setting remote description in handleOffer
+        // Create a recv broadcast peer connection to receive base's broadcast.
+        // (handleOffer will reuse this same PC when the offer arrives.)
+        rtc.createBroadcastPeerConnection(broadcastPeerId, true);
       } else {
         subscriberCount++;
         debugSubs.textContent = 'subs:' + subscriberCount;

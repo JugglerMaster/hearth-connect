@@ -214,6 +214,14 @@ class SignalingClient {
         this.emit('iceCandidate', msg.payload);
         break;
 
+      case 'RENEGOTIATE':
+        this.emit('renegotiate', msg.payload);
+        break;
+
+      case 'ICE_RESTART':
+        this.emit('iceRestart', msg.payload);
+        break;
+
       case 'CONFIG_UPDATED':
         this.emit('configUpdated', msg.payload);
         break;
@@ -240,6 +248,14 @@ class SignalingClient {
 
       case 'DEVICE_REMOVED':
         this.emit('deviceRemoved', msg.payload);
+        break;
+
+      case 'DOORBELL':
+        this.emit('doorbell', msg.payload);
+        break;
+
+      case 'CALL_STATE':
+        this.emit('callState', msg.payload);
         break;
 
       case 'TALK_ENABLED':
@@ -333,6 +349,10 @@ class SignalingClient {
     this.send('ICE_RESTART', { to });
   }
 
+  requestRenegotiate(to) {
+    this.send('RENEGOTIATE', { to });
+  }
+
   setConfig(targetDeviceId, config) {
     this.send('SET_CONFIG', { targetDeviceId, config });
   }
@@ -347,6 +367,14 @@ class SignalingClient {
 
   stopTalk(targetPublisherId) {
     this.send('STOP_TALK', { targetPublisherId });
+  }
+
+  ringDoorbell(label) {
+    this.send('DOORBELL', { label: label || '' });
+  }
+
+  sendCallState(targetDeviceId, state) {
+    this.send('CALL_STATE', { targetDeviceId, state });
   }
 
   removeDevice(targetDeviceId) {

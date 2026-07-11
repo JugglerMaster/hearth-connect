@@ -868,6 +868,60 @@ input[type="text"]:focus {
   animation: pulse 1.5s infinite;
 }
 
+/* ─── Incoming call modal ─────────────────────────────── */
+.call-modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 80;
+}
+.call-box {
+  background: var(--bg-card);
+  border: 1px solid var(--accent-dim, #3a86ff);
+  border-radius: var(--radius, 12px);
+  padding: 24px 28px;
+  text-align: center;
+  min-width: 260px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+}
+.call-title {
+  font-size: 20px;
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+.call-from {
+  color: var(--fg-dim, #aaa);
+  margin-bottom: 18px;
+}
+.call-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+}
+
+/* ─── Connection quality readout ─────────────────────── */
+.monitor-quality {
+  font-size: 11px;
+  color: var(--fg-dim, #aaa);
+  margin-left: 6px;
+  white-space: nowrap;
+}
+
+/* ─── Kiosk actions / doorbell ────────────────────────── */
+.kiosk-actions {
+  position: fixed;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  z-index: 40;
+}
+#remoteAudio {
+  display: none;
+}
+
 @keyframes pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.4; }
