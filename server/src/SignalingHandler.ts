@@ -124,6 +124,9 @@ export class SignalingHandler {
       case 'ICE_RESTART':
         this.handleRelay(transport, msg, 'ICE_RESTART');
         break;
+      case 'RENEGOTIATE':
+        this.handleRelay(transport, msg, 'RENEGOTIATE');
+        break;
       case 'SET_CONFIG':
         this.handleSetConfig(transport, msg.payload);
         break;
@@ -147,6 +150,12 @@ export class SignalingHandler {
         break;
       case 'REMOVE_DEVICE':
         this.handleRemoveDevice(transport, msg.payload);
+        break;
+      case 'DOORBELL':
+        this.handleDoorbell(transport, msg.payload);
+        break;
+      case 'CALL_STATE':
+        this.handleCallState(transport, msg.payload);
         break;
       default:
         this.sendError(transport, 'UNKNOWN_TYPE', `Unknown message type: ${msg.type}`);
@@ -695,6 +704,46 @@ export class SignalingHandler {
     });
 
     console.log(`Device removed: ${targetDeviceId} by ${client.deviceId}`);
+  }
+
+  // ─── Doorbell / Call signaling ──────────────────────────
+  // A kiosk rings the doorbell; the server relays it to every base station.
+  // Bases render an "incoming call" prompt and can answer (which subscribes to
+  // the kiosk) or dismiss it. CALL_STATE is sent base→kiosk to let the kiosk
+  // reflect the call status (e.g. show "call connected") on its display.
+
+  private handleDoorbell(
+    transport: Transport,
+    payload: Record<string, unknown>
+  ): void {
+    const client = this.channels.getClientByConnId(transport.connId);
+    if (!client) return;
+
+    const label = (payload.label as string) || client.label || client.deviceId;
+    // Relay to all base stations (not back to the ringer).
+    this.channels.broadcastToType('base', {
+      type: 'DOORBELL',
+      payload: { from: client.deviceId, label, ts: Date.now() },
+    }, client.deviceId);
+
+    console.log(`Doorbell rung by ${client.deviceId} (${label})`);
+  }
+
+  private handleCallState(
+    transport: Transport,
+    payload: Record<string, unknown>
+  ): void {
+    const client = this.channels.getClientByConnId(transport.connId);
+    if (!client) return;
+
+    const targetId = payload.targetDeviceId as string;
+    if (!targetId) return;
+
+    // Forward call state to the target device (typically a kiosk).
+    this.channels.sendTo(targetId, {
+      type: 'CALL_STATE',
+      payload: { from: client.deviceId, state: payload.state, ts: Date.now() },
+    });
   }
 
   private handleRelay(

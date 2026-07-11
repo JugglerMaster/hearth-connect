@@ -153,6 +153,7 @@ export type MessageType =
   | 'ANSWER'
   | 'ICE_CANDIDATE'
   | 'ICE_RESTART'
+  | 'RENEGOTIATE'
   | 'SET_CONFIG'
   | 'GET_CONFIG'
   | 'HEARTBEAT'
@@ -174,6 +175,8 @@ export type MessageType =
   | 'AUDIO_PEAK'
   | 'REMOVE_DEVICE'
   | 'DEVICE_REMOVED'
+  | 'DOORBELL'
+  | 'CALL_STATE'
   | 'SET_DISPLAY_CONFIG'
   | 'DISPLAY_CONFIG_APPLIED'
   | 'PRIMARY_BASE_CHANGED';

@@ -306,6 +306,19 @@ export class ChannelManager {
     }
   }
 
+  // Broadcast to all connected clients of a given device type (e.g. every base).
+  broadcastToType(
+    type: DeviceType,
+    message: object,
+    excludeDeviceId?: string
+  ): void {
+    for (const client of this.clients.values()) {
+      if (client.deviceType !== type) continue;
+      if (client.deviceId === excludeDeviceId) continue;
+      this.sendToConn(client.connId, message);
+    }
+  }
+
   sendTo(deviceId: string, message: object): void {
     const client = this.clients.get(deviceId);
     if (client) this.sendToConn(client.connId, message);
