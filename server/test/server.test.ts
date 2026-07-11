@@ -17,9 +17,12 @@ after(() => {
 function makeWs() {
   const sent: any[] = [];
   const ws: any = {
+    connId: 'conn-' + Math.random().toString(36).slice(2),
     readyState: WebSocket.OPEN,
     sent,
-    send(raw: string) { sent.push(JSON.parse(raw)); },
+    // SignalingHandler.send() passes a Message object (not a JSON string),
+    // so the mock stores it directly. Tests inspect .sent for relayed messages.
+    send(msg: any) { sent.push(msg); },
     close() { this._closed = true; },
     _closed: false,
   };
@@ -36,7 +39,10 @@ function newServer() {
   return { config, channels, handler, tmp, file };
 }
 
-function join(handler: any, ws: any, deviceId: string, deviceType: 'kiosk' | 'base', label = deviceId) {
+function join(handler: any, channels: any, ws: any, deviceId: string, deviceType: 'kiosk' | 'base', label = deviceId) {
+  // Production registers the transport on connection before any message is
+  // handled; relays (broadcastAll/sendTo) rely on the registered transport.
+  channels.registerTransport(ws);
   handler.handle(ws, JSON.stringify({ type: 'JOIN_ROOM', payload: { roomId: 'default', deviceId, deviceType, label } }));
 }
 
@@ -85,7 +91,7 @@ test('deleteDevice removes the device from config', () => {
 test('PUBLISH_SOURCE accepts extended SourceType video-only', () => {
   const { channels, handler } = newServer();
   const kiosk = makeWs();
-  join(handler, kiosk, 'k1', 'kiosk');
+  join(handler, channels, kiosk, 'k1', 'kiosk');
   handler.handle(kiosk, JSON.stringify({ type: 'PUBLISH_SOURCE', payload: { sourceId: 's1', label: 'K1', type: 'video-only' } }));
   const sources = channels.getActiveSources('default');
   assert.equal(sources.length, 1);
@@ -95,7 +101,7 @@ test('PUBLISH_SOURCE accepts extended SourceType video-only', () => {
 test('PUBLISH_SOURCE falls back to video+audio for unknown type', () => {
   const { channels, handler } = newServer();
   const kiosk = makeWs();
-  join(handler, kiosk, 'k1', 'kiosk');
+  join(handler, channels, kiosk, 'k1', 'kiosk');
   handler.handle(kiosk, JSON.stringify({ type: 'PUBLISH_SOURCE', payload: { sourceId: 's1', label: 'K1', type: 'bogus' } }));
   assert.equal(channels.getActiveSources('default')[0].type, 'video+audio');
 });
@@ -104,8 +110,8 @@ test('CAPABILITIES is stored and relayed to other clients', () => {
   const { channels, handler } = newServer();
   const kiosk = makeWs();
   const base = makeWs();
-  join(handler, kiosk, 'k1', 'kiosk');
-  join(handler, base, 'b1', 'base');
+  join(handler, channels, kiosk, 'k1', 'kiosk');
+  join(handler, channels, base, 'b1', 'base');
   handler.handle(kiosk, JSON.stringify({
     type: 'CAPABILITIES',
     payload: { deviceId: 'k1', videoDevices: [{ id: '/dev/video0', label: 'Cam' }], audioDevices: [] },
@@ -118,25 +124,25 @@ test('CAPABILITIES is stored and relayed to other clients', () => {
 });
 
 test('late-joining base receives capabilities of already-connected devices', () => {
-  const { handler } = newServer();
+  const { channels, handler } = newServer();
   const kiosk = makeWs();
-  join(handler, kiosk, 'k1', 'kiosk');
+  join(handler, channels, kiosk, 'k1', 'kiosk');
   handler.handle(kiosk, JSON.stringify({
     type: 'CAPABILITIES',
     payload: { deviceId: 'k1', videoDevices: [{ id: '/dev/video0', label: 'Cam' }], audioDevices: [] },
   }));
   const lateBase = makeWs();
-  join(handler, lateBase, 'b2', 'base');
+  join(handler, channels, lateBase, 'b2', 'base');
   const got = lateBase.sent.find((m: any) => m.type === 'CAPABILITIES' && m.payload.deviceId === 'k1');
   assert.ok(got, 'late base received prior CAPABILITIES');
 });
 
 test('AUDIO_PEAK is relayed with server-side deviceId', () => {
-  const { handler } = newServer();
+  const { channels, handler } = newServer();
   const kiosk = makeWs();
   const base = makeWs();
-  join(handler, kiosk, 'k1', 'kiosk');
-  join(handler, base, 'b1', 'base');
+  join(handler, channels, kiosk, 'k1', 'kiosk');
+  join(handler, channels, base, 'b1', 'base');
   handler.handle(kiosk, JSON.stringify({
     type: 'AUDIO_PEAK',
     payload: { deviceId: 'spoofed', levelDb: -20, peak: true, ts: 123 },
@@ -150,10 +156,10 @@ test('AUDIO_PEAK is relayed with server-side deviceId', () => {
 test('REMOVE_DEVICE as base closes target, clears lists, broadcasts DEVICE_REMOVED', () => {
   const { channels, config, handler } = newServer();
   const target = makeWs();
-  join(handler, target, 'k1', 'kiosk');
+  join(handler, channels, target, 'k1', 'kiosk');
   config.createDevice('k1', 'kiosk', 'K1', 'default');
   const base = makeWs();
-  join(handler, base, 'b1', 'base');
+  join(handler, channels, base, 'b1', 'base');
   handler.handle(base, JSON.stringify({ type: 'REMOVE_DEVICE', payload: { targetDeviceId: 'k1' } }));
   assert.ok(target._closed, 'target socket closed');
   assert.ok(!channels.getRecentlySeenDevices().some(d => d.id === 'k1'), 'removed from device list');
@@ -164,13 +170,70 @@ test('REMOVE_DEVICE as base closes target, clears lists, broadcasts DEVICE_REMOV
 });
 
 test('REMOVE_DEVICE rejected for non-base clients', () => {
-  const { handler } = newServer();
+  const { channels, handler } = newServer();
   const kiosk = makeWs();
-  join(handler, kiosk, 'k1', 'kiosk');
+  join(handler, channels, kiosk, 'k1', 'kiosk');
   handler.handle(kiosk, JSON.stringify({ type: 'REMOVE_DEVICE', payload: { targetDeviceId: 'other' } }));
   const err = kiosk.sent.find((m: any) => m.type === 'ERROR');
   assert.ok(err);
   assert.equal(err.payload.code, 'NOT_ALLOWED');
+});
+
+// ─── Doorbell / Call signaling (new in this work) ──────
+
+test('DOORBELL from a kiosk is relayed to all bases, not back to the ringer', () => {
+  const { channels, handler } = newServer();
+  const kiosk = makeWs();
+  const base1 = makeWs();
+  const base2 = makeWs();
+  join(handler, channels, kiosk, 'k1', 'kiosk');
+  join(handler, channels, base1, 'b1', 'base');
+  join(handler, channels, base2, 'b2', 'base');
+  handler.handle(kiosk, JSON.stringify({
+    type: 'DOORBELL',
+    payload: { label: 'Nursery' },
+  }));
+  const r1 = base1.sent.find((m: any) => m.type === 'DOORBELL');
+  const r2 = base2.sent.find((m: any) => m.type === 'DOORBELL');
+  assert.ok(r1, 'base1 received DOORBELL');
+  assert.ok(r2, 'base2 received DOORBELL');
+  assert.equal(r1.payload.label, 'Nursery');
+  assert.equal(r1.payload.from, 'k1');
+  // The ringer itself must NOT get its own doorbell echoed back.
+  assert.ok(!kiosk.sent.some((m: any) => m.type === 'DOORBELL'), 'ringer did not receive its own doorbell');
+});
+
+test('CALL_STATE from a base is relayed only to the target device', () => {
+  const { channels, handler } = newServer();
+  const kiosk = makeWs();
+  const base = makeWs();
+  const other = makeWs();
+  join(handler, channels, kiosk, 'k1', 'kiosk');
+  join(handler, channels, base, 'b1', 'base');
+  join(handler, channels, other, 'k2', 'kiosk');
+  handler.handle(base, JSON.stringify({
+    type: 'CALL_STATE',
+    payload: { targetDeviceId: 'k1', state: 'connected' },
+  }));
+  const k1 = kiosk.sent.find((m: any) => m.type === 'CALL_STATE');
+  const k2 = other.sent.find((m: any) => m.type === 'CALL_STATE');
+  assert.ok(k1, 'target kiosk received CALL_STATE');
+  assert.equal(k1.payload.state, 'connected');
+  assert.equal(k1.payload.from, 'b1');
+  assert.ok(!k2, 'other device did not receive CALL_STATE');
+});
+
+test('broadcastToType only reaches clients of the requested type', () => {
+  const ch = new ChannelManager();
+  const base = makeWs();
+  const kiosk = makeWs();
+  ch.registerTransport(base);
+  ch.registerTransport(kiosk);
+  ch.addClient(base.connId, 'b1', 'base', 'default', 'Base');
+  ch.addClient(kiosk.connId, 'k1', 'kiosk', 'default', 'K1');
+  ch.broadcastToType('base', { type: 'DOORBELL', payload: { from: 'k1' } });
+  assert.ok(base.sent.some((m: any) => m.type === 'DOORBELL'), 'base got the message');
+  assert.ok(!kiosk.sent.some((m: any) => m.type === 'DOORBELL'), 'kiosk did not get the type-scoped message');
 });
 
 // ─── cleanup ──────────────────────────────────────────────
