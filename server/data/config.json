@@ -127,7 +127,7 @@
       "label": "Kiosk",
       "roomId": "iphone",
       "createdAt": 1783518599755,
-      "lastSeenAt": 1783715224672,
+      "lastSeenAt": 1783732854943,
       "config": {
         "label": "test2",
         "camera": "front",
@@ -151,7 +151,7 @@
       "label": "Base Station",
       "roomId": "pc",
       "createdAt": 1783518604146,
-      "lastSeenAt": 1783716937235,
+      "lastSeenAt": 1783732715250,
       "config": {
         "label": "",
         "visibleSources": [],
@@ -463,7 +463,7 @@
       "label": "Base Station",
       "roomId": "default",
       "createdAt": 1783567326633,
-      "lastSeenAt": 1783702677944,
+      "lastSeenAt": 1783732922887,
       "config": {
         "label": "",
         "visibleSources": [],
@@ -649,22 +649,26 @@
     "kiosk-1783601459635-cuny": {
       "id": "kiosk-1783601459635-cuny",
       "type": "kiosk",
-      "label": "Kiosk",
+      "label": "Laptop",
       "roomId": "default",
       "createdAt": 1783601453641,
-      "lastSeenAt": 1783602625119,
+      "lastSeenAt": 1783733300322,
       "config": {
-        "label": "",
+        "label": "Laptop",
         "camera": "rear",
         "resolution": "720p",
-        "frameRate": 24,
+        "frameRate": 30,
         "nightMode": false,
         "torch": false,
         "micSensitivity": 0.8,
         "speakerVolume": 0.5,
         "twoWayAudioEnabled": true,
         "showFeed": false,
-        "keepAwake": true
+        "keepAwake": true,
+        "videoDevice": "wS0bl7KMH04CzgtD16GYVKY/xZ7OdZydc6GzDMbIO18=",
+        "audioDevice": "/5CfXSoLGx9g1gYwOhLPKVYxEPOGmcyj8GA8GLazlB8=",
+        "audioAlertEnabled": true,
+        "audioAlertThresholdDb": -40
       }
     },
     "kiosk-1783601802362-0cnr": {
@@ -791,6 +795,21 @@
         "audioDevice": "FFCBE2D76CB9B7AC1FED4DAB35910BC5EB1DBBFE",
         "audioAlertEnabled": true,
         "audioAlertThresholdDb": -40
+      }
+    },
+    "base-1783732725167-kvh2": {
+      "id": "base-1783732725167-kvh2",
+      "type": "base",
+      "label": "Base Station",
+      "roomId": "default",
+      "createdAt": 1783732725695,
+      "lastSeenAt": 1783732883956,
+      "config": {
+        "label": "",
+        "visibleSources": [],
+        "audioFocusMode": "manual",
+        "gridLayout": "1x1",
+        "idleTimeout": 0
       }
     }
   }

@@ -226,6 +226,10 @@ class SignalingClient {
         this.emit('deviceStatus', msg.payload);
         break;
 
+      case 'SET_DISPLAY_CONFIG':
+        this.emit('setDisplayConfig', msg.payload);
+        break;
+
       case 'CAPABILITIES':
         this.emit('capabilities', msg.payload);
         break;
@@ -347,6 +351,26 @@ class SignalingClient {
 
   removeDevice(targetDeviceId) {
     this.send('REMOVE_DEVICE', { targetDeviceId });
+  }
+
+  broadcastSource(sourceId, label, type) {
+    this.send('BROADCAST_SOURCE', { sourceId, label, type });
+  }
+
+  unbroadcastSource(sourceId) {
+    this.send('UNBROADCAST_SOURCE', { sourceId });
+  }
+
+  subscribeBroadcast(publisherId) {
+    this.send('SUBSCRIBE_BROADCAST', { publisherId });
+  }
+
+  unsubscribeBroadcast(publisherId) {
+    this.send('UNSUBSCRIBE_BROADCAST', { publisherId });
+  }
+
+  setDisplayConfig(targetDeviceId, displayMode, audioMode) {
+    this.send('SET_DISPLAY_CONFIG', { targetDeviceId, displayMode, audioMode });
   }
 
   // ─── Event System ────────────────────────────────────

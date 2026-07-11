@@ -18,6 +18,11 @@ export declare class SignalingHandler {
     private handleUnpublishSource;
     private handleSubscribeSource;
     private handleUnsubscribeSource;
+    private handleBroadcastSource;
+    private handleUnbroadcastSource;
+    private handleSubscribeBroadcast;
+    private handleUnsubscribeBroadcast;
+    private handleSetDisplayConfig;
     private handleCapabilities;
     private handleAudioPeak;
     private handleRemoveDevice;

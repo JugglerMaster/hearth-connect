@@ -5,6 +5,8 @@
 export type DeviceType = 'kiosk' | 'base';
 export type SourceType = 'video+audio' | 'video-only' | 'audio-only' | 'none';
 export type AudioFocusMode = 'manual' | 'last-active';
+export type DisplayMode = 'self' | 'blank' | 'base';
+export type AudioMode = 'self' | 'mute' | 'base';
 
 export interface DeviceConfig {
   // Kiosk
@@ -34,6 +36,14 @@ export interface DeviceConfig {
   audioFocusMode?: AudioFocusMode;
   gridLayout?: '1x1' | '2x2';
   idleTimeout?: number;
+
+  // Kiosk display/audio control (set by base station)
+  displayMode?: DisplayMode;
+  audioMode?: AudioMode;
+
+  // Base station broadcast
+  broadcastSourceId?: string;
+  isBroadcasting?: boolean;
 }
 
 export interface MediaDeviceDescriptor {
@@ -135,6 +145,10 @@ export type MessageType =
   | 'UNPUBLISH_SOURCE'
   | 'SUBSCRIBE_SOURCE'
   | 'UNSUBSCRIBE_SOURCE'
+  | 'BROADCAST_SOURCE'
+  | 'UNBROADCAST_SOURCE'
+  | 'SUBSCRIBE_BROADCAST'
+  | 'UNSUBSCRIBE_BROADCAST'
   | 'OFFER'
   | 'ANSWER'
   | 'ICE_CANDIDATE'
@@ -159,7 +173,10 @@ export type MessageType =
   | 'CAPABILITIES'
   | 'AUDIO_PEAK'
   | 'REMOVE_DEVICE'
-  | 'DEVICE_REMOVED';
+  | 'DEVICE_REMOVED'
+  | 'SET_DISPLAY_CONFIG'
+  | 'DISPLAY_CONFIG_APPLIED'
+  | 'PRIMARY_BASE_CHANGED';
 
 export interface Message {
   type: MessageType;

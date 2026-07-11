@@ -5,6 +5,9 @@ class WebRTCManager {
     this.peerConnections = new Map(); // peerId → RTCPeerConnection
     this.remoteStreams = new Map();   // peerId → MediaStream
 
+    // For base station broadcasting to multiple kiosks
+    this.broadcastPcs = new Map();    // kioskId → RTCPeerConnection (base→kiosk)
+
     // ICE servers
     this.iceServers = {
       iceServers: [
@@ -71,10 +74,9 @@ class WebRTCManager {
     }
   }
 
-  // ─── Peer Connections ────────────────────────────────
+  // ─── Peer Connections (Standard: kiosk↔base monitoring) ────────────────────────
 
   createPeerConnection(peerId, direction = 'send') {
-    // Close existing if any
     if (this.peerConnections.has(peerId)) {
       console.log('[webrtc] replacing existing pc for', peerId);
     }
@@ -112,16 +114,12 @@ class WebRTCManager {
 
     pc.oniceconnectionstatechange = () => {
       this.onIceConnectionStateChange(peerId, pc.iceConnectionState);
-      // iOS 12 Safari (≤12.x) has no connectionState/onconnectionstatechange,
-      // so mirror the failed-state ICE restart trigger here for that platform.
-      // Only act on 'failed' — 'disconnected' is usually transient and recovers.
       if (pc.iceConnectionState === 'failed' && pc.connectionState === undefined) {
         console.warn('[webrtc] ICE failed for', peerId, '(iOS<13 path), attempting restart...');
         this.attemptIceRestart(peerId);
       }
     };
 
-    // If we have a local stream, add tracks
     if (this.localStream && direction === 'send') {
       this.addTracksToPeer(pc);
     }
@@ -137,7 +135,6 @@ class WebRTCManager {
   }
 
   // Add/remove senders so the pc's tracks exactly match the current localStream.
-  // Handles hotplug where a kind appears/disappears at runtime.
   syncTracksToPeer(peerId) {
     const pc = this.peerConnections.get(peerId);
     if (!pc || !this.localStream) return;
@@ -178,7 +175,111 @@ class WebRTCManager {
     }
   }
 
-  // ─── Offer / Answer ──────────────────────────────────
+  // ─── Broadcast Peer Connections (Base → Kiosk) ───────────────────────────────
+
+  createBroadcastPeerConnection(kioskId) {
+    if (this.broadcastPcs.has(kioskId)) {
+      console.log('[webrtc] replacing existing broadcast pc for', kioskId);
+    }
+    this.closeBroadcastPeerConnection(kioskId);
+
+    const pc = new RTCPeerConnection(this.iceServers);
+    this.broadcastPcs.set(kioskId, pc);
+
+    pc.onicecandidate = (event) => {
+      if (event.candidate) {
+        this.sig.sendIceCandidate(kioskId, event.candidate.toJSON());
+      }
+    };
+
+    // Broadcast PCs are send-only from base perspective
+    pc.ontrack = (event) => {
+      // Base doesn't expect incoming tracks on broadcast PC, but handle just in case
+      let stream = this.remoteStreams.get(`broadcast-${kioskId}`);
+      if (!stream) {
+        stream = new MediaStream();
+        this.remoteStreams.set(`broadcast-${kioskId}`, stream);
+      }
+      stream.addTrack(event.track);
+      console.log('[webrtc] broadcast ontrack', kioskId, event.track.kind);
+      this.onRemoteTrack(`broadcast-${kioskId}`, stream, event.track);
+    };
+
+    pc.onconnectionstatechange = () => {
+      const state = pc.connectionState;
+      this.onConnectionStateChange(`broadcast-${kioskId}`, state);
+      if (state === 'failed') {
+        console.warn(`Broadcast ICE failed for ${kioskId}, attempting restart...`);
+        this.attemptBroadcastIceRestart(kioskId);
+      }
+    };
+
+    // Add local stream tracks if available
+    if (this.localStream) {
+      this.addTracksToPeer(pc);
+    }
+
+    return pc;
+  }
+
+  closeBroadcastPeerConnection(kioskId) {
+    const pc = this.broadcastPcs.get(kioskId);
+    if (pc) {
+      pc.close();
+      this.broadcastPcs.delete(kioskId);
+    }
+    this.remoteStreams.delete(`broadcast-${kioskId}`);
+  }
+
+  closeAllBroadcastPcs() {
+    for (const kioskId of this.broadcastPcs.keys()) {
+      this.closeBroadcastPeerConnection(kioskId);
+    }
+  }
+
+  async createBroadcastOffer(kioskId) {
+    const pc = this.broadcastPcs.get(kioskId);
+    if (!pc) {
+      console.warn('[webrtc] createBroadcastOffer: no pc for', kioskId);
+      return;
+    }
+
+    try {
+      const offer = await pc.createOffer({
+        offerToReceiveAudio: false,
+        offerToReceiveVideo: false,
+      });
+      await pc.setLocalDescription(offer);
+      console.log('[webrtc] createBroadcastOffer for', kioskId, 'sdp length:', offer.sdp ? offer.sdp.length : 0);
+      this.sig.sendOffer(kioskId, offer);
+    } catch (err) {
+      console.error('[webrtc] createBroadcastOffer failed for', kioskId, err);
+      throw err;
+    }
+  }
+
+  async attemptBroadcastIceRestart(kioskId) {
+    const pc = this.broadcastPcs.get(kioskId);
+    if (!pc) return;
+    if (pc._restarting) return;
+    pc._restarting = true;
+
+    try {
+      const offer = await pc.createOffer({ iceRestart: true });
+      await pc.setLocalDescription(offer);
+      this.sig.sendOffer(kioskId, offer);
+
+      setTimeout(() => {
+        if (pc) pc._restarting = false;
+      }, 10000);
+    } catch (err) {
+      console.error('Broadcast ICE restart failed:', err);
+      this.closeBroadcastPeerConnection(kioskId);
+      this.onPeerDisconnected(`broadcast-${kioskId}`);
+    }
+  }
+
+  // ─── Offer / Answer (Standard) ──────────────────────────────────
 
   async createOffer(peerId) {
     const pc = this.peerConnections.get(peerId);
@@ -202,27 +303,46 @@ class WebRTCManager {
   }
 
   async handleOffer(data) {
-    const { from, sdp } = data;
-    console.log('[webrtc] handleOffer from', from, 'sdp length:', sdp && sdp.sdp ? sdp.sdp.length : 0);
-    const pc = this.createPeerConnection(from, 'recv');
-    if (this.additionalAudioStream) {
-      this.addAudioTrackToPeer(from, this.additionalAudioStream);
-    }
+    const { from, sdp, isBroadcast } = data;
+    console.log('[webrtc] handleOffer from', from, 'isBroadcast:', isBroadcast, 'sdp length:', sdp && sdp.sdp ? sdp.sdp.length : 0);
 
-    try {
-      await pc.setRemoteDescription(new RTCSessionDescription(sdp));
-      const answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
-      this.sig.sendAnswer(from, answer);
-    } catch (err) {
-      console.error('handleOffer failed:', err);
+    if (isBroadcast) {
+      // Kiosk receiving broadcast offer from base
+      const pc = this.createPeerConnection(from, 'recv');
+      try {
+        await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        this.sig.sendAnswer(from, answer);
+      } catch (err) {
+        console.error('handleBroadcastOffer failed:', err);
+      }
+    } else {
+      // Standard: base receiving offer from kiosk
+      const pc = this.createPeerConnection(from, 'recv');
+      if (this.additionalAudioStream) {
+        this.addAudioTrackToPeer(from, this.additionalAudioStream);
+      }
+
+      try {
+        await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        this.sig.sendAnswer(from, answer);
+      } catch (err) {
+        console.error('handleOffer failed:', err);
+      }
     }
   }
 
   async handleAnswer(data) {
     const { from, sdp } = data;
     console.log('[webrtc] handleAnswer from', from);
-    const pc = this.peerConnections.get(from);
+    // Check both standard and broadcast PCs
+    let pc = this.peerConnections.get(from);
+    if (!pc) {
+      pc = this.broadcastPcs.get(from);
+    }
     if (!pc) return;
 
     try {
@@ -234,7 +354,11 @@ class WebRTCManager {
 
   async handleIceCandidate(data) {
     const { from, candidate } = data;
-    const pc = this.peerConnections.get(from);
+    // Check both standard and broadcast PCs
+    let pc = this.peerConnections.get(from);
+    if (!pc) {
+      pc = this.broadcastPcs.get(from);
+    }
     if (!pc || !candidate) return;
 
     try {
@@ -244,13 +368,12 @@ class WebRTCManager {
     }
   }
 
-  // ─── ICE Restart ─────────────────────────────────────
+  // ─── ICE Restart (Standard) ─────────────────────────────────────
 
   async attemptIceRestart(peerId) {
     const pc = this.peerConnections.get(peerId);
     if (!pc) return;
 
-    // Only attempt restart once to avoid loops
     if (pc._restarting) return;
     pc._restarting = true;
 
@@ -259,13 +382,11 @@ class WebRTCManager {
       await pc.setLocalDescription(offer);
       this.sig.sendOffer(peerId, offer);
 
-      // Reset restart flag after timeout
       setTimeout(() => {
         if (pc) pc._restarting = false;
       }, 10000);
     } catch (err) {
       console.error('ICE restart failed:', err);
-      // Fall back to full reconnect
       this.closePeerConnection(peerId);
       this.onPeerDisconnected(peerId);
     }
@@ -326,5 +447,23 @@ class WebRTCManager {
     this.localStream.getAudioTracks().forEach(t => {
       t.enabled = on;
     });
+  }
+
+  // ─── Helpers ────────────────────────────────────────
+
+  getRemoteStream(peerId) {
+    return this.remoteStreams.get(peerId);
+  }
+
+  getBroadcastStream(kioskId) {
+    return this.remoteStreams.get(`broadcast-${kioskId}`);
+  }
+
+  hasPeerConnection(peerId) {
+    return this.peerConnections.has(peerId);
+  }
+
+  hasBroadcastPeerConnection(kioskId) {
+    return this.broadcastPcs.has(kioskId);
   }
 }

@@ -4,6 +4,8 @@ import {
   DeviceType,
   SourceType,
   Transport,
+  DisplayMode,
+  AudioMode,
 } from './types';
 
 export interface RecentlySeenDevice {
@@ -151,6 +153,22 @@ export class ChannelManager {
 
   getClientsByType(roomId: string, type: DeviceType): ConnectedClient[] {
     return this.getClientsInRoom(roomId).filter(c => c.deviceType === type);
+  }
+
+  getBasesInRoom(roomId: string): ConnectedClient[] {
+    return this.getClientsByType(roomId, 'base');
+  }
+
+  getPrimaryBase(roomId: string): ConnectedClient | undefined {
+    const bases = this.getBasesInRoom(roomId);
+    if (bases.length === 0) return undefined;
+    // Primary = first base to join (earliest connectedAt)
+    return bases.reduce((earliest, b) => b.connectedAt < earliest.connectedAt ? b : earliest);
+  }
+
+  isPrimaryBase(deviceId: string, roomId: string): boolean {
+    const primary = this.getPrimaryBase(roomId);
+    return primary?.deviceId === deviceId;
   }
 
   isClientInRoom(deviceId: string, roomId: string): boolean {

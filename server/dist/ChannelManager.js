@@ -117,6 +117,20 @@ class ChannelManager {
     getClientsByType(roomId, type) {
         return this.getClientsInRoom(roomId).filter(c => c.deviceType === type);
     }
+    getBasesInRoom(roomId) {
+        return this.getClientsByType(roomId, 'base');
+    }
+    getPrimaryBase(roomId) {
+        const bases = this.getBasesInRoom(roomId);
+        if (bases.length === 0)
+            return undefined;
+        // Primary = first base to join (earliest connectedAt)
+        return bases.reduce((earliest, b) => b.connectedAt < earliest.connectedAt ? b : earliest);
+    }
+    isPrimaryBase(deviceId, roomId) {
+        const primary = this.getPrimaryBase(roomId);
+        return primary?.deviceId === deviceId;
+    }
     isClientInRoom(deviceId, roomId) {
         const room = this.rooms.get(roomId);
         if (!room)

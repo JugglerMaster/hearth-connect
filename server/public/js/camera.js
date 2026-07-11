@@ -11,6 +11,10 @@
   let wakeLock = null;
   let cameraStarted = false;
 
+  // Broadcast state
+  let broadcastPeerId = null;  // Base station ID we're receiving broadcast from
+  let broadcastStream = null;  // Remote stream from base broadcast
+
   // ─── Persistent device settings (localStorage) ──────────
   // Each kiosk remembers the last settings it had, restored on load even
   // before the server connection is established. Base-station changes that
@@ -174,6 +178,69 @@
       if (publishedType) sig.unpublishSource(cameraSourceId);
       sig.publishSource(cameraSourceId, sig.deviceLabel || 'Kiosk', type);
       publishedType = type;
+    }
+  }
+
+  // ─── Broadcast & Display Config ──────────────────────────
+
+  function subscribeToBroadcast(baseId) {
+    if (broadcastPeerId === baseId) return; // Already subscribed
+    broadcastPeerId = baseId;
+    sig.subscribeBroadcast(baseId);
+    console.log('[kiosk] subscribed to broadcast from', baseId);
+  }
+
+  function unsubscribeFromBroadcast() {
+    if (broadcastPeerId) {
+      sig.unsubscribeBroadcast(broadcastPeerId);
+      rtc.closePeerConnection(broadcastPeerId);
+      if (broadcastStream) {
+        broadcastStream.getTracks().forEach(t => t.stop());
+        broadcastStream = null;
+      }
+      broadcastPeerId = null;
+      applyDisplayConfig(currentConfig.displayMode || 'self', currentConfig.audioMode || 'mute');
+    }
+  }
+
+  function applyDisplayConfig(displayMode, audioMode) {
+    console.log('[kiosk] applyDisplayConfig:', displayMode, audioMode);
+    
+    const video = document.getElementById('cameraFeed');
+    if (!video) return;
+
+    switch (displayMode) {
+      case 'self':
+        // Show local camera (muted)
+        if (rtc.localStream) {
+          video.srcObject = rtc.localStream;
+          video.muted = true; // No self-audio
+          video.play().catch(() => {});
+        }
+        break;
+      case 'blank':
+        // Show black/placeholder
+        video.srcObject = null;
+        // Could show a placeholder div here
+        break;
+      case 'base':
+        // Show base station's broadcast stream
+        if (broadcastStream) {
+          video.srcObject = broadcastStream;
+          video.muted = false; // Play base audio
+          video.play().catch(() => {});
+        }
+        break;
+    }
+
+    // Handle audio mode
+    // Note: Audio is handled via the video element's audio tracks
+    // 'self' = no audio (muted), 'mute' = no audio, 'base' = base audio
+    if (audioMode === 'base' && broadcastStream) {
+      // Audio will play through video element
+      video.muted = false;
+    } else {
+      video.muted = true;
     }
   }
 
@@ -503,6 +570,53 @@
       console.log('[kiosk] subscriberLeft from', data.subscriberId, 'total:', subscriberCount);
       subscribers.delete(data.subscriberId);
       rtc.closePeerConnection(data.subscriberId);
+    });
+
+    // Handle display/audio config from base station
+    sig.on('setDisplayConfig', (data) => {
+      console.log('[kiosk] setDisplayConfig:', data);
+      applyDisplayConfig(data.displayMode, data.audioMode);
+    });
+
+    // Handle broadcast subscriber joined (kiosk receiving base's broadcast)
+    sig.on('subscriberJoined', (data) => {
+      if (data.isBroadcast) {
+        // Base station is sending its broadcast to us
+        console.log('[kiosk] broadcast subscriberJoined from', data.subscriberId);
+        broadcastPeerId = data.subscriberId;
+        // Create a recv peer connection to receive base's broadcast
+        const pc = rtc.createPeerConnection(broadcastPeerId, 'recv');
+        // We'll send answer after setting remote description in handleOffer
+      } else {
+        subscriberCount++;
+        debugSubs.textContent = 'subs:' + subscriberCount;
+        logEvent('subJoined:' + data.subscriberId.slice(-4));
+        const peerId = data.subscriberId;
+        subscribers.add(peerId);
+        if (!rtc.localStream) {
+          logEvent('NO-LOCALSTREAM');
+          console.log('[kiosk] WARN: no localStream for', peerId, '- will offer once media starts');
+          return;
+        }
+        offerToSubscriber(peerId);
+      }
+    });
+
+    // Handle source added - auto-subscribe to broadcasts
+    sig.on('sourceAdded', (source) => {
+      if (source.isBroadcast && source.publisherId !== deviceId) {
+        console.log('[kiosk] broadcast source added:', source.id, 'from', source.publisherId);
+        subscribeToBroadcast(source.publisherId);
+      }
+    });
+
+    // Handle source removed - cleanup broadcast if needed
+    sig.on('sourceRemoved', (data) => {
+      if (broadcastPeerId && data.sourceId) {
+        // Check if this was our broadcast source
+        // We'd need to track the broadcast source ID
+        console.log('[kiosk] source removed:', data.sourceId);
+      }
     });
 
     // Modern iOS (13+): open the signaling socket on load, as before.

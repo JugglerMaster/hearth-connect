@@ -25,6 +25,30 @@
   let audioState = {};           // deviceId → { levelDb, alerting }
   let lastActivity = {};         // peerId → ts of last track activity
 
+  // Broadcast state
+  let isBroadcasting = false;
+  let broadcastSourceId = null;
+  let broadcastStream = null;
+  let broadcastVideoTrack = null;
+  let broadcastAudioTrack = null;
+  let broadcastSubscribers = new Set(); // kioskIds receiving our broadcast
+
+  // Grid view state
+  let gridMode = false; // false = single view, true = 2x2 grid
+  let gridViewingIds = new Set(); // Set of kioskIds being viewed in grid
+
+  // Grid view state
+  let gridMode = false;
+  let gridSources = []; // Array of {deviceId, label, stream} for grid
+
+  // Broadcast state
+  let isBroadcasting = false;
+  let broadcastSourceId = null;
+  let broadcastStream = null;
+  let broadcastVideoDevice = null;
+  let broadcastAudioDevice = null;
+  let localBroadcastStream = null;
+
   // Watch recovery state
   let recovering = false;
   let recoverTimer = null;
@@ -48,6 +72,13 @@
   const configForm = document.getElementById('configForm');
   const configTitle = document.getElementById('configTitle');
   let configDeviceId = null;
+
+  // Broadcast UI elements (created dynamically)
+  let broadcastPanel = null;
+  let broadcastPreview = null;
+  let broadcastVideoSel = null;
+  let broadcastAudioSel = null;
+  let broadcastBtn = null;
 
   // ─── Volume control ──
   // Slider 0–200 → gain 0–2×.  100 = unity, 200 = double (+6 dB).
@@ -196,11 +227,89 @@
 
   function renderDevices() {
     const kiosks = devices.filter(d => d.type === 'kiosk' && d.id !== deviceId);
+    const bases = devices.filter(d => d.type === 'base' && d.id !== deviceId);
+
+    // Build broadcast panel HTML
+    let broadcastPanel = '';
+    if (bases.length === 0 && devices.some(d => d.id === deviceId && d.type === 'base')) {
+      // We are the only base or first base - show broadcast controls
+      broadcastPanel = buildBroadcastPanel();
+    }
+
     if (kiosks.length === 0) {
-      deviceList.innerHTML = '<p class="hint" style="padding:12px">No kiosks connected</p>';
+      deviceList.innerHTML = broadcastPanel + '<p class="hint" style="padding:12px">No kiosks connected</p>';
       return;
     }
-    deviceList.innerHTML = kiosks.map(d => {
+
+    if (gridMode) {
+      renderGridView(kiosks, broadcastPanel);
+    } else {
+      renderListView(kiosks, broadcastPanel);
+    }
+  }
+
+  function buildBroadcastPanel() {
+    const caps = capabilitiesByDevice[deviceId];
+    let cameraOptions = '';
+    let micOptions = '';
+
+    if (caps && caps.videoDevices && caps.videoDevices.length) {
+      cameraOptions = caps.videoDevices.map(v =>
+        `<option value="${v.id}">${v.label || v.id}</option>`
+      ).join('');
+    } else {
+      cameraOptions = `<option value="front">Front</option><option value="rear">Rear</option>`;
+    }
+
+    if (caps && caps.audioDevices && caps.audioDevices.length) {
+      micOptions = caps.audioDevices.map(a =>
+        `<option value="${a.id}">${a.label || a.id}</option>`
+      ).join('');
+    } else {
+      micOptions = `<option value="default">Default</option>`;
+    }
+
+    return `
+      <div class="broadcast-panel panel">
+        <h3>📡 Broadcast</h3>
+        <div class="broadcast-preview">
+          <video id="broadcastPreview" autoplay playsinline muted></video>
+        </div>
+        <div class="broadcast-controls">
+          <div class="config-row">
+            <label>Camera</label>
+            <select id="broadcastCamera">${cameraOptions}</select>
+          </div>
+          <div class="config-row">
+            <label>Microphone</label>
+            <select id="broadcastMic">${micOptions}</select>
+          </div>
+          <div class="config-row">
+            <label>Resolution</label>
+            <select id="broadcastResolution">
+              <option value="480p">480p</option>
+              <option value="720p" selected>720p</option>
+              <option value="1080p">1080p</option>
+            </select>
+          </div>
+          <div class="config-row">
+            <label>Frame Rate</label>
+            <select id="broadcastFramerate">
+              <option value="15">15 fps</option>
+              <option value="24">24 fps</option>
+              <option value="30" selected>30 fps</option>
+            </select>
+          </div>
+          <button id="toggleBroadcastBtn" class="btn btn-primary" style="width:100%;margin-top:8px">
+            Start Broadcast
+          </button>
+        </div>
+      </div>
+    `;
+  }
+
+  function renderListView(kiosks, broadcastPanel) {
+    deviceList.innerHTML = broadcastPanel + kiosks.map(d => {
       const isViewing = viewingId === d.id;
       const vActive = isViewing && viewMode === 'video';
       const aActive = isViewing && viewMode === 'audio';
@@ -217,6 +326,17 @@
       const videoBtn = videoOk
         ? `<button class="btn btn-small ${vActive ? 'btn-danger' : 'btn-outline'} video-btn" data-id="${d.id}">${vActive ? 'Stop' : 'Video'}</button>`
         : `<button class="btn btn-small btn-disabled video-btn" disabled data-id="${d.id}">Video</button>`;
+
+      // Display/audio mode controls
+      const displayMode = d.config?.displayMode || 'self';
+      const audioMode = d.config?.audioMode || 'mute';
+      const displayOptions = ['self', 'blank', 'base'].map(m =>
+        `<option value="${m}" ${m === displayMode ? 'selected' : ''}>${m === 'self' ? 'Self' : m === 'blank' ? 'Blank' : 'Base'}</option>`
+      ).join('');
+      const audioOptions = ['self', 'mute', 'base'].map(m =>
+        `<option value="${m}" ${m === audioMode ? 'selected' : ''}>${m === 'self' ? 'Self' : m === 'mute' ? 'Mute' : 'Base'}</option>`
+      ).join('');
+
       return `
         <div class="${itemClass}" data-id="${d.id}">
           <div class="device-info">
@@ -228,8 +348,291 @@
             ${videoBtn}
             <button class="btn btn-small btn-outline settings-btn" data-id="${d.id}">Settings</button>
           </div>
+          <div class="control-row" style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">
+            <div class="config-row" style="flex:1;min-width:120px">
+              <label style="font-size:11px">Display</label>
+              <select class="display-mode-select" data-id="${d.id}" style="font-size:12px;padding:4px">${displayOptions}</select>
+            </div>
+            <div class="config-row" style="flex:1;min-width:100px">
+              <label style="font-size:11px">Audio</label>
+              <select class="audio-mode-select" data-id="${d.id}" style="font-size:12px;padding:4px">${audioOptions}</select>
+            </div>
+          </div>
         </div>`;
     }).join('');
+
+    // Attach broadcast panel listeners if present
+    attachBroadcastPanelListeners();
+  }
+
+  function renderGridView(kiosks, broadcastPanel) {
+    // 2x2 grid of video feeds
+    const activeKiosks = Array.from(gridViewingIds).map(id => kiosks.find(k => k.id === id)).filter(Boolean);
+    const availableKiosks = kiosks.filter(k => !gridViewingIds.has(k.id));
+
+    let gridHtml = broadcastPanel;
+    gridHtml += `
+      <div class="grid-controls panel" style="margin-bottom:12px">
+        <h3>Grid View (${activeKiosks.length}/4)</h3>
+        <div class="grid-available">
+          ${availableKiosks.map(k => `
+            <button class="btn btn-small btn-outline add-to-grid" data-id="${k.id}">+ ${k.label}</button>
+          `).join('')}
+        </div>
+      </div>
+      <div class="video-grid" style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px">
+        ${activeKiosks.map(k => `
+          <div class="grid-cell" data-id="${k.id}">
+            <video class="grid-video" id="grid-video-${k.id}" autoplay playsinline></video>
+            <div class="grid-overlay">
+              <span class="grid-label">${k.label}</span>
+              <button class="btn btn-small btn-danger remove-from-grid" data-id="${k.id}">×</button>
+            </div>
+          </div>
+        `).join('')}
+        ${activeKiosks.length < 4 ? `
+          <div class="grid-cell empty" style="display:flex;align-items:center;justify-content:center;background:#1a1a1a;border:2px dashed #444">
+            <span style="color:#888">Click + to add camera</span>
+          </div>
+        `.repeat(4 - activeKiosks.length) : ''}
+      </div>
+    `;
+
+    // Also show list of kiosks below grid for audio controls
+    gridHtml += '<div class="panel"><h3>Audio Controls</h3>' + kiosks.map(d => {
+      const type = sourceTypeFor(d.id);
+      const audioOk = hasAudio(type);
+      const inGrid = gridViewingIds.has(d.id);
+      const audioBtn = audioOk
+        ? `<button class="btn btn-small ${inGrid ? 'btn-danger' : 'btn-outline'} audio-btn" data-id="${d.id}">${inGrid ? 'Stop Audio' : 'Audio'}</button>`
+        : `<button class="btn btn-small btn-disabled audio-btn" disabled data-id="${d.id}">Audio</button>`;
+
+      return `
+        <div class="device-item" data-id="${d.id}">
+          <div class="device-info">
+            <div class="device-name">${d.label}</div>
+          </div>
+          <div class="btn-row">
+            ${audioBtn}
+            ${!inGrid && kiosks.filter(k => gridViewingIds.has(k.id)).length < 4
+              ? `<button class="btn btn-small btn-outline add-to-grid" data-id="${d.id}">+ Grid</button>`
+              : ''}
+            <button class="btn btn-small btn-outline settings-btn" data-id="${d.id}">Settings</button>
+          </div>
+        </div>`;
+    }).join('') + '</div>';
+
+    deviceList.innerHTML = gridHtml;
+
+    // Attach video streams to grid cells
+    activeKiosks.forEach(k => {
+      const stream = streams[k.id];
+      const videoEl = document.getElementById(`grid-video-${k.id}`);
+      if (stream && videoEl) {
+        videoEl.srcObject = stream;
+        videoEl.muted = true;
+        videoEl.play().catch(() => {});
+      }
+    });
+
+    // Attach listeners for grid
+    attachGridListeners();
+  }
+
+  // ─── Broadcast Functions ────────────────────────────────
+
+  function attachBroadcastPanelListeners() {
+    const preview = document.getElementById('broadcastPreview');
+    const camSel = document.getElementById('broadcastCamera');
+    const micSel = document.getElementById('broadcastMic');
+    const resSel = document.getElementById('broadcastResolution');
+    const frSel = document.getElementById('broadcastFramerate');
+    const btn = document.getElementById('toggleBroadcastBtn');
+    
+    if (!btn) return;
+
+    btn.addEventListener('click', toggleBroadcast);
+    camSel?.addEventListener('change', startBroadcastPreview);
+    micSel?.addEventListener('change', startBroadcastPreview);
+    resSel?.addEventListener('change', startBroadcastPreview);
+    frSel?.addEventListener('change', startBroadcastPreview);
+  }
+
+  async function startBroadcastPreview() {
+    const camSel = document.getElementById('broadcastCamera');
+    const micSel = document.getElementById('broadcastMic');
+    const resSel = document.getElementById('broadcastResolution');
+    const frSel = document.getElementById('broadcastFramerate');
+    const preview = document.getElementById('broadcastPreview');
+    
+    if (!camSel || !preview) return;
+
+    const videoDevice = camSel.value;
+    const audioDevice = micSel?.value || 'default';
+    const resolution = resSel?.value || '720p';
+    const frameRate = parseInt(frSel?.value || '30');
+
+    // Stop existing preview
+    if (localBroadcastStream) {
+      localBroadcastStream.getTracks().forEach(t => t.stop());
+      localBroadcastStream = null;
+    }
+
+    const DIMS = { '480p': [640, 480], '720p': [1280, 720], '1080p': [1920, 1080] };
+    const [w, h] = DIMS[resolution] || DIMS['720p'];
+
+    const constraints = {
+      video: {
+        deviceId: { exact: videoDevice },
+        width: { ideal: w },
+        height: { ideal: h },
+        frameRate: { ideal: frameRate },
+      },
+      audio: audioDevice !== 'default' ? { deviceId: { exact: audioDevice } } : true,
+    };
+
+    try {
+      localBroadcastStream = await navigator.mediaDevices.getUserMedia(constraints);
+      preview.srcObject = localBroadcastStream;
+      preview.play().catch(() => {});
+      console.log('[base] Broadcast preview started');
+    } catch (err) {
+      console.error('[base] Broadcast preview failed:', err);
+    }
+  }
+
+  async function toggleBroadcast() {
+    const btn = document.getElementById('toggleBroadcastBtn');
+    if (!btn) return;
+
+    if (isBroadcasting) {
+      // Stop broadcasting
+      await stopBroadcast();
+      btn.textContent = 'Start Broadcast';
+      btn.classList.remove('btn-danger');
+      btn.classList.add('btn-primary');
+    } else {
+      // Start broadcasting
+      await startBroadcast();
+      btn.textContent = 'Stop Broadcast';
+      btn.classList.remove('btn-primary');
+      btn.classList.add('btn-danger');
+    }
+  }
+
+  async function startBroadcast() {
+    const camSel = document.getElementById('broadcastCamera');
+    const micSel = document.getElementById('broadcastMic');
+    const resSel = document.getElementById('broadcastResolution');
+    const frSel = document.getElementById('broadcastFramerate');
+    
+    if (!localBroadcastStream) {
+      await startBroadcastPreview();
+      // Wait a bit for stream to be ready
+      await new Promise(r => setTimeout(r, 500));
+    }
+
+    if (!localBroadcastStream) {
+      showToast('Failed to start broadcast: no media stream');
+      return;
+    }
+
+    broadcastSourceId = 'broadcast-' + deviceId + '-' + Date.now();
+    broadcastStream = localBroadcastStream;
+    isBroadcasting = true;
+
+    // Publish broadcast source
+    sig.broadcastSource(broadcastSourceId, 'Base Station Broadcast', 'video+audio');
+
+    // Update base config
+    sig.setConfig(deviceId, {
+      broadcastSourceId: broadcastSourceId,
+      isBroadcasting: true,
+    });
+
+    showToast('Broadcast started');
+    console.log('[base] Broadcast started:', broadcastSourceId);
+  }
+
+  async function stopBroadcast() {
+    isBroadcasting = false;
+    
+    // Unpublish broadcast source
+    if (broadcastSourceId) {
+      sig.unbroadcastSource(broadcastSourceId);
+      broadcastSourceId = null;
+    }
+
+    // Close all broadcast peer connections
+    broadcastSubscribers.forEach(kioskId => {
+      rtc.closeBroadcastPeerConnection(kioskId);
+    });
+    broadcastSubscribers.clear();
+
+    // Stop local stream
+    if (localBroadcastStream) {
+      localBroadcastStream.getTracks().forEach(t => t.stop());
+      localBroadcastStream = null;
+      broadcastStream = null;
+    }
+
+    // Update base config
+    sig.setConfig(deviceId, {
+      broadcastSourceId: undefined,
+      isBroadcasting: false,
+    });
+
+    showToast('Broadcast stopped');
+    console.log('[base] Broadcast stopped');
+  }
+
+  // ─── Grid View Functions ────────────────────────────────
+
+  function attachGridListeners() {
+    // Grid cell videos are already attached in renderGridView
+    // This is for any additional grid-specific listeners
+  }
+
+  function addToGrid(kioskId) {
+    if (gridViewingIds.size >= 4) {
+      showToast('Grid is full (max 4)');
+      return;
+    }
+    gridViewingIds.add(kioskId);
+    
+    // Subscribe to this kiosk if not already
+    if (!subscribed.has(kioskId)) {
+      subscribed.add(kioskId);
+      sig.subscribeSource(kioskId);
+    }
+    
+    renderDevices();
+  }
+
+  function removeFromGrid(kioskId) {
+    gridViewingIds.delete(kioskId);
+    
+    // Unsubscribe from this kiosk
+    if (subscribed.has(kioskId)) {
+      subscribed.delete(kioskId);
+      sig.unsubscribeSource(kioskId);
+      rtc.closePeerConnection(kioskId);
+      delete streams[kioskId];
+    }
+    
+    renderDevices();
+  }
+
+  // ─── Display/Audio Mode Functions ───────────────────────
+
+  function setDisplayMode(kioskId, displayMode) {
+    const audioMode = devices.find(d => d.id === kioskId)?.config?.audioMode || 'mute';
+    sig.setDisplayConfig(kioskId, displayMode, audioMode);
+  }
+
+  function setAudioMode(kioskId, audioMode) {
+    const displayMode = devices.find(d => d.id === kioskId)?.config?.displayMode || 'self';
+    sig.setDisplayConfig(kioskId, displayMode, audioMode);
   }
 
   function startView(peerId, mode) {
@@ -367,6 +770,25 @@
       }
       return;
     }
+
+    // Grid view buttons
+    const addToGridBtn = t.closest('.add-to-grid');
+    if (addToGridBtn) { addToGrid(addToGridBtn.dataset.id); return; }
+
+    const removeFromGridBtn = t.closest('.remove-from-grid');
+    if (removeFromGridBtn) { removeFromGrid(removeFromGridBtn.dataset.id); return; }
+
+    // Display/audio mode controls
+    const displayModeSelect = t.closest('.display-mode-select');
+    if (displayModeSelect) { setDisplayMode(displayModeSelect.dataset.id, displayModeSelect.value); return; }
+
+    const audioModeSelect = t.closest('.audio-mode-select');
+    if (audioModeSelect) { setAudioMode(audioModeSelect.dataset.id, audioModeSelect.value); return; }
+
+    // Broadcast controls
+    if (t.id === 'toggleBroadcastBtn') { toggleBroadcast(); return; }
+    if (t.id === 'broadcastCamera') { startBroadcastPreview(); return; }
+    if (t.id === 'broadcastMic') { startBroadcastPreview(); return; }
   });
 
   function showConfig(device) {
@@ -564,6 +986,13 @@
         sources.push(source);
         showToast('Source online: ' + (source.label || source.id));
       }
+      
+      // Auto-subscribe to broadcast sources from other bases
+      if (source.isBroadcast && source.publisherId !== deviceId) {
+        console.log('[base] Broadcast source added from', source.publisherId, '- subscribing');
+        sig.subscribeSource(source.publisherId);
+      }
+      
       renderDevices();
     });
 
@@ -588,6 +1017,25 @@
         showHome();
       }
       renderDevices();
+    });
+
+    // Handle subscriber joining our broadcast (kiosk wants to receive our stream)
+    sig.on('subscriberJoined', (data) => {
+      if (data.isBroadcast && isBroadcasting) {
+        const kioskId = data.subscriberId;
+        console.log('[base] Kiosk', kioskId, 'subscribed to our broadcast');
+        broadcastSubscribers.add(kioskId);
+        // Create a broadcast peer connection for this kiosk
+        const pc = rtc.createBroadcastPeerConnection(kioskId);
+        // Add our broadcast tracks
+        if (broadcastStream) {
+          broadcastStream.getTracks().forEach(track => {
+            pc.addTrack(track, broadcastStream);
+          });
+        }
+        // Create offer
+        rtc.createBroadcastOffer(kioskId);
+      }
     });
 
     sig.on('capabilities', (data) => {
