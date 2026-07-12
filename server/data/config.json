@@ -463,7 +463,7 @@
       "label": "Base Station",
       "roomId": "default",
       "createdAt": 1783567326633,
-      "lastSeenAt": 1783702677944,
+      "lastSeenAt": 1783819344548,
       "config": {
         "label": "",
         "visibleSources": [],
@@ -791,6 +791,27 @@
         "audioDevice": "FFCBE2D76CB9B7AC1FED4DAB35910BC5EB1DBBFE",
         "audioAlertEnabled": true,
         "audioAlertThresholdDb": -40
+      }
+    },
+    "kiosk-1783819346863-081m": {
+      "id": "kiosk-1783819346863-081m",
+      "type": "kiosk",
+      "label": "Kiosk",
+      "roomId": "default",
+      "createdAt": 1783819347502,
+      "lastSeenAt": 1783819347502,
+      "config": {
+        "label": "",
+        "camera": "front",
+        "resolution": "720p",
+        "frameRate": 30,
+        "nightMode": false,
+        "torch": false,
+        "micSensitivity": 0.8,
+        "speakerVolume": 0.5,
+        "twoWayAudioEnabled": true,
+        "showFeed": false,
+        "keepAwake": true
       }
     }
   }
