@@ -555,16 +555,6 @@
         ? `<button class="btn btn-small ${vActive ? 'btn-danger' : 'btn-outline'} video-btn" data-id="${d.id}">${vActive ? 'Stop' : 'Video'}</button>`
         : `<button class="btn btn-small btn-disabled video-btn" disabled data-id="${d.id}">Video</button>`;
 
-      // Display/audio mode controls
-      const displayMode = d.config?.displayMode || 'self';
-      const audioMode = d.config?.audioMode || 'mute';
-      const displayOptions = ['self', 'blank', 'base'].map(m =>
-        `<option value="${m}" ${m === displayMode ? 'selected' : ''}>${m === 'self' ? 'Self' : m === 'blank' ? 'Blank' : 'Base'}</option>`
-      ).join('');
-      const audioOptions = ['self', 'mute', 'base'].map(m =>
-        `<option value="${m}" ${m === audioMode ? 'selected' : ''}>${m === 'self' ? 'Self' : m === 'mute' ? 'Mute' : 'Base'}</option>`
-      ).join('');
-
       return `
         <div class="${itemClass}" data-id="${d.id}">
           <div class="device-info">
@@ -575,16 +565,6 @@
             ${audioBtn}
             ${videoBtn}
             <button class="btn btn-small btn-outline settings-btn" data-id="${d.id}">Settings</button>
-          </div>
-          <div class="control-row" style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">
-            <div class="config-row" style="flex:1;min-width:120px">
-              <label style="font-size:11px">Display</label>
-              <select class="display-mode-select" data-id="${d.id}" style="font-size:12px;padding:4px">${displayOptions}</select>
-            </div>
-            <div class="config-row" style="flex:1;min-width:100px">
-              <label style="font-size:11px">Audio</label>
-              <select class="audio-mode-select" data-id="${d.id}" style="font-size:12px;padding:4px">${audioOptions}</select>
-            </div>
           </div>
         </div>`;
     }).join('');
@@ -871,16 +851,8 @@
   }
 
   // ─── Display/Audio Mode Functions ───────────────────────
-
-  function setDisplayMode(kioskId, displayMode) {
-    const audioMode = devices.find(d => d.id === kioskId)?.config?.audioMode || 'mute';
-    sig.setDisplayConfig(kioskId, displayMode, audioMode);
-  }
-
-  function setAudioMode(kioskId, audioMode) {
-    const displayMode = devices.find(d => d.id === kioskId)?.config?.displayMode || 'self';
-    sig.setDisplayConfig(kioskId, displayMode, audioMode);
-  }
+  // (Display/Audio mode is now set from the per-device Settings panel via
+  // sig.setDisplayConfig, so no list-level setters are needed here.)
 
   function startView(peerId, mode) {
     console.log('[view] start', peerId, mode);
@@ -1040,13 +1012,6 @@
     const removeFromGridBtn = t.closest('.remove-from-grid');
     if (removeFromGridBtn) { removeFromGrid(removeFromGridBtn.dataset.id); return; }
 
-    // Display/audio mode controls
-    const displayModeSelect = t.closest('.display-mode-select');
-    if (displayModeSelect) { setDisplayMode(displayModeSelect.dataset.id, displayModeSelect.value); return; }
-
-    const audioModeSelect = t.closest('.audio-mode-select');
-    if (audioModeSelect) { setAudioMode(audioModeSelect.dataset.id, audioModeSelect.value); return; }
-
     // Broadcast controls
     if (t.id === 'toggleBroadcastBtn') { toggleBroadcast(); return; }
     if (t.id === 'broadcastCamera') { startBroadcastPreview(); return; }
@@ -1059,6 +1024,8 @@
     configTitle.textContent = device.label + ' Settings';
     const caps = capabilitiesByDevice[device.id];
     const cfg = device.config || {};
+    const displayMode = cfg.displayMode || 'self';
+    const audioMode = cfg.audioMode || 'mute';
 
     let cameraRow;
     if (caps && caps.videoDevices && caps.videoDevices.length) {
@@ -1122,8 +1089,20 @@
         </select>
       </div>
       <div class="config-row">
-        <label>Two-way Audio</label>
-        <div class="toggle-switch ${cfg.twoWayAudioEnabled !== false ? 'active' : ''}" id="cfg-twoWay"></div>
+        <label>Display Mode</label>
+        <select id="cfg-displayMode">
+          <option value="self" ${displayMode === 'self' ? 'selected' : ''}>Self</option>
+          <option value="blank" ${displayMode === 'blank' ? 'selected' : ''}>Blank</option>
+          <option value="base" ${displayMode === 'base' ? 'selected' : ''}>Base</option>
+        </select>
+      </div>
+      <div class="config-row">
+        <label>Audio Mode</label>
+        <select id="cfg-audioMode">
+          <option value="self" ${audioMode === 'self' ? 'selected' : ''}>Self</option>
+          <option value="mute" ${audioMode === 'mute' ? 'selected' : ''}>Mute</option>
+          <option value="base" ${audioMode === 'base' ? 'selected' : ''}>Base</option>
+        </select>
       </div>
       <div class="config-row">
         <label>Keep Awake</label>
@@ -1149,7 +1128,6 @@
         label: document.getElementById('cfg-label').value,
         resolution: document.getElementById('cfg-resolution').value,
         frameRate: parseInt(document.getElementById('cfg-framerate').value),
-        twoWayAudioEnabled: document.getElementById('cfg-twoWay').classList.contains('active'),
         keepAwake: document.getElementById('cfg-keepAwake').classList.contains('active'),
       };
       const usingVideoCaps = caps && caps.videoDevices && caps.videoDevices.length;
@@ -1166,6 +1144,10 @@
         payload.audioAlertThresholdDb = parseFloat(document.getElementById('cfg-audioThreshold').value);
       }
       sig.setConfig(device.id, payload);
+      // Persist + apply the display/audio mode live (kiosk applies via SET_DISPLAY_CONFIG)
+      const newDisplay = document.getElementById('cfg-displayMode').value;
+      const newAudio = document.getElementById('cfg-audioMode').value;
+      sig.setDisplayConfig(device.id, newDisplay, newAudio);
       configPanel.classList.add('hidden');
     });
     document.getElementById('removeDeviceBtn').addEventListener('click', () => {
