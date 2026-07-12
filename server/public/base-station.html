@@ -27,16 +27,19 @@
       <button id="monitorResumeBtn" class="monitor-resume hidden" title="Resume">▶</button>
       <div class="monitor-overlay">
         <span id="monitorStatus" class="monitor-status hidden"></span>
-        <label class="volume-control" title="Volume">
-          <span class="volume-icon">🔊</span>
-          <input type="range" id="monitorVolume" min="0" max="200" step="1" value="100">
-        </label>
         <button id="monitorMuteBtn" class="btn btn-small btn-outline" title="Mute/unmute">🔇 Mute</button>
         <button id="monitorTalkBtn" class="btn btn-small btn-outline" title="Talk to this device">🎙 Talk</button>
         <button id="monitorFaceTalkBtn" class="btn btn-small btn-outline monitor-ft-btn" title="Send your camera + mic to this device">📹 FaceTalk</button>
         <span id="monitorQuality" class="monitor-quality"></span>
         <button id="monitorFullscreenBtn" class="btn btn-small btn-outline" title="Fullscreen">⛶ Fullscreen</button>
         <button id="stopMonitorBtn" class="btn btn-small btn-outline">Stop</button>
+      </div>
+
+      <div id="volumeWidget" class="volume-widget">
+        <div id="volumeSliderWrap" class="volume-slider-wrap hidden">
+          <input type="range" id="monitorVolume" min="0" max="200" step="1" value="100" orient="vertical">
+        </div>
+        <button id="volumeToggleBtn" class="volume-toggle" title="Volume">🔊</button>
       </div>
     </div>
 

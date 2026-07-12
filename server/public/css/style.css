@@ -728,25 +728,51 @@ input[type="text"]:focus {
   font-weight: 600;
 }
 
-.volume-control {
-  display: inline-flex;
+/* Volume widget: a round button pinned to the lower-right of the monitor
+   feed that expands a vertical slider upward when tapped. */
+.volume-widget {
+  position: absolute;
+  bottom: 8px;
+  right: 8px;
+  display: flex;
+  flex-direction: column;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
+  z-index: 15;
+}
+
+.volume-toggle {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: none;
   background: rgba(0, 0, 0, 0.6);
-  padding: 2px 8px;
-  border-radius: 4px;
+  color: #fff;
+  font-size: 18px;
+  line-height: 40px;
+  text-align: center;
+  padding: 0;
   cursor: pointer;
 }
+.volume-toggle:active { background: rgba(0, 0, 0, 0.8); }
 
-.volume-control .volume-icon {
-  font-size: 12px;
-  line-height: 1;
+.volume-slider-wrap {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  height: 140px;
+  padding: 12px 8px;
+  background: rgba(0, 0, 0, 0.6);
+  border-radius: 20px;
 }
 
-.volume-control input[type="range"] {
+.volume-slider-wrap input[type="range"] {
   --vol-pct: 50%;
-  width: 90px;
-  height: 16px;
+  -webkit-appearance: slider-vertical;
+  writing-mode: vertical-lr;
+  direction: rtl;
+  width: 16px;
+  height: 120px;
   margin: 0;
   padding: 0;
   background: transparent;
@@ -755,35 +781,35 @@ input[type="text"]:focus {
   cursor: pointer;
 }
 
-.volume-control input[type="range"]::-webkit-slider-runnable-track {
-  height: 3px;
-  background: linear-gradient(to right, #fff 0%, #fff var(--vol-pct), rgba(255,255,255,0.35) var(--vol-pct));
+.volume-slider-wrap input[type="range"]::-webkit-slider-runnable-track {
+  width: 3px;
+  background: linear-gradient(to top, #fff 0%, #fff var(--vol-pct), rgba(255,255,255,0.35) var(--vol-pct));
   border-radius: 2px;
 }
 
-.volume-control input[type="range"]::-webkit-slider-thumb {
+.volume-slider-wrap input[type="range"]::-webkit-slider-thumb {
   -webkit-appearance: none;
   width: 14px;
   height: 14px;
   border-radius: 50%;
   background: #fff;
-  margin-top: -5.5px;
+  margin-left: -5.5px;
 }
 
-.volume-control input[type="range"]::-moz-range-track {
-  height: 3px;
+.volume-slider-wrap input[type="range"]::-moz-range-track {
+  width: 3px;
   background: rgba(255, 255, 255, 0.35);
   border-radius: 2px;
   border: none;
 }
 
-.volume-control input[type="range"]::-moz-range-progress {
-  height: 3px;
+.volume-slider-wrap input[type="range"]::-moz-range-progress {
+  width: 3px;
   background: #fff;
   border-radius: 2px;
 }
 
-.volume-control input[type="range"]::-moz-range-thumb {
+.volume-slider-wrap input[type="range"]::-moz-range-thumb {
   width: 14px;
   height: 14px;
   border-radius: 50%;

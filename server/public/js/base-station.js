@@ -383,6 +383,15 @@
     localStorage.setItem('hearth_baseVolume', monitorVolume.value);
   });
 
+  // Volume button toggles the vertical slider open/closed.
+  const volumeToggleBtn = document.getElementById('volumeToggleBtn');
+  const volumeSliderWrap = document.getElementById('volumeSliderWrap');
+  if (volumeToggleBtn && volumeSliderWrap) {
+    volumeToggleBtn.addEventListener('click', () => {
+      volumeSliderWrap.classList.toggle('hidden');
+    });
+  }
+
   function formatTime(ts) {
     const diff = Date.now() - ts;
     if (diff < 60000) return 'just now';
