@@ -113,7 +113,7 @@ class SignalingHandler {
                 this.handleSetConfig(transport, msg.payload);
                 break;
             case 'GET_CONFIG':
-                this.handleGetConfig(transport);
+                this.handleGetConfig(transport, msg.payload);
                 break;
             case 'SET_DISPLAY_CONFIG':
                 this.handleSetDisplayConfig(transport, msg.payload);
@@ -441,6 +441,14 @@ class SignalingHandler {
             this.sendError(transport, 'NOT_FOUND', 'Publisher not found');
             return;
         }
+        // Authoritative guard: a kiosk with system broadcasts disabled must not
+        // receive "Broadcast Message" announcements, even if its client ignores
+        // the source. Re-check the stored device config (which the base sets).
+        const subscriber = this.config.getDevice(client.deviceId);
+        if (subscriber && subscriber.config && subscriber.config.broadcastDisabled === true) {
+            console.log(`Kiosk ${client.deviceId} has broadcasts disabled — denying subscribe`);
+            return;
+        }
         // Notify publisher that a new subscriber wants their broadcast stream
         this.channels.sendTo(publisherId, {
             type: 'SUBSCRIBER_JOINED',
@@ -692,14 +700,17 @@ class SignalingHandler {
         }
         console.log(`Config updated for ${targetDeviceId} by ${client.deviceId}`);
     }
-    handleGetConfig(transport) {
+    handleGetConfig(transport, payload) {
         const client = this.channels.getClientByConnId(transport.connId);
         if (!client)
             return;
-        const config = this.config.getDeviceConfig(client.deviceId);
+        // A target may be supplied (e.g. a base station asking for a kiosk's
+        // current config). Without a target, return the requester's own config.
+        const targetDeviceId = payload?.targetDeviceId || client.deviceId;
+        const config = this.config.getDeviceConfig(targetDeviceId);
         this.send(transport, {
-            type: 'CONFIG_UPDATED',
-            payload: { config },
+            type: 'CONFIG_RESULT',
+            payload: { targetDeviceId, config: config || {} },
         });
     }
     handleRequestTalk(transport, payload) {

@@ -41,6 +41,9 @@ export interface DeviceConfig {
   displayMode?: DisplayMode;
   audioMode?: AudioMode;
 
+  // When true the kiosk will not receive system broadcasts ("Broadcast Message").
+  broadcastDisabled?: boolean;
+
   // Base station broadcast
   broadcastSourceId?: string;
   isBroadcasting?: boolean;

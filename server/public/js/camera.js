@@ -28,6 +28,7 @@
   // Broadcast state
   let broadcastPeerId = null;  // Base station ID we're receiving broadcast from
   let broadcastStream = null;  // Remote stream from base broadcast
+  let broadcastAudioActive = false; // base is sending a "Broadcast Message" announcement
   let baseVideoActive = false; // Base is pushing its camera to us (FaceTalk/broadcast)
 
   // ─── Persistent device settings (localStorage) ──────────
@@ -240,6 +241,7 @@
         broadcastStream = null;
       }
       baseVideoActive = false;
+      broadcastAudioActive = false;
       broadcastPeerId = null;
       applyDisplayConfig(currentConfig.displayMode || 'self', currentConfig.audioMode || 'mute');
       ftDbgState.base = null;
@@ -634,9 +636,10 @@
       remoteAudio.volume = Math.max(0, Math.min(1, vol));
       // Play base audio only when it is allowed by the display/audio mode and
       // we are either in a call or the base has enabled talkback, OR the base
-      // is broadcasting audio to us ('base' audio mode).
+      // is broadcasting a "Broadcast Message" announcement (which overrides
+      // the kiosk's mute so the announcement is always heard).
       const audioMode = currentConfig.audioMode || 'mute';
-      const allowed = audioMode === 'base' || talkbackActive || callActive;
+      const allowed = audioMode === 'base' || talkbackActive || callActive || broadcastAudioActive;
       remoteAudio.muted = !allowed;
       if (allowed) {
         remoteAudio.play().catch(() => {});
@@ -666,6 +669,11 @@
             video.play().catch(() => {});
           }
         } else if (track.kind === 'audio') {
+          // A broadcast audio track = a "Broadcast Message" announcement. Mark
+          // it active so applyRemoteAudio() overrides the kiosk's mute and the
+          // announcement is actually heard (this is what made plain broadcasts
+          // silently fail before — the kiosk stayed muted).
+          broadcastAudioActive = true;
           remoteAudio.srcObject = stream;
           applyRemoteAudio();
         }
@@ -781,20 +789,24 @@
       }
     });
 
-    // Handle source added - auto-subscribe to broadcasts
+    // Handle source added - auto-subscribe to broadcasts, unless this kiosk
+    // has system broadcasts disabled (set remotely by the base, or locally).
     sig.on('sourceAdded', (source) => {
       if (source.isBroadcast && source.publisherId !== deviceId) {
+        if (currentConfig.broadcastDisabled) {
+          console.log('[kiosk] broadcasts disabled — ignoring broadcast source', source.id);
+          return;
+        }
         console.log('[kiosk] broadcast source added:', source.id, 'from', source.publisherId);
         subscribeToBroadcast(source.publisherId);
       }
     });
 
-    // Handle source removed - cleanup broadcast if needed
+    // Handle source removed - if it was our broadcast source, tear it down.
     sig.on('sourceRemoved', (data) => {
       if (broadcastPeerId && data.sourceId) {
-        // Check if this was our broadcast source
-        // We'd need to track the broadcast source ID
-        console.log('[kiosk] source removed:', data.sourceId);
+        console.log('[kiosk] broadcast source removed:', data.sourceId, '- unsubscribing');
+        unsubscribeFromBroadcast();
       }
     });
 

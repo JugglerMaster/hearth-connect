@@ -363,8 +363,8 @@ class SignalingClient {
     this.send('SET_CONFIG', { targetDeviceId, config });
   }
 
-  getConfig() {
-    this.send('GET_CONFIG');
+  getConfig(targetDeviceId) {
+    this.send('GET_CONFIG', targetDeviceId ? { targetDeviceId } : {});
   }
 
   requestTalk(targetPublisherId) {

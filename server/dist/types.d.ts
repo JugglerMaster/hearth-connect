@@ -26,6 +26,7 @@ export interface DeviceConfig {
     idleTimeout?: number;
     displayMode?: DisplayMode;
     audioMode?: AudioMode;
+    broadcastDisabled?: boolean;
     broadcastSourceId?: string;
     isBroadcasting?: boolean;
 }

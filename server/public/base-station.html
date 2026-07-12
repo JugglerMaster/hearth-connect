@@ -27,12 +27,23 @@
       <button id="monitorResumeBtn" class="monitor-resume hidden" title="Resume">▶</button>
       <div class="monitor-overlay">
         <span id="monitorStatus" class="monitor-status hidden"></span>
-        <button id="monitorMuteBtn" class="btn btn-small btn-outline" title="Mute/unmute">🔇 Mute</button>
-        <button id="monitorTalkBtn" class="btn btn-small btn-outline" title="Talk to this device">🎙 Talk</button>
-        <button id="monitorFaceTalkBtn" class="btn btn-small btn-outline monitor-ft-btn" title="Send your camera + mic to this device">📹 FaceTalk</button>
+        <button id="monitorMuteBtn" class="icon-btn" type="button" aria-label="Mute" aria-pressed="false" title="Mute">
+          <svg class="ic ic-unmuted" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 5 6 9H2v6h4l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M19 5a9 9 0 0 1 0 14"/></svg>
+          <svg class="ic ic-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 5 6 9H2v6h4l5 4z"/><line x1="22" y1="9" x2="16" y2="15"/><line x1="16" y1="9" x2="22" y2="15"/></svg>
+        </button>
+        <button id="monitorTalkBtn" class="icon-btn" type="button" aria-label="Talk" aria-pressed="false" title="Talk">
+          <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0"/><line x1="12" y1="18" x2="12" y2="22"/></svg>
+        </button>
+        <button id="monitorFaceTalkBtn" class="icon-btn" type="button" aria-label="FaceTalk" aria-pressed="false" title="Send camera + mic">
+          <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="6" width="14" height="12" rx="2"/><path d="m22 8-6 4 6 4z"/></svg>
+        </button>
         <span id="monitorQuality" class="monitor-quality"></span>
-        <button id="monitorFullscreenBtn" class="btn btn-small btn-outline" title="Fullscreen">⛶ Fullscreen</button>
-        <button id="stopMonitorBtn" class="btn btn-small btn-outline">Stop</button>
+        <button id="monitorFullscreenBtn" class="icon-btn fs" type="button" aria-label="Fullscreen" aria-pressed="false" title="Fullscreen">
+          <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M16 3h3a2 2 0 0 1 2 2v3"/><path d="M8 21H5a2 2 0 0 1-2-2v-3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/></svg>
+        </button>
+        <button id="stopMonitorBtn" class="icon-btn stop" type="button" aria-label="Stop" title="Stop">
+          <svg class="ic" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+        </button>
       </div>
 
       <div id="volumeWidget" class="volume-widget">
