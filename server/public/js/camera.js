@@ -213,6 +213,7 @@
         broadcastStream.getTracks().forEach(t => t.stop());
         broadcastStream = null;
       }
+      baseVideoActive = false;
       broadcastPeerId = null;
       applyDisplayConfig(currentConfig.displayMode || 'self', currentConfig.audioMode || 'mute');
     }
@@ -226,6 +227,14 @@
 
     switch (displayMode) {
       case 'self':
+        // While the base is pushing its camera (FaceTalk/broadcast), that
+        // overrides the device's display setting — keep showing the base feed.
+        if (baseVideoActive && broadcastStream) {
+          video.srcObject = broadcastStream;
+          video.muted = true;
+          video.play().catch(() => {});
+          break;
+        }
         // Show local camera (muted)
         if (rtc.localStream) {
           video.srcObject = rtc.localStream;
@@ -234,6 +243,13 @@
         }
         break;
       case 'blank':
+        // Same override: FaceTalk video wins over "blank".
+        if (baseVideoActive && broadcastStream) {
+          video.srcObject = broadcastStream;
+          video.muted = true;
+          video.play().catch(() => {});
+          break;
+        }
         // Show black/placeholder
         video.srcObject = null;
         // Could show a placeholder div here
@@ -570,6 +586,7 @@
     // reaches the kiosk speaker.
     let talkbackActive = false;       // base is actively talking to us
     let callActive = false;           // we are in a call with the base
+    let baseVideoActive = false;      // base is pushing its camera to us (FaceTalk/broadcast)
 
     function applyRemoteAudio() {
       if (!remoteAudio) return;
@@ -595,8 +612,11 @@
         // track arrived (otherwise the video silently never shows).
         broadcastStream = stream;
         if (track.kind === 'video') {
-          // Show the base's broadcast video when in 'base' display mode.
-          if ((currentConfig.displayMode || 'self') === 'base' && !callActive) {
+          // While the base is pushing its camera (FaceTalk/broadcast), show it
+          // unconditionally — this overrides the device's display-mode setting
+          // so the monitor always reflects the base feed during FaceTalk.
+          baseVideoActive = true;
+          if (!callActive) {
             video.srcObject = stream;
             video.muted = true;
             video.play().catch(() => {});
