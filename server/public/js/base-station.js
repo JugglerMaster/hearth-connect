@@ -1032,12 +1032,30 @@
     }
   }
 
-  // Exiting fullscreen on iOS/Safari leaves the <video> paused. Just resume
-  // playback if it got paused during the fullscreen transition.
+  // Exiting fullscreen on iOS/Safari leaves the <video> paused and auto-play
+  // often won't restart it (no user gesture). Show a centered resume button
+  // when the video is paused; tapping it replays with the required gesture.
+  const monitorResumeBtn = document.getElementById('monitorResumeBtn');
+  function showResumeIfPaused() {
+    if (!monitorResumeBtn) return;
+    const paused = monitorVideo && monitorVideo.srcObject && monitorVideo.paused;
+    monitorResumeBtn.classList.toggle('hidden', !paused);
+  }
   function resumeMonitorVideo() {
-    if (monitorVideo && monitorVideo.srcObject && monitorVideo.paused) {
-      monitorVideo.play().catch(() => {});
-    }
+    // Give Safari a tick to settle the pause state after fullscreen exit.
+    setTimeout(showResumeIfPaused, 100);
+  }
+  if (monitorResumeBtn) {
+    monitorResumeBtn.addEventListener('click', () => {
+      monitorResumeBtn.classList.add('hidden');
+      if (monitorVideo) monitorVideo.play().catch(() => {});
+    });
+  }
+  if (monitorVideo) {
+    monitorVideo.addEventListener('pause', showResumeIfPaused);
+    monitorVideo.addEventListener('play', () => {
+      if (monitorResumeBtn) monitorResumeBtn.classList.add('hidden');
+    });
   }
   document.addEventListener('fullscreenchange', resumeMonitorVideo);
   document.addEventListener('webkitfullscreenchange', resumeMonitorVideo);
