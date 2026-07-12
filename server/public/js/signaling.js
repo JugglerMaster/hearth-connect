@@ -214,6 +214,14 @@ class SignalingClient {
         this.emit('iceCandidate', msg.payload);
         break;
 
+      case 'RENEGOTIATE':
+        this.emit('renegotiate', msg.payload);
+        break;
+
+      case 'ICE_RESTART':
+        this.emit('iceRestart', msg.payload);
+        break;
+
       case 'CONFIG_UPDATED':
         this.emit('configUpdated', msg.payload);
         break;
@@ -226,6 +234,10 @@ class SignalingClient {
         this.emit('deviceStatus', msg.payload);
         break;
 
+      case 'SET_DISPLAY_CONFIG':
+        this.emit('setDisplayConfig', msg.payload);
+        break;
+
       case 'CAPABILITIES':
         this.emit('capabilities', msg.payload);
         break;
@@ -236,6 +248,14 @@ class SignalingClient {
 
       case 'DEVICE_REMOVED':
         this.emit('deviceRemoved', msg.payload);
+        break;
+
+      case 'DOORBELL':
+        this.emit('doorbell', msg.payload);
+        break;
+
+      case 'CALL_STATE':
+        this.emit('callState', msg.payload);
         break;
 
       case 'TALK_ENABLED':
@@ -313,20 +333,30 @@ class SignalingClient {
     this.send('UNSUBSCRIBE_SOURCE', { publisherId });
   }
 
-  sendOffer(to, sdp) {
-    this.send('OFFER', { to, sdp });
+  sendOffer(to, sdp, isBroadcast = false) {
+    const payload = { to, sdp };
+    if (isBroadcast) payload.isBroadcast = true;
+    this.send('OFFER', payload);
   }
 
-  sendAnswer(to, sdp) {
-    this.send('ANSWER', { to, sdp });
+  sendAnswer(to, sdp, isBroadcast = false) {
+    const payload = { to, sdp };
+    if (isBroadcast) payload.isBroadcast = true;
+    this.send('ANSWER', payload);
   }
 
-  sendIceCandidate(to, candidate) {
-    this.send('ICE_CANDIDATE', { to, candidate });
+  sendIceCandidate(to, candidate, isBroadcast = false) {
+    const payload = { to, candidate };
+    if (isBroadcast) payload.isBroadcast = true;
+    this.send('ICE_CANDIDATE', payload);
   }
 
   requestIceRestart(to) {
     this.send('ICE_RESTART', { to });
+  }
+
+  requestRenegotiate(to) {
+    this.send('RENEGOTIATE', { to });
   }
 
   setConfig(targetDeviceId, config) {
@@ -345,8 +375,36 @@ class SignalingClient {
     this.send('STOP_TALK', { targetPublisherId });
   }
 
+  ringDoorbell(label) {
+    this.send('DOORBELL', { label: label || '' });
+  }
+
+  sendCallState(targetDeviceId, state) {
+    this.send('CALL_STATE', { targetDeviceId, state });
+  }
+
   removeDevice(targetDeviceId) {
     this.send('REMOVE_DEVICE', { targetDeviceId });
+  }
+
+  broadcastSource(sourceId, label, type) {
+    this.send('BROADCAST_SOURCE', { sourceId, label, type });
+  }
+
+  unbroadcastSource(sourceId) {
+    this.send('UNBROADCAST_SOURCE', { sourceId });
+  }
+
+  subscribeBroadcast(publisherId) {
+    this.send('SUBSCRIBE_BROADCAST', { publisherId });
+  }
+
+  unsubscribeBroadcast(publisherId) {
+    this.send('UNSUBSCRIBE_BROADCAST', { publisherId });
+  }
+
+  setDisplayConfig(targetDeviceId, displayMode, audioMode) {
+    this.send('SET_DISPLAY_CONFIG', { targetDeviceId, displayMode, audioMode });
   }
 
   // ─── Event System ────────────────────────────────────

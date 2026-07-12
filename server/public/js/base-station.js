@@ -25,6 +25,27 @@
   let audioState = {};           // deviceId → { levelDb, alerting }
   let lastActivity = {};         // peerId → ts of last track activity
 
+  // Broadcast state
+  let isBroadcasting = false;
+  let broadcastSourceId = null;
+  let broadcastStream = null;
+  let broadcastVideoTrack = null;
+  let broadcastAudioTrack = null;
+  let broadcastSubscribers = new Set(); // kioskIds receiving our broadcast
+
+  // Grid view state
+  let gridMode = false; // false = single view, true = 2x2 grid
+  let gridViewingIds = new Set(); // Set of kioskIds being viewed in grid
+
+  // Grid view state (sources)
+  let gridSources = []; // Array of {deviceId, label, stream} for grid
+
+  // Additional broadcast media-selection state (localBroadcastStream is the
+  // live preview/broadcast stream owned by the base station).
+  let broadcastVideoDevice = null;
+  let broadcastAudioDevice = null;
+  let localBroadcastStream = null;
+
   // Watch recovery state
   let recovering = false;
   let recoverTimer = null;
@@ -34,20 +55,43 @@
   const connectionDot = document.getElementById('connectionDot');
   const monitorFeed = document.getElementById('monitorFeed');
   const monitorVideo = document.getElementById('monitorVideo');
-  const monitorLabel = document.getElementById('monitorLabel');
-  const monitorMode = document.getElementById('monitorMode');
   const monitorError = document.getElementById('monitorError');
   const monitorStatus = document.getElementById('monitorStatus');
   const monitorPlaceholder = document.getElementById('monitorPlaceholder');
   const stopMonitorBtn = document.getElementById('stopMonitorBtn');
   const monitorVolume = document.getElementById('monitorVolume');
+  const monitorMuteBtn = document.getElementById('monitorMuteBtn');
+  const monitorTalkBtn = document.getElementById('monitorTalkBtn');
+  const monitorFaceTalkBtn = document.getElementById('monitorFaceTalkBtn');
+  const monitorQuality = document.getElementById('monitorQuality');
+  const ftDebug = document.getElementById('ftDebug');
   const toast = document.getElementById('toast');
   const homeView = document.getElementById('homeView');
   const deviceList = document.getElementById('deviceList');
   const configPanel = document.getElementById('configPanel');
   const configForm = document.getElementById('configForm');
   const configTitle = document.getElementById('configTitle');
+  const incomingCall = document.getElementById('incomingCall');
+  const incomingCallFrom = document.getElementById('incomingCallFrom');
+  const answerCallBtn = document.getElementById('answerCallBtn');
+  const dismissCallBtn = document.getElementById('dismissCallBtn');
   let configDeviceId = null;
+
+  // Talk / mute / call state (per active view)
+  let talkingTo = null;       // deviceId we are currently talking to
+  let faceTalkingTo = null;   // kioskId we are currently pushing video+audio to
+  let faceTalkSourceId = null; // broadcast source id owned by FaceTalk
+  let faceTalkRestore = null; // { displayMode, audioMode } to restore on hang-up
+  let monitorMuted = false;   // base station speaker mute for the live stream
+  let statsStop = null;       // getStats polling cleanup for the active view
+  let mutedVolume = 100;      // volume to restore after unmute
+
+  // Broadcast UI elements (created dynamically)
+  let broadcastPanel = null;
+  let broadcastPreview = null;
+  let broadcastVideoSel = null;
+  let broadcastAudioSel = null;
+  let broadcastBtn = null;
 
   // ─── Volume control ──
   // Slider 0–200 → gain 0–2×.  100 = unity, 200 = double (+6 dB).
@@ -94,6 +138,233 @@
     }
   }
 
+  // ─── Two-way talkback (base → kiosk reverse audio) ─────
+  // enableTalkback() acquires the base mic and adds it as a track to the live
+  // monitor PC; webrtc.js's onnegotiationneeded then renegotiates so the audio
+  // actually flows to the kiosk. We also tell the kiosk to unmute its speaker.
+  async function startTalk(peerId) {
+    if (talkingTo === peerId) return;
+    try {
+      await rtc.enableTalkback(peerId);
+      sig.requestTalk(peerId);
+      talkingTo = peerId;
+      if (monitorTalkBtn) {
+        monitorTalkBtn.textContent = '🎙 Talking…';
+        monitorTalkBtn.classList.add('btn-danger');
+        monitorTalkBtn.classList.remove('btn-outline');
+      }
+      console.log('[base] talkback ON to', peerId);
+    } catch (err) {
+      console.error('[base] startTalk failed', err);
+      showToast('Microphone unavailable for talkback');
+    }
+  }
+
+  function stopTalk(peerId) {
+    if (!talkingTo) return;
+    rtc.disableTalkback(peerId);
+    sig.stopTalk(peerId);
+    talkingTo = null;
+    if (monitorTalkBtn) {
+      monitorTalkBtn.textContent = '🎙 Talk';
+      monitorTalkBtn.classList.remove('btn-danger');
+      monitorTalkBtn.classList.add('btn-outline');
+    }
+    console.log('[base] talkback OFF to', peerId);
+  }
+
+  // ─── FaceTalk (base → kiosk reverse video+audio) ──────
+  // Debug readout for the base→kiosk audio/video (FaceTalk/broadcast) link.
+  // Rendered at the top of the monitor video area. Tracks the signaling (WS/SSE)
+  // transport plus the per-kiosk broadcast RTCPeerConnection + track state.
+  let ftDbgState = {
+    wsMethod: '--',
+    wsUp: false,
+    target: null,      // kioskId we are FaceTalking to
+    sourceId: null,    // broadcast source id
+    pc: '--',          // broadcast PC connection state
+    ice: '--',         // broadcast PC ICE state
+    tracks: '--',      // tracks added to the broadcast PC
+  };
+  function renderFtDebug() {
+    if (!ftDebug) return;
+    const d = ftDbgState;
+    const tgt = d.target ? d.target.slice(-4) : '—';
+    ftDebug.textContent =
+      'ft:' + (d.target ? 'ON→' + tgt : 'idle') +
+      '  ws:' + d.wsMethod + (d.wsUp ? '↑' : '↓') +
+      '  src:' + (d.sourceId ? d.sourceId.slice(-6) : '—') +
+      '  pc:' + d.pc + '  ice:' + d.ice +
+      '  tracks:' + d.tracks;
+  }
+
+  // Starts a video+audio broadcast from the base station to the watched kiosk
+  // and temporarily switches that kiosk's display to 'base' so the feed is
+  // shown/heard. The kiosk's previous display/audio mode is restored on hang-up.
+  async function startFaceTime(peerId) {
+    if (faceTalkingTo === peerId) return;
+    try {
+      const dev = devices.find(d => d.id === peerId);
+      faceTalkRestore = {
+        displayMode: dev?.config?.displayMode || 'self',
+        audioMode: dev?.config?.audioMode || 'mute',
+      };
+
+      if (!localBroadcastStream) {
+        await ensureBroadcastStream();
+      }
+      if (!localBroadcastStream) {
+        showToast('FaceTalk failed: no camera/mic available');
+        return;
+      }
+
+      // Keep FaceTalk's source id separate from a manually-started broadcast
+      // so stopping FaceTalk doesn't tear down an independent broadcast.
+      faceTalkSourceId = 'broadcast-' + deviceId + '-' + Date.now();
+      broadcastStream = localBroadcastStream;
+      // Mark as broadcasting so the base creates a broadcast PC when the kiosk
+      // subscribes to this source (see the subscriberJoined handler).
+      isBroadcasting = true;
+      sig.broadcastSource(faceTalkSourceId, 'Base Station FaceTalk', 'video+audio');
+
+      // Switch the target kiosk to show/hear the base's broadcast.
+      sig.setDisplayConfig(peerId, 'base', 'base');
+
+      faceTalkingTo = peerId;
+      ftDbgState.target = peerId;
+      ftDbgState.sourceId = faceTalkSourceId;
+      ftDbgState.pc = 'new';
+      ftDbgState.ice = 'new';
+      ftDbgState.tracks = '--';
+      renderFtDebug();
+      if (monitorFaceTalkBtn) {
+        monitorFaceTalkBtn.textContent = '📹 FaceTalking…';
+        monitorFaceTalkBtn.classList.add('btn-danger');
+        monitorFaceTalkBtn.classList.remove('btn-outline');
+      }
+      console.log('[base] FaceTalk ON to', peerId);
+    } catch (err) {
+      console.error('[base] startFaceTime failed', err);
+      showToast('Camera/microphone unavailable for FaceTalk');
+    }
+  }
+
+  function stopFaceTime(peerId) {
+    if (!faceTalkingTo) return;
+    if (faceTalkSourceId) {
+      sig.unbroadcastSource(faceTalkSourceId);
+      faceTalkSourceId = null;
+    }
+    // Close only the broadcast PC opened to this kiosk for FaceTalk.
+    broadcastSubscribers.forEach(kioskId => {
+      if (kioskId === peerId) rtc.closeBroadcastPeerConnection(kioskId);
+    });
+    broadcastSubscribers.delete(peerId);
+    // Restore the broadcasting flag to reflect any manual broadcast still active.
+    isBroadcasting = !!broadcastSourceId;
+
+    if (faceTalkRestore) {
+      sig.setDisplayConfig(faceTalkingTo, faceTalkRestore.displayMode, faceTalkRestore.audioMode);
+      faceTalkRestore = null;
+    }
+
+    faceTalkingTo = null;
+    ftDbgState.target = null;
+    ftDbgState.sourceId = null;
+    ftDbgState.pc = '--';
+    ftDbgState.ice = '--';
+    ftDbgState.tracks = '--';
+    renderFtDebug();
+    if (monitorFaceTalkBtn) {
+      monitorFaceTalkBtn.textContent = '📹 FaceTalk';
+      monitorFaceTalkBtn.classList.remove('btn-danger');
+      monitorFaceTalkBtn.classList.add('btn-outline');
+    }
+    console.log('[base] FaceTalk OFF to', peerId);
+  }
+
+  function toggleFaceTime() {
+    if (!viewingId) { showToast('Open a device feed first'); return; }
+    if (faceTalkingTo) stopFaceTime(faceTalkingTo);
+    else startFaceTime(viewingId);
+    showMonitorControls();
+  }
+
+  function toggleTalk() {
+    if (!viewingId) { showToast('Open a device feed first'); return; }
+    if (talkingTo) stopTalk(viewingId);
+    else startTalk(viewingId);
+    showMonitorControls();
+  }
+
+  // ─── Speaker mute (affects the live GainNode, not just stored config) ──
+  function toggleMute() {
+    monitorMuted = !monitorMuted;
+    if (monitorMuted) {
+      mutedVolume = parseFloat(monitorVolume.value) || 100;
+      applyVolume(0);
+      if (monitorMuteBtn) {
+        monitorMuteBtn.textContent = '🔈 Unmute';
+        monitorMuteBtn.classList.add('btn-danger');
+        monitorMuteBtn.classList.remove('btn-outline');
+      }
+    } else {
+      applyVolume(mutedVolume);
+      if (monitorMuteBtn) {
+        monitorMuteBtn.textContent = '🔇 Mute';
+        monitorMuteBtn.classList.remove('btn-danger');
+        monitorMuteBtn.classList.add('btn-outline');
+      }
+    }
+  }
+
+  // ─── Connection-quality indicator (getStats) ──────────
+  function updateQuality(stats) {
+    if (!monitorQuality) return;
+    if (!stats || stats.state !== 'connected') {
+      monitorQuality.textContent = stats ? `(${stats.state})` : '';
+      return;
+    }
+    const parts = [];
+    if (stats.bitrateKbps) parts.push(`${stats.bitrateKbps} kbps`);
+    if (stats.rttMs) parts.push(`RTT ${stats.rttMs} ms`);
+    if (stats.packetsLost) parts.push(`lost ${stats.packetsLost}`);
+    if (stats.jitterMs) parts.push(`jit ${stats.jitterMs} ms`);
+    monitorQuality.textContent = parts.length ? `▮ ${parts.join(' · ')}` : '▮ connected';
+  }
+
+  // ─── Incoming doorbell / call ─────────────────────────
+  function showIncomingCall(data) {
+    if (!incomingCall) return;
+    incomingCallFrom.textContent = (data.label || data.from) + ' is calling';
+    incomingCall.dataset.from = data.from;
+    incomingCall.classList.remove('hidden');
+    // Auto-dismiss the modal prompt after 30s if not answered.
+    if (incomingCall._timer) clearTimeout(incomingCall._timer);
+    incomingCall._timer = setTimeout(() => {
+      incomingCall.classList.add('hidden');
+    }, 30000);
+  }
+
+  function answerCall() {
+    if (!incomingCall) return;
+    const from = incomingCall.dataset.from;
+    incomingCall.classList.add('hidden');
+    if (!from) return;
+    // Open the feed (subscribe + watch) and start two-way talkback.
+    startView(from, 'video');
+    startTalk(from);
+    sig.sendCallState(from, 'connected');
+    showToast('Call connected to ' + (devices.find(d => d.id === from)?.label || from));
+  }
+
+  function dismissCall() {
+    if (!incomingCall) return;
+    const from = incomingCall.dataset.from;
+    incomingCall.classList.add('hidden');
+    if (from) sig.sendCallState(from, 'ended');
+  }
+
   let initVol = parseFloat(localStorage.getItem('hearth_baseVolume'));
   if (!isFinite(initVol) || initVol < 0 || initVol > 200) initVol = 100;
   monitorVolume.value = initVol;
@@ -111,6 +382,15 @@
     applyVolume(monitorVolume.value);
     localStorage.setItem('hearth_baseVolume', monitorVolume.value);
   });
+
+  // Volume button toggles the vertical slider open/closed.
+  const volumeToggleBtn = document.getElementById('volumeToggleBtn');
+  const volumeSliderWrap = document.getElementById('volumeSliderWrap');
+  if (volumeToggleBtn && volumeSliderWrap) {
+    volumeToggleBtn.addEventListener('click', () => {
+      volumeSliderWrap.classList.toggle('hidden');
+    });
+  }
 
   function formatTime(ts) {
     const diff = Date.now() - ts;
@@ -177,7 +457,6 @@
     if (viewMode === 'audio') {
       monitorVideo.classList.add('hidden');
       monitorPlaceholder.classList.remove('hidden');
-      monitorMode.textContent = '🔊 Listening';
       return;
     }
     // Video mode:
@@ -186,21 +465,126 @@
       // Keep waiting — do NOT downgrade viewMode, just show a connecting state.
       monitorVideo.classList.add('hidden');
       monitorPlaceholder.classList.remove('hidden');
-      monitorMode.textContent = '📹 Connecting…';
       return;
     }
     monitorVideo.classList.remove('hidden');
     monitorPlaceholder.classList.add('hidden');
-    monitorMode.textContent = '📹 Watching';
+  }
+
+  // In-place update of a device's dB readout + alert highlight. Used by the
+  // AUDIO_PEAK handler so we never rebuild the device list (which would clobber
+  // an open display/audio <select> the operator is interacting with).
+  function updateAudioMeterUi(id) {
+    const st = audioState[id];
+    if (!st) return;
+    const item = deviceList.querySelector('.device-item[data-id="' + id + '"]');
+    if (!item) return;
+    const dbText = (st.levelDb != null) ? ` ${Math.round(st.levelDb)}dB` : '';
+    let readout = item.querySelector('.db-readout');
+    if (st.levelDb != null) {
+      if (!readout) {
+        readout = document.createElement('span');
+        readout.className = 'db-readout';
+        const name = item.querySelector('.device-name');
+        if (name) name.appendChild(readout);
+      }
+      readout.textContent = dbText;
+    } else if (readout) {
+      readout.remove();
+    }
+    if (st.alerting) item.classList.add('audio-alert');
+    else item.classList.remove('audio-alert');
   }
 
   function renderDevices() {
     const kiosks = devices.filter(d => d.type === 'kiosk' && d.id !== deviceId);
+    const bases = devices.filter(d => d.type === 'base' && d.id !== deviceId);
+
+    // Build broadcast panel HTML.
+    // Only show when NOT actively showing the monitor feed (no video/audio
+    // option selected and no self-test running). While the feed pane is open
+    // we hide the broadcast controls.
+    const feedOpen = viewingId || (monitorFeed && !monitorFeed.classList.contains('hidden'));
+    let broadcastPanel = '';
+    if (!feedOpen && bases.length === 0 && devices.some(d => d.id === deviceId && d.type === 'base')) {
+      // We are the only base or first base - show broadcast controls
+      broadcastPanel = buildBroadcastPanel();
+    }
+
     if (kiosks.length === 0) {
-      deviceList.innerHTML = '<p class="hint" style="padding:12px">No kiosks connected</p>';
+      deviceList.innerHTML = broadcastPanel + '<p class="hint" style="padding:12px">No kiosks connected</p>';
       return;
     }
-    deviceList.innerHTML = kiosks.map(d => {
+
+    if (gridMode) {
+      renderGridView(kiosks, broadcastPanel);
+    } else {
+      renderListView(kiosks, broadcastPanel);
+    }
+  }
+
+  function buildBroadcastPanel() {
+    const caps = capabilitiesByDevice[deviceId];
+    let cameraOptions = '';
+    let micOptions = '';
+
+    if (caps && caps.videoDevices && caps.videoDevices.length) {
+      cameraOptions = caps.videoDevices.map(v =>
+        `<option value="${v.id}">${v.label || v.id}</option>`
+      ).join('');
+    } else {
+      cameraOptions = `<option value="front">Front</option><option value="rear">Rear</option>`;
+    }
+
+    if (caps && caps.audioDevices && caps.audioDevices.length) {
+      micOptions = caps.audioDevices.map(a =>
+        `<option value="${a.id}">${a.label || a.id}</option>`
+      ).join('');
+    } else {
+      micOptions = `<option value="default">Default</option>`;
+    }
+
+    return `
+      <div class="broadcast-panel panel">
+        <h3>📡 Broadcast</h3>
+        <div class="broadcast-preview">
+          <video id="broadcastPreview" autoplay playsinline muted></video>
+        </div>
+        <div class="broadcast-controls">
+          <div class="config-row">
+            <label>Camera</label>
+            <select id="broadcastCamera">${cameraOptions}</select>
+          </div>
+          <div class="config-row">
+            <label>Microphone</label>
+            <select id="broadcastMic">${micOptions}</select>
+          </div>
+          <div class="config-row">
+            <label>Resolution</label>
+            <select id="broadcastResolution">
+              <option value="480p">480p</option>
+              <option value="720p" selected>720p</option>
+              <option value="1080p">1080p</option>
+            </select>
+          </div>
+          <div class="config-row">
+            <label>Frame Rate</label>
+            <select id="broadcastFramerate">
+              <option value="15">15 fps</option>
+              <option value="24">24 fps</option>
+              <option value="30" selected>30 fps</option>
+            </select>
+          </div>
+          <button id="toggleBroadcastBtn" class="btn btn-primary" style="width:100%;margin-top:8px">
+            Start Broadcast
+          </button>
+        </div>
+      </div>
+    `;
+  }
+
+  function renderListView(kiosks, broadcastPanel) {
+    deviceList.innerHTML = broadcastPanel + kiosks.map(d => {
       const isViewing = viewingId === d.id;
       const vActive = isViewing && viewMode === 'video';
       const aActive = isViewing && viewMode === 'audio';
@@ -217,6 +601,7 @@
       const videoBtn = videoOk
         ? `<button class="btn btn-small ${vActive ? 'btn-danger' : 'btn-outline'} video-btn" data-id="${d.id}">${vActive ? 'Stop' : 'Video'}</button>`
         : `<button class="btn btn-small btn-disabled video-btn" disabled data-id="${d.id}">Video</button>`;
+
       return `
         <div class="${itemClass}" data-id="${d.id}">
           <div class="device-info">
@@ -230,7 +615,291 @@
           </div>
         </div>`;
     }).join('');
+
+    // Attach broadcast panel listeners if present
+    attachBroadcastPanelListeners();
   }
+
+  function renderGridView(kiosks, broadcastPanel) {
+    // 2x2 grid of video feeds
+    const activeKiosks = Array.from(gridViewingIds).map(id => kiosks.find(k => k.id === id)).filter(Boolean);
+    const availableKiosks = kiosks.filter(k => !gridViewingIds.has(k.id));
+
+    let gridHtml = broadcastPanel;
+    gridHtml += `
+      <div class="grid-controls panel" style="margin-bottom:12px">
+        <h3>Grid View (${activeKiosks.length}/4)</h3>
+        <div class="grid-available">
+          ${availableKiosks.map(k => `
+            <button class="btn btn-small btn-outline add-to-grid" data-id="${k.id}">+ ${k.label}</button>
+          `).join('')}
+        </div>
+      </div>
+      <div class="video-grid" style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px">
+        ${activeKiosks.map(k => `
+          <div class="grid-cell" data-id="${k.id}">
+            <video class="grid-video" id="grid-video-${k.id}" autoplay playsinline></video>
+            <div class="grid-overlay">
+              <span class="grid-label">${k.label}</span>
+              <button class="btn btn-small btn-danger remove-from-grid" data-id="${k.id}">×</button>
+            </div>
+          </div>
+        `).join('')}
+        ${activeKiosks.length < 4 ? `
+          <div class="grid-cell empty" style="display:flex;align-items:center;justify-content:center;background:#1a1a1a;border:2px dashed #444">
+            <span style="color:#888">Click + to add camera</span>
+          </div>
+        `.repeat(4 - activeKiosks.length) : ''}
+      </div>
+    `;
+
+    // Also show list of kiosks below grid for audio controls
+    gridHtml += '<div class="panel"><h3>Audio Controls</h3>' + kiosks.map(d => {
+      const type = sourceTypeFor(d.id);
+      const audioOk = hasAudio(type);
+      const inGrid = gridViewingIds.has(d.id);
+      const audioBtn = audioOk
+        ? `<button class="btn btn-small ${inGrid ? 'btn-danger' : 'btn-outline'} audio-btn" data-id="${d.id}">${inGrid ? 'Stop Audio' : 'Audio'}</button>`
+        : `<button class="btn btn-small btn-disabled audio-btn" disabled data-id="${d.id}">Audio</button>`;
+
+      return `
+        <div class="device-item" data-id="${d.id}">
+          <div class="device-info">
+            <div class="device-name">${d.label}</div>
+          </div>
+          <div class="btn-row">
+            ${audioBtn}
+            ${!inGrid && kiosks.filter(k => gridViewingIds.has(k.id)).length < 4
+              ? `<button class="btn btn-small btn-outline add-to-grid" data-id="${d.id}">+ Grid</button>`
+              : ''}
+            <button class="btn btn-small btn-outline settings-btn" data-id="${d.id}">Settings</button>
+          </div>
+        </div>`;
+    }).join('') + '</div>';
+
+    deviceList.innerHTML = gridHtml;
+
+    // Attach video streams to grid cells
+    activeKiosks.forEach(k => {
+      const stream = streams[k.id];
+      const videoEl = document.getElementById(`grid-video-${k.id}`);
+      if (stream && videoEl) {
+        videoEl.srcObject = stream;
+        videoEl.muted = true;
+        videoEl.play().catch(() => {});
+      }
+    });
+
+    // Attach listeners for grid
+    attachGridListeners();
+  }
+
+  // ─── Broadcast Functions ────────────────────────────────
+
+  function attachBroadcastPanelListeners() {
+    const preview = document.getElementById('broadcastPreview');
+    const camSel = document.getElementById('broadcastCamera');
+    const micSel = document.getElementById('broadcastMic');
+    const resSel = document.getElementById('broadcastResolution');
+    const frSel = document.getElementById('broadcastFramerate');
+    const btn = document.getElementById('toggleBroadcastBtn');
+    
+    if (!btn) return;
+
+    btn.addEventListener('click', toggleBroadcast);
+    camSel?.addEventListener('change', startBroadcastPreview);
+    micSel?.addEventListener('change', startBroadcastPreview);
+    resSel?.addEventListener('change', startBroadcastPreview);
+    frSel?.addEventListener('change', startBroadcastPreview);
+  }
+
+  async function startBroadcastPreview() {
+    const camSel = document.getElementById('broadcastCamera');
+    const micSel = document.getElementById('broadcastMic');
+    const resSel = document.getElementById('broadcastResolution');
+    const frSel = document.getElementById('broadcastFramerate');
+    const preview = document.getElementById('broadcastPreview');
+    
+    if (!camSel || !preview) return;
+
+    const videoDevice = camSel.value;
+    const audioDevice = micSel?.value || 'default';
+    const resolution = resSel?.value || '720p';
+    const frameRate = parseInt(frSel?.value || '30');
+
+    // Stop existing preview
+    if (localBroadcastStream) {
+      localBroadcastStream.getTracks().forEach(t => t.stop());
+      localBroadcastStream = null;
+    }
+
+    const DIMS = { '480p': [640, 480], '720p': [1280, 720], '1080p': [1920, 1080] };
+    const [w, h] = DIMS[resolution] || DIMS['720p'];
+
+    const constraints = {
+      video: {
+        deviceId: { exact: videoDevice },
+        width: { ideal: w },
+        height: { ideal: h },
+        frameRate: { ideal: frameRate },
+      },
+      audio: audioDevice !== 'default' ? { deviceId: { exact: audioDevice } } : true,
+    };
+
+    try {
+      localBroadcastStream = await navigator.mediaDevices.getUserMedia(constraints);
+      preview.srcObject = localBroadcastStream;
+      preview.play().catch(() => {});
+      console.log('[base] Broadcast preview started');
+    } catch (err) {
+      console.error('[base] Broadcast preview failed:', err);
+    }
+  }
+
+  // Ensure a base-station broadcast media stream exists, acquiring one with
+  // sensible defaults if needed. Unlike startBroadcastPreview this does NOT
+  // depend on the Broadcast panel's <select>/<video> DOM being present, so it
+  // can be used by FaceTalk (triggered from the monitor overlay).
+  async function ensureBroadcastStream() {
+    if (localBroadcastStream) return localBroadcastStream;
+    try {
+      localBroadcastStream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } },
+        audio: true,
+      });
+      console.log('[base] Broadcast stream acquired for FaceTalk');
+    } catch (err) {
+      console.error('[base] ensureBroadcastStream failed:', err);
+      localBroadcastStream = null;
+    }
+    return localBroadcastStream;
+  }
+
+  async function toggleBroadcast() {
+    const btn = document.getElementById('toggleBroadcastBtn');
+    if (!btn) return;
+
+    if (isBroadcasting) {
+      // Stop broadcasting
+      await stopBroadcast();
+      btn.textContent = 'Start Broadcast';
+      btn.classList.remove('btn-danger');
+      btn.classList.add('btn-primary');
+    } else {
+      // Start broadcasting
+      await startBroadcast();
+      btn.textContent = 'Stop Broadcast';
+      btn.classList.remove('btn-primary');
+      btn.classList.add('btn-danger');
+    }
+  }
+
+  async function startBroadcast() {
+    const camSel = document.getElementById('broadcastCamera');
+    const micSel = document.getElementById('broadcastMic');
+    const resSel = document.getElementById('broadcastResolution');
+    const frSel = document.getElementById('broadcastFramerate');
+    
+    if (!localBroadcastStream) {
+      await startBroadcastPreview();
+      // Wait a bit for stream to be ready
+      await new Promise(r => setTimeout(r, 500));
+    }
+
+    if (!localBroadcastStream) {
+      showToast('Failed to start broadcast: no media stream');
+      return;
+    }
+
+    broadcastSourceId = 'broadcast-' + deviceId + '-' + Date.now();
+    broadcastStream = localBroadcastStream;
+    isBroadcasting = true;
+
+    // Publish broadcast source
+    sig.broadcastSource(broadcastSourceId, 'Base Station Broadcast', 'video+audio');
+
+    // Update base config
+    sig.setConfig(deviceId, {
+      broadcastSourceId: broadcastSourceId,
+      isBroadcasting: true,
+    });
+
+    showToast('Broadcast started');
+    console.log('[base] Broadcast started:', broadcastSourceId);
+  }
+
+  async function stopBroadcast() {
+    isBroadcasting = false;
+    
+    // Unpublish broadcast source
+    if (broadcastSourceId) {
+      sig.unbroadcastSource(broadcastSourceId);
+      broadcastSourceId = null;
+    }
+
+    // Close all broadcast peer connections
+    broadcastSubscribers.forEach(kioskId => {
+      rtc.closeBroadcastPeerConnection(kioskId);
+    });
+    broadcastSubscribers.clear();
+
+    // Stop local stream
+    if (localBroadcastStream) {
+      localBroadcastStream.getTracks().forEach(t => t.stop());
+      localBroadcastStream = null;
+      broadcastStream = null;
+    }
+
+    // Update base config
+    sig.setConfig(deviceId, {
+      broadcastSourceId: undefined,
+      isBroadcasting: false,
+    });
+
+    showToast('Broadcast stopped');
+    console.log('[base] Broadcast stopped');
+  }
+
+  // ─── Grid View Functions ────────────────────────────────
+
+  function attachGridListeners() {
+    // Grid cell videos are already attached in renderGridView
+    // This is for any additional grid-specific listeners
+  }
+
+  function addToGrid(kioskId) {
+    if (gridViewingIds.size >= 4) {
+      showToast('Grid is full (max 4)');
+      return;
+    }
+    gridViewingIds.add(kioskId);
+    
+    // Subscribe to this kiosk if not already
+    if (!subscribed.has(kioskId)) {
+      subscribed.add(kioskId);
+      sig.subscribeSource(kioskId);
+    }
+    
+    renderDevices();
+  }
+
+  function removeFromGrid(kioskId) {
+    gridViewingIds.delete(kioskId);
+    
+    // Unsubscribe from this kiosk
+    if (subscribed.has(kioskId)) {
+      subscribed.delete(kioskId);
+      sig.unsubscribeSource(kioskId);
+      rtc.closePeerConnection(kioskId);
+      delete streams[kioskId];
+    }
+    
+    renderDevices();
+  }
+
+  // ─── Display/Audio Mode Functions ───────────────────────
+  // (Display/Audio mode is now set from the per-device Settings panel via
+  // sig.setDisplayConfig, so no list-level setters are needed here.)
 
   function startView(peerId, mode) {
     console.log('[view] start', peerId, mode);
@@ -255,6 +924,10 @@
     showMonitor();
     renderDevices();
     attachMonitorStream();
+
+    // Begin connection-quality polling for this peer.
+    if (statsStop) { statsStop(); statsStop = null; }
+    statsStop = rtc.startStats(peerId, updateQuality);
   }
 
   function stopView() {
@@ -278,19 +951,127 @@
     monitorVideo.srcObject = null;
     monitorVideo.muted = true;
     monitorError.classList.add('hidden');
-    showMonitorStatus(null);
+    hideMonitorControls();
     showHome();
     renderDevices();
+
+    // Tear down talkback + FaceTalk + quality polling tied to the closed view.
+    if (talkingTo) stopTalk(talkingTo);
+    if (faceTalkingTo) stopFaceTime(faceTalkingTo);
+    if (statsStop) { statsStop(); statsStop = null; }
+    if (monitorQuality) monitorQuality.textContent = '';
   }
 
   function showMonitor() {
     // Keep the device list visible — only reveal the monitor feed
     monitorFeed.classList.remove('hidden');
-    const src = sources.find(s => s.publisherId === viewingId);
-    monitorLabel.textContent = src ? src.label : 'Unknown';
     monitorError.classList.add('hidden');
     showMonitorStatus(null);
+    showMonitorControls(); // reveal controls when a feed opens
   }
+
+  // ─── Local self-video test ─────────────────────────
+  // Grabs the base station's own camera and shows it in the monitor pane.
+  // Pure local getUserMedia — no WebRTC — to confirm the monitor <video>
+  // surface renders at all, independent of the signaling/peer pipeline.
+  let selfTestStream = null;
+  async function testSelfVideo() {
+    if (selfTestStream) {
+      selfTestStream.getTracks().forEach(t => t.stop());
+      selfTestStream = null;
+      monitorVideo.srcObject = null;
+      stopView();
+      showToast('Self-video test stopped');
+      return;
+    }
+    try {
+      selfTestStream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'user' }, audio: false,
+      });
+    } catch (err) {
+      console.error('[base] self-video test failed:', err);
+      showToast('Camera error: ' + err.name);
+      return;
+    }
+    viewingId = null;
+    viewMode = 'video';
+    showMonitor();
+    monitorVideo.classList.remove('hidden');
+    monitorPlaceholder.classList.add('hidden');
+    monitorVideo.srcObject = selfTestStream;
+    monitorVideo.muted = true;
+    monitorVideo.play().catch(() => {});
+    renderDevices();
+    showToast('Showing base station camera');
+  }
+
+  // ─── Monitor overlay auto-hide ──────────────────────
+  // Controls are hidden until the user taps the video, then fade in and
+  // auto-hide after 5s of inactivity (tapping again re-shows + resets timer).
+  let monitorControlsTimer = null;
+  function showMonitorControls() {
+    const overlay = document.querySelector('.monitor-overlay');
+    if (!overlay) return;
+    overlay.classList.add('visible');
+    if (monitorControlsTimer) clearTimeout(monitorControlsTimer);
+    monitorControlsTimer = setTimeout(() => {
+      overlay.classList.remove('visible');
+      monitorControlsTimer = null;
+    }, 5000);
+  }
+  function hideMonitorControls() {
+    const overlay = document.querySelector('.monitor-overlay');
+    if (overlay) overlay.classList.remove('visible');
+    if (monitorControlsTimer) { clearTimeout(monitorControlsTimer); monitorControlsTimer = null; }
+  }
+
+  // ─── Fullscreen ────────────────────────────────────
+  function toggleFullscreen() {
+    const el = monitorFeed;
+    if (!el) return;
+    const fsEl = document.fullscreenElement || document.webkitFullscreenElement;
+    if (!fsEl) {
+      // iOS Safari only supports fullscreen on the <video> element itself.
+      if (el.requestFullscreen) el.requestFullscreen().catch(() => {});
+      else if (el.webkitRequestFullscreen) el.webkitRequestFullscreen();
+      else if (monitorVideo.webkitEnterFullscreen) monitorVideo.webkitEnterFullscreen();
+    } else {
+      if (document.exitFullscreen) document.exitFullscreen().catch(() => {});
+      else if (document.webkitExitFullscreen) document.webkitExitFullscreen();
+    }
+  }
+
+  // Exiting fullscreen on iOS/Safari leaves the <video> paused and auto-play
+  // often won't restart it (no user gesture). Show a centered resume button
+  // when the video is paused; tapping it replays with the required gesture.
+  const monitorResumeBtn = document.getElementById('monitorResumeBtn');
+  function showResumeIfPaused() {
+    if (!monitorResumeBtn) return;
+    const paused = monitorVideo && monitorVideo.srcObject && monitorVideo.paused;
+    monitorResumeBtn.classList.toggle('hidden', !paused);
+  }
+  function resumeMonitorVideo() {
+    // Give Safari a tick to settle the pause state after fullscreen exit.
+    setTimeout(showResumeIfPaused, 100);
+  }
+  if (monitorResumeBtn) {
+    monitorResumeBtn.addEventListener('click', () => {
+      monitorResumeBtn.classList.add('hidden');
+      if (monitorVideo) monitorVideo.play().catch(() => {});
+    });
+  }
+  if (monitorVideo) {
+    monitorVideo.addEventListener('pause', showResumeIfPaused);
+    monitorVideo.addEventListener('play', () => {
+      if (monitorResumeBtn) monitorResumeBtn.classList.add('hidden');
+    });
+  }
+  document.addEventListener('fullscreenchange', resumeMonitorVideo);
+  document.addEventListener('webkitfullscreenchange', resumeMonitorVideo);
+  // The <video> also fires its own fullscreen end event under iOS's native path.
+  document.addEventListener('DOMContentLoaded', () => {
+    if (monitorVideo) monitorVideo.addEventListener('webkitendfullscreen', resumeMonitorVideo);
+  });
 
   function showHome() {
     monitorFeed.classList.add('hidden');
@@ -348,6 +1129,13 @@
   document.addEventListener('click', (e) => {
     const t = e.target;
     if (t.id === 'stopMonitorBtn') { stopView(); return; }
+    if (t.id === 'testSelfVideoBtn') { testSelfVideo(); return; }
+    if (t.id === 'monitorTalkBtn') { toggleTalk(); return; }
+    if (t.id === 'monitorFaceTalkBtn') { toggleFaceTime(); return; }
+    if (t.id === 'monitorMuteBtn') { toggleMute(); return; }
+    if (t.id === 'monitorFullscreenBtn') { toggleFullscreen(); return; }
+    if (t.id === 'answerCallBtn') { answerCall(); return; }
+    if (t.id === 'dismissCallBtn') { dismissCall(); return; }
 
     const audioBtn = t.closest('.audio-btn');
     if (audioBtn && !audioBtn.disabled) { startView(audioBtn.dataset.id, 'audio'); return; }
@@ -367,6 +1155,18 @@
       }
       return;
     }
+
+    // Grid view buttons
+    const addToGridBtn = t.closest('.add-to-grid');
+    if (addToGridBtn) { addToGrid(addToGridBtn.dataset.id); return; }
+
+    const removeFromGridBtn = t.closest('.remove-from-grid');
+    if (removeFromGridBtn) { removeFromGrid(removeFromGridBtn.dataset.id); return; }
+
+    // Broadcast controls
+    if (t.id === 'toggleBroadcastBtn') { toggleBroadcast(); return; }
+    if (t.id === 'broadcastCamera') { startBroadcastPreview(); return; }
+    if (t.id === 'broadcastMic') { startBroadcastPreview(); return; }
   });
 
   function showConfig(device) {
@@ -375,6 +1175,8 @@
     configTitle.textContent = device.label + ' Settings';
     const caps = capabilitiesByDevice[device.id];
     const cfg = device.config || {};
+    const displayMode = cfg.displayMode || 'self';
+    const audioMode = cfg.audioMode || 'mute';
 
     let cameraRow;
     if (caps && caps.videoDevices && caps.videoDevices.length) {
@@ -438,8 +1240,20 @@
         </select>
       </div>
       <div class="config-row">
-        <label>Two-way Audio</label>
-        <div class="toggle-switch ${cfg.twoWayAudioEnabled !== false ? 'active' : ''}" id="cfg-twoWay"></div>
+        <label>Display Mode</label>
+        <select id="cfg-displayMode">
+          <option value="self" ${displayMode === 'self' ? 'selected' : ''}>Self</option>
+          <option value="blank" ${displayMode === 'blank' ? 'selected' : ''}>Blank</option>
+          <option value="base" ${displayMode === 'base' ? 'selected' : ''}>Base</option>
+        </select>
+      </div>
+      <div class="config-row">
+        <label>Audio Mode</label>
+        <select id="cfg-audioMode">
+          <option value="self" ${audioMode === 'self' ? 'selected' : ''}>Self</option>
+          <option value="mute" ${audioMode === 'mute' ? 'selected' : ''}>Mute</option>
+          <option value="base" ${audioMode === 'base' ? 'selected' : ''}>Base</option>
+        </select>
       </div>
       <div class="config-row">
         <label>Keep Awake</label>
@@ -465,7 +1279,6 @@
         label: document.getElementById('cfg-label').value,
         resolution: document.getElementById('cfg-resolution').value,
         frameRate: parseInt(document.getElementById('cfg-framerate').value),
-        twoWayAudioEnabled: document.getElementById('cfg-twoWay').classList.contains('active'),
         keepAwake: document.getElementById('cfg-keepAwake').classList.contains('active'),
       };
       const usingVideoCaps = caps && caps.videoDevices && caps.videoDevices.length;
@@ -482,6 +1295,10 @@
         payload.audioAlertThresholdDb = parseFloat(document.getElementById('cfg-audioThreshold').value);
       }
       sig.setConfig(device.id, payload);
+      // Persist + apply the display/audio mode live (kiosk applies via SET_DISPLAY_CONFIG)
+      const newDisplay = document.getElementById('cfg-displayMode').value;
+      const newAudio = document.getElementById('cfg-audioMode').value;
+      sig.setDisplayConfig(device.id, newDisplay, newAudio);
       configPanel.classList.add('hidden');
     });
     document.getElementById('removeDeviceBtn').addEventListener('click', () => {
@@ -510,6 +1327,7 @@
 
   rtc.onConnectionStateChange = (peerId, state) => {
     console.log('[webrtc] peer', peerId, 'connection state:', state);
+    if (peerId === 'broadcast-' + faceTalkingTo) { ftDbgState.pc = state; renderFtDebug(); }
     if (peerId === viewingId && (state === 'failed' || state === 'disconnected' || state === 'closed')) {
       recoverWatch();
     }
@@ -517,6 +1335,7 @@
 
   rtc.onIceConnectionStateChange = (peerId, state) => {
     console.log('[webrtc] peer', peerId, 'ice state:', state);
+    if (peerId === 'broadcast-' + faceTalkingTo) { ftDbgState.ice = state; renderFtDebug(); }
     if (peerId === viewingId && (state === 'failed' || state === 'disconnected' || state === 'closed')) {
       recoverWatch();
     }
@@ -535,11 +1354,24 @@
     sig.deviceLabel = 'Base Station';
     sig.connect();
 
+    // Tap the monitor feed to reveal the controls (they auto-hide after 5s).
+    if (monitorFeed) {
+      monitorFeed.addEventListener('click', (e) => {
+        // Ignore taps that land on the controls themselves (buttons/slider),
+        // so interacting with them doesn't restart the hide timer unexpectedly.
+        if (e.target.closest('.monitor-overlay')) return;
+        showMonitorControls();
+      });
+    }
+
     setInterval(watchdog, 2000);
 
     sig.on('open', () => {
       connectionDot.className = 'status-dot reconnecting';
       sig.joinRoom('default', deviceId);
+      ftDbgState.wsMethod = sig.useSSE ? 'SSE' : 'WS';
+      ftDbgState.wsUp = true;
+      renderFtDebug();
     });
 
     sig.on('welcome', (data) => {
@@ -553,6 +1385,8 @@
 
     sig.on('close', () => {
       connectionDot.className = 'status-dot offline';
+      ftDbgState.wsUp = false;
+      renderFtDebug();
     });
 
     sig.on('sourceAdded', (source) => {
@@ -564,6 +1398,13 @@
         sources.push(source);
         showToast('Source online: ' + (source.label || source.id));
       }
+      
+      // Auto-subscribe to broadcast sources from other bases
+      if (source.isBroadcast && source.publisherId !== deviceId) {
+        console.log('[base] Broadcast source added from', source.publisherId, '- subscribing');
+        sig.subscribeSource(source.publisherId);
+      }
+      
       renderDevices();
     });
 
@@ -590,6 +1431,28 @@
       renderDevices();
     });
 
+    // Handle subscriber joining our broadcast (kiosk wants to receive our stream)
+    sig.on('subscriberJoined', (data) => {
+      if (data.isBroadcast && isBroadcasting) {
+        const kioskId = data.subscriberId;
+        console.log('[base] Kiosk', kioskId, 'subscribed to our broadcast');
+        broadcastSubscribers.add(kioskId);
+        // Create a broadcast peer connection for this kiosk
+        const pc = rtc.createBroadcastPeerConnection(kioskId);
+        // Add our broadcast tracks — onnegotiationneeded (perfect negotiation)
+        // fires automatically and sends the offer, so no explicit offer call.
+        if (broadcastStream) {
+          broadcastStream.getTracks().forEach(track => {
+            pc.addTrack(track, broadcastStream);
+          });
+          const t = broadcastStream.getTracks();
+          ftDbgState.tracks = t.filter(x => x.kind === 'video').length + 'v ' +
+            t.filter(x => x.kind === 'audio').length + 'a';
+        }
+        if (kioskId === faceTalkingTo) { ftDbgState.pc = 'subscribed'; renderFtDebug(); }
+      }
+    });
+
     sig.on('capabilities', (data) => {
       capabilitiesByDevice[data.deviceId] = {
         videoDevices: data.videoDevices || [],
@@ -598,12 +1461,22 @@
       renderDevices();
     });
 
+    sig.on('doorbell', (data) => {
+      console.log('[base] DOORBELL from', data.from, data.label);
+      showIncomingCall(data);
+      showToast('🔔 ' + (data.label || data.from) + ' is calling');
+    });
+
     sig.on('audioPeak', (data) => {
       audioState[data.deviceId] = {
         levelDb: data.levelDb,
         alerting: !!data.peak,
       };
-      renderDevices();
+      // Update the dB readout + alert highlight in place. Do NOT call
+      // renderDevices() here — it rebuilds the whole device list and would
+      // destroy a <select> (display/audio dropdown) that the operator is
+      // currently interacting with, making it impossible to change the value.
+      updateAudioMeterUi(data.deviceId);
     });
 
     sig.on('deviceRemoved', (data) => {

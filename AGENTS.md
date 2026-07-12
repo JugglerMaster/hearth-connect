@@ -31,7 +31,7 @@ HTML5 video intercom / baby monitor system. Runs on iPads/iPhones via Safari. Se
 ### Device Discovery & Room Entry
 - Base station generates QR code via `/api/server-url` encoding the server URL (e.g. `https://host:8090`)
 - QR code is 600px wide for easy scanning on iOS cameras
-- Kiosk opens `camera.html?room=<roomId>` from QR scan or manual room name entry
+- Kiosk opens `monitor.html?room=<roomId>` from QR scan or manual room name entry
 - No pairing tokens — kiosks join the room directly via `JOIN_ROOM` WebSocket message
 - Server assigns a deviceId on first connection, persists to localStorage
 - Subsequent launches: deviceId + roomId from localStorage → auto-reconnect
@@ -86,7 +86,7 @@ hearth-connect/
 │       └── SignalingHandler.ts# WebSocket message routing
 │   └── public/
 │       ├── index.html         # Landing / room selector
-│       ├── camera.html        # Camera device (minimal UI)
+│       ├── monitor.html        # Monitor device (minimal UI)
 │       ├── base-station.html  # Base station (full control)
 │       ├── viewer.html        # Remote viewer
 │       ├── css/
@@ -94,7 +94,7 @@ hearth-connect/
 │       └── js/
 │           ├── signaling.js   # WS client with reconnection
 │           ├── webrtc.js      # getUserMedia + RTCPeerConnection
-│           ├── camera.js      # Camera page logic
+│           ├── camera.js         # Monitor page logic (served by monitor.html)
 │           ├── base-station.js# Base station page logic
 │           └── viewer.js      # Viewer page logic
 ├── deploy/

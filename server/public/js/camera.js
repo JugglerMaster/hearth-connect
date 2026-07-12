@@ -3,7 +3,21 @@
 
   const sig = new SignalingClient();
   const rtc = new WebRTCManager(sig);
-  let deviceId = localStorage.getItem('hearth_kioskDeviceId');
+  // ─── localStorage keys (renamed from "kiosk" → "monitor") ──────────
+  // Migrate any previous "kiosk" keys so existing devices keep their id/label/settings.
+  function migrateKey(oldKey, newKey) {
+    try {
+      const v = localStorage.getItem(oldKey);
+      if (v !== null && localStorage.getItem(newKey) === null) {
+        localStorage.setItem(newKey, v);
+        localStorage.removeItem(oldKey);
+      }
+    } catch {}
+  }
+  migrateKey('hearth_kioskDeviceId', 'hearth_monitorDeviceId');
+  migrateKey('hearth_kioskSettings', 'hearth_monitorSettings');
+  migrateKey('hearth_deviceLabel', 'hearth_monitorLabel');
+  let deviceId = localStorage.getItem('hearth_monitorDeviceId');
   let cameraSourceId = null;
   let publishedType = null;
   let subscriberCount = 0;
@@ -11,11 +25,16 @@
   let wakeLock = null;
   let cameraStarted = false;
 
+  // Broadcast state
+  let broadcastPeerId = null;  // Base station ID we're receiving broadcast from
+  let broadcastStream = null;  // Remote stream from base broadcast
+  let baseVideoActive = false; // Base is pushing its camera to us (FaceTalk/broadcast)
+
   // ─── Persistent device settings (localStorage) ──────────
   // Each kiosk remembers the last settings it had, restored on load even
   // before the server connection is established. Base-station changes that
   // arrive over signaling are merged in and re-saved here.
-  const SETTINGS_KEY = 'hearth_kioskSettings';
+  const SETTINGS_KEY = 'hearth_monitorSettings';
 
   function defaultSettings() {
     const base = {
@@ -76,6 +95,32 @@
   const retryCameraBtn = document.getElementById('retryCameraBtn');
   const enableCamOverlay = document.getElementById('enableCamOverlay');
   const enableCamBtn = document.getElementById('enableCamBtn');
+  const remoteAudio = document.getElementById('remoteAudio');
+  const ftDebug = document.getElementById('ftDebug');
+
+  // Debug readout for the base station → monitor audio/video (FaceTalk/broadcast)
+  // link, shown at the top of the video area. Tracks the signaling transport
+  // plus the incoming broadcast RTCPeerConnection + received track state.
+  const ftDbgState = {
+    wsMethod: '--',
+    wsUp: false,
+    base: null,       // base station deviceId sending us the broadcast
+    display: '--',    // current display mode
+    audio: '--',      // current audio mode
+    pc: '--',         // broadcast PC connection state
+    ice: '--',        // broadcast PC ICE state
+    tracks: '--',     // tracks received on the broadcast stream
+  };
+  function renderFtDebug() {
+    if (!ftDebug) return;
+    const d = ftDbgState;
+    ftDebug.textContent =
+      'ft:' + (d.base ? 'RX←' + d.base.slice(-4) : 'idle') +
+      '  ws:' + d.wsMethod + (d.wsUp ? '↑' : '↓') +
+      '  disp:' + d.display + '/' + d.audio +
+      '  pc:' + d.pc + '  ice:' + d.ice +
+      '  tracks:' + d.tracks;
+  }
 
   function logEvent(msg) {
     if (debugEvent) debugEvent.textContent = 'ev:' + msg;
@@ -172,8 +217,94 @@
     // an active watch session.
     if (type !== publishedType) {
       if (publishedType) sig.unpublishSource(cameraSourceId);
-      sig.publishSource(cameraSourceId, sig.deviceLabel || 'Kiosk', type);
+      sig.publishSource(cameraSourceId, sig.deviceLabel || 'Monitor', type);
       publishedType = type;
+    }
+  }
+
+  // ─── Broadcast & Display Config ──────────────────────────
+
+  function subscribeToBroadcast(baseId) {
+    if (broadcastPeerId === baseId) return; // Already subscribed
+    broadcastPeerId = baseId;
+    sig.subscribeBroadcast(baseId);
+    console.log('[kiosk] subscribed to broadcast from', baseId);
+  }
+
+  function unsubscribeFromBroadcast() {
+    if (broadcastPeerId) {
+      sig.unsubscribeBroadcast(broadcastPeerId);
+      rtc.closePeerConnection(broadcastPeerId);
+      if (broadcastStream) {
+        broadcastStream.getTracks().forEach(t => t.stop());
+        broadcastStream = null;
+      }
+      baseVideoActive = false;
+      broadcastPeerId = null;
+      applyDisplayConfig(currentConfig.displayMode || 'self', currentConfig.audioMode || 'mute');
+      ftDbgState.base = null;
+      ftDbgState.pc = '--';
+      ftDbgState.ice = '--';
+      ftDbgState.tracks = '--';
+      renderFtDebug();
+    }
+  }
+
+  function applyDisplayConfig(displayMode, audioMode) {
+    console.log('[kiosk] applyDisplayConfig:', displayMode, audioMode);
+    
+    const video = document.getElementById('cameraFeed');
+    if (!video) return;
+
+    switch (displayMode) {
+      case 'self':
+        // While the base is pushing its camera (FaceTalk/broadcast), that
+        // overrides the device's display setting — keep showing the base feed.
+        if (baseVideoActive && broadcastStream) {
+          video.srcObject = broadcastStream;
+          video.muted = true;
+          video.play().catch(() => {});
+          break;
+        }
+        // Show local camera (muted)
+        if (rtc.localStream) {
+          video.srcObject = rtc.localStream;
+          video.muted = true; // No self-audio
+          video.play().catch(() => {});
+        }
+        break;
+      case 'blank':
+        // Same override: FaceTalk video wins over "blank".
+        if (baseVideoActive && broadcastStream) {
+          video.srcObject = broadcastStream;
+          video.muted = true;
+          video.play().catch(() => {});
+          break;
+        }
+        // Show black/placeholder
+        video.srcObject = null;
+        // Could show a placeholder div here
+        break;
+      case 'base':
+        // Show base station's broadcast stream. Keep the <video> element muted —
+        // the base's audio track is routed through the separate <audio> element
+        // (remoteAudio) in onRemoteTrack, so unmuting here would double-play it.
+        if (broadcastStream) {
+          video.srcObject = broadcastStream;
+          video.muted = true;
+          video.play().catch(() => {});
+        }
+        break;
+    }
+
+    // Handle audio mode
+    // Note: Audio is handled via the video element's audio tracks
+    // 'self' = no audio (muted), 'mute' = no audio, 'base' = base audio
+    if (audioMode === 'base' && broadcastStream) {
+      // Audio will play through video element
+      video.muted = false;
+    } else {
+      video.muted = true;
     }
   }
 
@@ -341,9 +472,11 @@
 
       rtc.onConnectionStateChange = (peerId, state) => {
         console.log('[kiosk] peer', peerId, 'state:', state);
+        if (peerId.startsWith('broadcast-')) { ftDbgState.pc = state; renderFtDebug(); }
       };
       rtc.onIceConnectionStateChange = (peerId, state) => {
         console.log('[kiosk] peer', peerId, 'ice:', state);
+        if (peerId.startsWith('broadcast-')) { ftDbgState.ice = state; renderFtDebug(); }
       };
 
       // Add tracks to any subscribers that already exist
@@ -415,10 +548,10 @@
     if (!deviceId) {
       deviceId = 'kiosk-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6);
     }
-    localStorage.setItem('hearth_kioskDeviceId', deviceId);
+    localStorage.setItem('hearth_monitorDeviceId', deviceId);
     sig.deviceId = deviceId;
     sig.deviceType = 'kiosk';
-    sig.deviceLabel = localStorage.getItem('hearth_deviceLabel') || 'Kiosk';
+    sig.deviceLabel = localStorage.getItem('hearth_monitorLabel') || 'Monitor';
 
     retryCameraBtn.addEventListener('click', () => {
       hideCameraError();
@@ -442,11 +575,14 @@
       if (debugMethod) debugMethod.textContent = 'method:' + (sig.useSSE ? 'SSE' : 'WS');
       logEvent(sig.useSSE ? 'sse:open' : 'ws:open');
       sig.joinRoom('default', deviceId);
+      ftDbgState.wsMethod = sig.useSSE ? 'SSE' : 'WS';
+      ftDbgState.wsUp = true;
+      renderFtDebug();
     });
 
     sig.on('welcome', async (data) => {
       deviceId = data.deviceId;
-      localStorage.setItem('hearth_kioskDeviceId', deviceId);
+      localStorage.setItem('hearth_monitorDeviceId', deviceId);
       deviceLabel.textContent = sig.deviceLabel;
       connectionDot.className = 'status-dot online';
       applyConfig(data.config);
@@ -477,7 +613,109 @@
       publishedType = null;
       if (debugMethod) debugMethod.textContent = 'method:' + (sig.useSSE ? 'SSE' : 'WS');
       logEvent((sig.useSSE ? 'sse:close' : 'ws:close') + (code != null ? ':' + code : ''));
+      ftDbgState.wsUp = false;
+      renderFtDebug();
     });
+
+    // ─── Remote (talkback / broadcast / announcement) audio + video ─────
+    // The base station sends its own audio/video to us over a broadcast PC (or,
+    // during a two-way call, the same monitor PC). We must attach those tracks
+    // to playable elements — without this the base's voice/announcement never
+    // reaches the kiosk speaker.
+    let talkbackActive = false;       // base is actively talking to us
+    let callActive = false;           // we are in a call with the base
+    // baseVideoActive is module-scoped (see top) so applyDisplayConfig and
+    // unsubscribeFromBroadcast — defined outside init() — can read it too.
+
+    function applyRemoteAudio() {
+      if (!remoteAudio) return;
+      // Speaker volume from config (0..1). Applied live to the element.
+      const vol = (currentConfig.speakerVolume != null) ? currentConfig.speakerVolume : 0.5;
+      remoteAudio.volume = Math.max(0, Math.min(1, vol));
+      // Play base audio only when it is allowed by the display/audio mode and
+      // we are either in a call or the base has enabled talkback, OR the base
+      // is broadcasting audio to us ('base' audio mode).
+      const audioMode = currentConfig.audioMode || 'mute';
+      const allowed = audioMode === 'base' || talkbackActive || callActive;
+      remoteAudio.muted = !allowed;
+      if (allowed) {
+        remoteAudio.play().catch(() => {});
+      }
+    }
+
+    rtc.onRemoteTrack = (peerId, stream, track) => {
+      console.log('[kiosk] onRemoteTrack', peerId, track.kind);
+      if (peerId.startsWith('broadcast-') || peerId === broadcastPeerId) {
+        // Remember the base's broadcast stream so applyDisplayConfig('base')
+        // can render it even if the display mode was switched after the
+        // track arrived (otherwise the video silently never shows).
+        broadcastStream = stream;
+        // Reflect the base sender + received tracks in the debug readout.
+        ftDbgState.base = peerId.replace(/^broadcast-/, '');
+        ftDbgState.tracks = stream.getVideoTracks().length + 'v ' +
+          stream.getAudioTracks().length + 'a';
+        renderFtDebug();
+        if (track.kind === 'video') {
+          // While the base is pushing its camera (FaceTalk/broadcast), show it
+          // unconditionally — this overrides the device's display-mode setting
+          // so the monitor always reflects the base feed during FaceTalk.
+          baseVideoActive = true;
+          if (!callActive) {
+            video.srcObject = stream;
+            video.muted = true;
+            video.play().catch(() => {});
+          }
+        } else if (track.kind === 'audio') {
+          remoteAudio.srcObject = stream;
+          applyRemoteAudio();
+        }
+      } else {
+        // Monitor PC: base→kiosk reverse audio during a call / talkback.
+        if (track.kind === 'audio') {
+          remoteAudio.srcObject = stream;
+          applyRemoteAudio();
+        }
+      }
+    };
+
+    // Talkback: base tells us to enable (unmute) our speaker so we can hear it.
+    sig.on('talkEnabled', (data) => {
+      console.log('[kiosk] TALK_ENABLED from', data.from);
+      talkbackActive = true;
+      applyRemoteAudio();
+    });
+    sig.on('talkDisabled', (data) => {
+      console.log('[kiosk] TALK_DISABLED from', data.from);
+      talkbackActive = false;
+      applyRemoteAudio();
+    });
+
+    // Call state relayed from the base (answer/hangup) — reflect it on screen.
+    sig.on('callState', (data) => {
+      console.log('[kiosk] CALL_STATE', data.state, 'from', data.from);
+      if (data.state === 'connected') {
+        callActive = true;
+        applyRemoteAudio();
+        showToast('Call connected');
+      } else if (data.state === 'ended') {
+        callActive = false;
+        applyRemoteAudio();
+        showToast('Call ended');
+      }
+    });
+
+    function showToast(msg, ms = 3000) {
+      // Lightweight toast reused from base — define locally for kiosk.
+      const el = document.getElementById('kioskToast');
+      if (!el) return;
+      el.textContent = msg;
+      el.classList.remove('hidden');
+      setTimeout(() => el.classList.add('hidden'), ms);
+    }
+
+    // NOTE: The doorbell button was removed from the monitor page. The DOORBELL
+    // signaling message is still relayed by the server (SignalingHandler.handleDoorbell)
+    // and is kept as a reusable building block for a future chime/announce feature.
 
     sig.on('configUpdated', (data) => {
       applyConfig(data.config);
@@ -505,6 +743,61 @@
       rtc.closePeerConnection(data.subscriberId);
     });
 
+    // Handle display/audio config from base station
+    sig.on('setDisplayConfig', (data) => {
+      console.log('[kiosk] setDisplayConfig:', data);
+      applyDisplayConfig(data.displayMode, data.audioMode);
+      // Re-apply speaker volume / audio-mode gating to any live remote audio.
+      if (typeof applyRemoteAudio === 'function') applyRemoteAudio();
+      ftDbgState.display = data.displayMode;
+      ftDbgState.audio = data.audioMode;
+      renderFtDebug();
+    });
+
+    // Handle broadcast subscriber joined (kiosk receiving base's broadcast)
+    sig.on('subscriberJoined', (data) => {
+      if (data.isBroadcast) {
+        // Base station is sending its broadcast to us
+        console.log('[kiosk] broadcast subscriberJoined from', data.subscriberId);
+        broadcastPeerId = data.subscriberId;
+        // Create a recv broadcast peer connection to receive base's broadcast.
+        // (handleOffer will reuse this same PC when the offer arrives.)
+        rtc.createBroadcastPeerConnection(broadcastPeerId, true);
+        ftDbgState.base = broadcastPeerId;
+        ftDbgState.pc = 'new';
+        renderFtDebug();
+      } else {
+        subscriberCount++;
+        debugSubs.textContent = 'subs:' + subscriberCount;
+        logEvent('subJoined:' + data.subscriberId.slice(-4));
+        const peerId = data.subscriberId;
+        subscribers.add(peerId);
+        if (!rtc.localStream) {
+          logEvent('NO-LOCALSTREAM');
+          console.log('[kiosk] WARN: no localStream for', peerId, '- will offer once media starts');
+          return;
+        }
+        offerToSubscriber(peerId);
+      }
+    });
+
+    // Handle source added - auto-subscribe to broadcasts
+    sig.on('sourceAdded', (source) => {
+      if (source.isBroadcast && source.publisherId !== deviceId) {
+        console.log('[kiosk] broadcast source added:', source.id, 'from', source.publisherId);
+        subscribeToBroadcast(source.publisherId);
+      }
+    });
+
+    // Handle source removed - cleanup broadcast if needed
+    sig.on('sourceRemoved', (data) => {
+      if (broadcastPeerId && data.sourceId) {
+        // Check if this was our broadcast source
+        // We'd need to track the broadcast source ID
+        console.log('[kiosk] source removed:', data.sourceId);
+      }
+    });
+
     // Modern iOS (13+): open the signaling socket on load, as before.
     // Legacy iOS (≤12): defer the connect until the user taps "enable camera"
     // — a user gesture. Opening a WebSocket on page load without a gesture is
@@ -524,7 +817,7 @@
 
     if (config.label) {
       sig.deviceLabel = config.label;
-      localStorage.setItem('hearth_deviceLabel', config.label);
+      localStorage.setItem('hearth_monitorLabel', config.label);
       deviceLabel.textContent = config.label;
     }
 

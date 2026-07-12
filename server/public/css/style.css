@@ -307,6 +307,29 @@ input[type="text"]:focus {
   white-space: nowrap;
 }
 
+/* Base→monitor A/V (FaceTalk/broadcast) connection debug — pinned to the top
+   of the video area on both the base station and the monitor pages. */
+.ft-debug {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  right: 6px;
+  z-index: 11;
+  font-family: monospace;
+  font-size: 10px;
+  line-height: 1.3;
+  color: #7fe3a1;
+  background: rgba(0, 0, 0, 0.55);
+  padding: 3px 6px;
+  border-radius: 4px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  pointer-events: none;
+}
+.monitor-page .ft-debug {
+  position: fixed;
+}
+
 .camera-error {
   position: fixed;
   inset: 0;
@@ -599,16 +622,65 @@ input[type="text"]:focus {
   object-fit: contain;
 }
 
+.monitor-resume {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  font-size: 32px;
+  line-height: 72px;
+  text-align: center;
+  padding: 0 0 0 4px;
+  cursor: pointer;
+  z-index: 20;
+}
+.monitor-resume:active { background: rgba(0, 0, 0, 0.8); }
+
 .monitor-overlay {
   position: absolute;
   bottom: 8px;
   left: 8px;
   right: 8px;
   display: flex;
-  justify-content: space-between;
+  flex-wrap: wrap;
+  justify-content: flex-start;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   z-index: 10;
+  /* Hidden until the user taps the video; fades in and auto-hides after 5s. */
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.3s ease;
+}
+.monitor-overlay.visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* FaceTalk button scales with the viewport so it never gets clipped on small
+   iOS screens. Uses clamp() for fluid sizing and is allowed to grow/shrink,
+   but stays inline with the other buttons (never full width). */
+.monitor-ft-btn {
+  flex: 0 1 auto;
+  min-width: 0;
+  padding: 8px 12px;
+  font-size: clamp(11px, 2.6vw, 14px);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+@media (max-width: 480px) {
+  .monitor-overlay .btn-small {
+    padding: 7px 10px;
+    font-size: 12px;
+  }
 }
 
 .monitor-overlay span {
@@ -656,25 +728,51 @@ input[type="text"]:focus {
   font-weight: 600;
 }
 
-.volume-control {
-  display: inline-flex;
+/* Volume widget: a round button pinned to the lower-right of the monitor
+   feed that expands a vertical slider upward when tapped. */
+.volume-widget {
+  position: absolute;
+  bottom: 8px;
+  right: 8px;
+  display: flex;
+  flex-direction: column;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
+  z-index: 15;
+}
+
+.volume-toggle {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: none;
   background: rgba(0, 0, 0, 0.6);
-  padding: 2px 8px;
-  border-radius: 4px;
+  color: #fff;
+  font-size: 18px;
+  line-height: 40px;
+  text-align: center;
+  padding: 0;
   cursor: pointer;
 }
+.volume-toggle:active { background: rgba(0, 0, 0, 0.8); }
 
-.volume-control .volume-icon {
-  font-size: 12px;
-  line-height: 1;
+.volume-slider-wrap {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  height: 140px;
+  padding: 12px 8px;
+  background: rgba(0, 0, 0, 0.6);
+  border-radius: 20px;
 }
 
-.volume-control input[type="range"] {
+.volume-slider-wrap input[type="range"] {
   --vol-pct: 50%;
-  width: 90px;
-  height: 16px;
+  -webkit-appearance: slider-vertical;
+  writing-mode: vertical-lr;
+  direction: rtl;
+  width: 16px;
+  height: 120px;
   margin: 0;
   padding: 0;
   background: transparent;
@@ -683,35 +781,35 @@ input[type="text"]:focus {
   cursor: pointer;
 }
 
-.volume-control input[type="range"]::-webkit-slider-runnable-track {
-  height: 3px;
-  background: linear-gradient(to right, #fff 0%, #fff var(--vol-pct), rgba(255,255,255,0.35) var(--vol-pct));
+.volume-slider-wrap input[type="range"]::-webkit-slider-runnable-track {
+  width: 3px;
+  background: linear-gradient(to top, #fff 0%, #fff var(--vol-pct), rgba(255,255,255,0.35) var(--vol-pct));
   border-radius: 2px;
 }
 
-.volume-control input[type="range"]::-webkit-slider-thumb {
+.volume-slider-wrap input[type="range"]::-webkit-slider-thumb {
   -webkit-appearance: none;
   width: 14px;
   height: 14px;
   border-radius: 50%;
   background: #fff;
-  margin-top: -5.5px;
+  margin-left: -5.5px;
 }
 
-.volume-control input[type="range"]::-moz-range-track {
-  height: 3px;
+.volume-slider-wrap input[type="range"]::-moz-range-track {
+  width: 3px;
   background: rgba(255, 255, 255, 0.35);
   border-radius: 2px;
   border: none;
 }
 
-.volume-control input[type="range"]::-moz-range-progress {
-  height: 3px;
+.volume-slider-wrap input[type="range"]::-moz-range-progress {
+  width: 3px;
   background: #fff;
   border-radius: 2px;
 }
 
-.volume-control input[type="range"]::-moz-range-thumb {
+.volume-slider-wrap input[type="range"]::-moz-range-thumb {
   width: 14px;
   height: 14px;
   border-radius: 50%;
@@ -868,6 +966,60 @@ input[type="text"]:focus {
   animation: pulse 1.5s infinite;
 }
 
+/* ─── Incoming call modal ─────────────────────────────── */
+.call-modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 80;
+}
+.call-box {
+  background: var(--bg-card);
+  border: 1px solid var(--accent-dim, #3a86ff);
+  border-radius: var(--radius, 12px);
+  padding: 24px 28px;
+  text-align: center;
+  min-width: 260px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+}
+.call-title {
+  font-size: 20px;
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+.call-from {
+  color: var(--fg-dim, #aaa);
+  margin-bottom: 18px;
+}
+.call-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+}
+
+/* ─── Connection quality readout ─────────────────────── */
+.monitor-quality {
+  font-size: 11px;
+  color: var(--fg-dim, #aaa);
+  margin-left: 6px;
+  white-space: nowrap;
+}
+
+/* ─── Kiosk actions / doorbell ────────────────────────── */
+.kiosk-actions {
+  position: fixed;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  z-index: 40;
+}
+#remoteAudio {
+  display: none;
+}
+
 @keyframes pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.4; }
@@ -930,4 +1082,127 @@ input[type="text"]:focus {
   .video-grid {
     aspect-ratio: 16/7;
   }
+}
+
+/* ─── Grid View ──────────────────────────────────────────── */
+
+.video-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+  margin: 12px;
+}
+
+.grid-cell {
+  position: relative;
+  background: #1a1a1a;
+  border-radius: 8px;
+  overflow: hidden;
+  aspect-ratio: 16/9;
+  min-height: 120px;
+}
+
+.grid-cell.empty {
+  border: 2px dashed #444;
+}
+
+.grid-video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  background: #000;
+}
+
+.grid-overlay {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: linear-gradient(transparent, rgba(0,0,0,0.8));
+  padding: 8px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.grid-label {
+  color: #fff;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.grid-controls {
+  margin-bottom: 12px;
+}
+
+.grid-controls h3 {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.grid-available {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+
+/* ─── Broadcast Panel ─────────────────────────────────────── */
+
+.broadcast-panel {
+  margin-bottom: 16px;
+}
+
+.broadcast-preview video {
+  width: 100%;
+  max-height: 200px;
+  background: #1a1a1a;
+  border-radius: 8px;
+  margin-bottom: 12px;
+}
+
+.broadcast-controls .config-row {
+  margin-bottom: 8px;
+}
+
+.broadcast-controls select {
+  width: 100%;
+}
+
+/* ─── Display/Audio Mode Dropdowns ─────────────────────────── */
+
+.control-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+
+.control-row .config-row {
+  flex: 1;
+  min-width: 120px;
+  border: none;
+  padding: 0;
+}
+
+.control-row label {
+  font-size: 11px;
+  color: #888;
+  display: block;
+  margin-bottom: 2px;
+}
+
+.control-row select {
+  font-size: 12px;
+  padding: 4px 8px;
+  width: 100%;
+}
+
+/* ─── Device Item with controls ────────────────────────────── */
+
+.device-item .control-row {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid #2a2a2a;
 }

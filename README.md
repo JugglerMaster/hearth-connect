@@ -20,12 +20,12 @@ HTML5 video intercom / baby monitor system. Runs on iPads/iPhones via Safari. Se
 ### Device Roles
 | Page | Role | Purpose |
 |------|------|---------|
-| `camera.html` | **Kiosk** (publisher) | Thin client — captures camera/mic, publishes to room, minimal UI |
+| `monitor.html` | **Monitor** (publisher) | Thin client — captures camera/mic, publishes to room, minimal UI |
 | `base-station.html` | **Base Station** (subscriber + admin) | Full control hub — monitors kiosks, pushes config, manages devices |
 | `index.html` | Landing | Role selector + server status |
 | `test.html` | Dev tool | Ad-hoc stream viewer for debugging |
 
-### Kiosk (Camera Device) — `camera.html`
+### Monitor (Camera Device) — `monitor.html`
 - **Auto-reconnect** — deviceId persisted in localStorage; rejoins room on reload
 - **User gesture required** — iOS ≤12 shows "Tap to enable camera" overlay; iOS 13+ auto-starts
 - **Media constraints** — front/rear camera, 480p/720p/1080p, 15/24/30 fps
@@ -52,7 +52,7 @@ HTML5 video intercom / baby monitor system. Runs on iPads/iPhones via Safari. Se
 
 ### Signaling & Discovery
 - **QR code** — base station calls `POST /api/server-url` → returns `serverUrl` + 600px base64 PNG data URL
-- **Kiosk entry** — scans QR (opens `camera.html`) or manually enters room name
+- **Kiosk entry** — scans QR (opens `monitor.html`) or manually enters room name
 - **No pairing tokens required** — room join is direct via `JOIN_ROOM`
 - **Recently-seen devices** — 24h in-memory window (survives server restart via persisted config)
 

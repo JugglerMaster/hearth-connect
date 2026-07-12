@@ -82,6 +82,18 @@ class SignalingHandler {
             case 'UNSUBSCRIBE_SOURCE':
                 this.handleUnsubscribeSource(transport, msg.payload);
                 break;
+            case 'BROADCAST_SOURCE':
+                this.handleBroadcastSource(transport, msg.payload);
+                break;
+            case 'UNBROADCAST_SOURCE':
+                this.handleUnbroadcastSource(transport, msg.payload);
+                break;
+            case 'SUBSCRIBE_BROADCAST':
+                this.handleSubscribeBroadcast(transport, msg.payload);
+                break;
+            case 'UNSUBSCRIBE_BROADCAST':
+                this.handleUnsubscribeBroadcast(transport, msg.payload);
+                break;
             case 'OFFER':
                 this.handleRelay(transport, msg, 'OFFER');
                 break;
@@ -94,11 +106,17 @@ class SignalingHandler {
             case 'ICE_RESTART':
                 this.handleRelay(transport, msg, 'ICE_RESTART');
                 break;
+            case 'RENEGOTIATE':
+                this.handleRelay(transport, msg, 'RENEGOTIATE');
+                break;
             case 'SET_CONFIG':
                 this.handleSetConfig(transport, msg.payload);
                 break;
             case 'GET_CONFIG':
                 this.handleGetConfig(transport);
+                break;
+            case 'SET_DISPLAY_CONFIG':
+                this.handleSetDisplayConfig(transport, msg.payload);
                 break;
             case 'REQUEST_TALK':
                 this.handleRequestTalk(transport, msg.payload);
@@ -114,6 +132,12 @@ class SignalingHandler {
                 break;
             case 'REMOVE_DEVICE':
                 this.handleRemoveDevice(transport, msg.payload);
+                break;
+            case 'DOORBELL':
+                this.handleDoorbell(transport, msg.payload);
+                break;
+            case 'CALL_STATE':
+                this.handleCallState(transport, msg.payload);
                 break;
             default:
                 this.sendError(transport, 'UNKNOWN_TYPE', `Unknown message type: ${msg.type}`);
@@ -341,6 +365,143 @@ class SignalingHandler {
             payload: { subscriberId: client.deviceId },
         });
     }
+    // ─── Broadcast Source Handlers ──────────────────────────────
+    handleBroadcastSource(transport, payload) {
+        const client = this.channels.getClientByConnId(transport.connId);
+        if (!client) {
+            this.sendError(transport, 'NOT_IN_ROOM', 'Join a room first');
+            return;
+        }
+        if (client.deviceType !== 'base') {
+            this.sendError(transport, 'NOT_ALLOWED', 'Only base stations can broadcast');
+            return;
+        }
+        const sourceId = payload.sourceId;
+        const label = payload.label || 'Base Station Broadcast';
+        const rawType = payload.type || 'video+audio';
+        const validTypes = ['video+audio', 'video-only', 'audio-only', 'none'];
+        const type = validTypes.includes(rawType) ? rawType : 'video+audio';
+        if (!sourceId) {
+            this.sendError(transport, 'INVALID_PARAMS', 'sourceId required');
+            return;
+        }
+        const source = this.channels.addSource(client.deviceId, sourceId, label, type);
+        if (!source) {
+            this.sendError(transport, 'INTERNAL_ERROR', 'Failed to add broadcast source');
+            return;
+        }
+        // Mark as broadcast source
+        source.isBroadcast = true;
+        // Notify all clients (kiosks and other bases)
+        this.channels.broadcastAll({
+            type: 'SOURCE_ADDED',
+            payload: source,
+        });
+        // Update base config to track broadcast
+        this.config.updateDeviceConfig(client.deviceId, {
+            broadcastSourceId: sourceId,
+            isBroadcasting: true,
+        });
+        console.log(`Broadcast source published: ${sourceId} by ${client.deviceId}`);
+    }
+    handleUnbroadcastSource(transport, payload) {
+        const client = this.channels.getClientByConnId(transport.connId);
+        if (!client)
+            return;
+        const sourceId = payload.sourceId;
+        if (!sourceId)
+            return;
+        const removed = this.channels.removeSource(client.deviceId, sourceId);
+        if (removed) {
+            this.channels.broadcastAll({
+                type: 'SOURCE_REMOVED',
+                payload: { sourceId },
+            });
+            this.config.updateDeviceConfig(client.deviceId, {
+                broadcastSourceId: undefined,
+                isBroadcasting: false,
+            });
+        }
+    }
+    handleSubscribeBroadcast(transport, payload) {
+        const client = this.channels.getClientByConnId(transport.connId);
+        if (!client) {
+            this.sendError(transport, 'NOT_IN_ROOM', 'Join a room first');
+            return;
+        }
+        if (client.deviceType !== 'kiosk') {
+            this.sendError(transport, 'NOT_ALLOWED', 'Only kiosks can subscribe to broadcasts');
+            return;
+        }
+        const publisherId = payload.publisherId;
+        if (!publisherId)
+            return;
+        const publisher = this.channels.getClient(publisherId);
+        if (!publisher) {
+            this.sendError(transport, 'NOT_FOUND', 'Publisher not found');
+            return;
+        }
+        // Notify publisher that a new subscriber wants their broadcast stream
+        this.channels.sendTo(publisherId, {
+            type: 'SUBSCRIBER_JOINED',
+            payload: { subscriberId: client.deviceId, isBroadcast: true },
+        });
+        console.log(`Kiosk ${client.deviceId} subscribed to broadcast from ${publisherId}`);
+    }
+    handleUnsubscribeBroadcast(transport, payload) {
+        const client = this.channels.getClientByConnId(transport.connId);
+        if (!client)
+            return;
+        const publisherId = payload.publisherId;
+        if (!publisherId)
+            return;
+        this.channels.sendTo(publisherId, {
+            type: 'SUBSCRIBER_LEFT',
+            payload: { subscriberId: client.deviceId, isBroadcast: true },
+        });
+    }
+    // ─── Display Config Handler ─────────────────────────────────
+    handleSetDisplayConfig(transport, payload) {
+        const client = this.channels.getClientByConnId(transport.connId);
+        if (!client)
+            return;
+        if (client.deviceType !== 'base') {
+            this.sendError(transport, 'NOT_ALLOWED', 'Only base stations can set display config');
+            return;
+        }
+        const targetDeviceId = payload.targetDeviceId;
+        const displayMode = payload.displayMode;
+        const audioMode = payload.audioMode;
+        if (!targetDeviceId || !displayMode || !audioMode) {
+            this.sendError(transport, 'INVALID_PARAMS', 'targetDeviceId, displayMode, audioMode required');
+            return;
+        }
+        const targetDevice = this.config.getDevice(targetDeviceId);
+        if (!targetDevice) {
+            this.sendError(transport, 'NOT_FOUND', 'Target device not found');
+            return;
+        }
+        if (targetDevice.type !== 'kiosk') {
+            this.sendError(transport, 'INVALID_TARGET', 'Display config can only be set on kiosks');
+            return;
+        }
+        // Persist config
+        this.config.updateDeviceConfig(targetDeviceId, { displayMode, audioMode });
+        // Push to target kiosk if connected
+        const targetClient = this.channels.getClient(targetDeviceId);
+        if (targetClient) {
+            this.channels.sendTo(targetDeviceId, {
+                type: 'SET_DISPLAY_CONFIG',
+                payload: { displayMode, audioMode },
+            });
+        }
+        // Acknowledge to requesting base
+        this.send(transport, {
+            type: 'CONFIG_RESULT',
+            payload: { targetDeviceId, ok: true, config: { displayMode, audioMode } },
+        });
+        console.log(`Display config set for ${targetDeviceId}: display=${displayMode}, audio=${audioMode}`);
+    }
     handleCapabilities(transport, payload) {
         const client = this.channels.getClientByConnId(transport.connId);
         if (!client)
@@ -407,6 +568,36 @@ class SignalingHandler {
             payload: { deviceId: targetDeviceId },
         });
         console.log(`Device removed: ${targetDeviceId} by ${client.deviceId}`);
+    }
+    // ─── Doorbell / Call signaling ──────────────────────────
+    // A kiosk rings the doorbell; the server relays it to every base station.
+    // Bases render an "incoming call" prompt and can answer (which subscribes to
+    // the kiosk) or dismiss it. CALL_STATE is sent base→kiosk to let the kiosk
+    // reflect the call status (e.g. show "call connected") on its display.
+    handleDoorbell(transport, payload) {
+        const client = this.channels.getClientByConnId(transport.connId);
+        if (!client)
+            return;
+        const label = payload.label || client.label || client.deviceId;
+        // Relay to all base stations (not back to the ringer).
+        this.channels.broadcastToType('base', {
+            type: 'DOORBELL',
+            payload: { from: client.deviceId, label, ts: Date.now() },
+        }, client.deviceId);
+        console.log(`Doorbell rung by ${client.deviceId} (${label})`);
+    }
+    handleCallState(transport, payload) {
+        const client = this.channels.getClientByConnId(transport.connId);
+        if (!client)
+            return;
+        const targetId = payload.targetDeviceId;
+        if (!targetId)
+            return;
+        // Forward call state to the target device (typically a kiosk).
+        this.channels.sendTo(targetId, {
+            type: 'CALL_STATE',
+            payload: { from: client.deviceId, state: payload.state, ts: Date.now() },
+        });
     }
     handleRelay(transport, msg, originalType) {
         const client = this.channels.getClientByConnId(transport.connId);

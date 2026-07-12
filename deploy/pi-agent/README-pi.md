@@ -1,8 +1,12 @@
 # Hearth-Connect Pi Agent
 
+> **⚠️ UNTESTED** — This agent has not been validated on hardware. Use at your own risk.
+
 A headless Raspberry Pi client for Hearth-Connect. Runs on **Pi OS Lite** (no desktop, no
 screen) as a native Python + GStreamer WebRTC publisher. It streams the camera and/or
 microphone to a Hearth-Connect room, and the base station can monitor and switch its inputs.
+
+This is a **kiosk client deployment** — the Pi acts as a camera/mic publisher (like a browser kiosk).
 
 ## What it does
 

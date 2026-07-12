@@ -24,6 +24,9 @@ export declare class ChannelManager {
     getAllClients(): Map<string, ConnectedClient>;
     getClientsInRoom(roomId: string): ConnectedClient[];
     getClientsByType(roomId: string, type: DeviceType): ConnectedClient[];
+    getBasesInRoom(roomId: string): ConnectedClient[];
+    getPrimaryBase(roomId: string): ConnectedClient | undefined;
+    isPrimaryBase(deviceId: string, roomId: string): boolean;
     isClientInRoom(deviceId: string, roomId: string): boolean;
     addSource(deviceId: string, sourceId: string, label: string, type: SourceType): MediaSourceInfo | null;
     removeSource(deviceId: string, sourceId: string): MediaSourceInfo | null;
@@ -38,6 +41,7 @@ export declare class ChannelManager {
     clearRecentlySeen(): void;
     updateHeartbeat(deviceId: string): void;
     broadcastToRoom(roomId: string, message: object, excludeDeviceId?: string): void;
+    broadcastToType(type: DeviceType, message: object, excludeDeviceId?: string): void;
     sendTo(deviceId: string, message: object): void;
     broadcastAll(message: object, excludeDeviceId?: string): void;
 }

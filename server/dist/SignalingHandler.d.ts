@@ -18,9 +18,16 @@ export declare class SignalingHandler {
     private handleUnpublishSource;
     private handleSubscribeSource;
     private handleUnsubscribeSource;
+    private handleBroadcastSource;
+    private handleUnbroadcastSource;
+    private handleSubscribeBroadcast;
+    private handleUnsubscribeBroadcast;
+    private handleSetDisplayConfig;
     private handleCapabilities;
     private handleAudioPeak;
     private handleRemoveDevice;
+    private handleDoorbell;
+    private handleCallState;
     private handleRelay;
     private handleSetConfig;
     private handleGetConfig;

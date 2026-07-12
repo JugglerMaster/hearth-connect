@@ -19,25 +19,34 @@
 
     <div id="monitorFeed" class="monitor-feed hidden">
       <video id="monitorVideo" autoplay playsinline></video>
+      <div id="ftDebug" class="ft-debug">ft:idle</div>
       <div id="monitorPlaceholder" class="monitor-placeholder hidden">
         <div>🔊 Listening…</div>
       </div>
       <div id="monitorError" class="monitor-error hidden"></div>
+      <button id="monitorResumeBtn" class="monitor-resume hidden" title="Resume">▶</button>
       <div class="monitor-overlay">
-        <span id="monitorLabel"></span>
-        <span id="monitorMode" class="monitor-mode"></span>
         <span id="monitorStatus" class="monitor-status hidden"></span>
-        <label class="volume-control" title="Volume">
-          <span class="volume-icon">🔊</span>
-          <input type="range" id="monitorVolume" min="0" max="200" step="1" value="100">
-        </label>
+        <button id="monitorMuteBtn" class="btn btn-small btn-outline" title="Mute/unmute">🔇 Mute</button>
+        <button id="monitorTalkBtn" class="btn btn-small btn-outline" title="Talk to this device">🎙 Talk</button>
+        <button id="monitorFaceTalkBtn" class="btn btn-small btn-outline monitor-ft-btn" title="Send your camera + mic to this device">📹 FaceTalk</button>
+        <span id="monitorQuality" class="monitor-quality"></span>
+        <button id="monitorFullscreenBtn" class="btn btn-small btn-outline" title="Fullscreen">⛶ Fullscreen</button>
         <button id="stopMonitorBtn" class="btn btn-small btn-outline">Stop</button>
+      </div>
+
+      <div id="volumeWidget" class="volume-widget">
+        <div id="volumeSliderWrap" class="volume-slider-wrap hidden">
+          <input type="range" id="monitorVolume" min="0" max="200" step="1" value="100" orient="vertical">
+        </div>
+        <button id="volumeToggleBtn" class="volume-toggle" title="Volume">🔊</button>
       </div>
     </div>
 
     <div id="homeView">
       <div class="panel devices-panel">
         <h2>Devices</h2>
+        <button id="testSelfVideoBtn" class="btn btn-small btn-outline" style="margin-bottom:8px">🎥 Test: show my own video</button>
         <div id="deviceList" class="device-list"></div>
       </div>
 
@@ -49,6 +58,17 @@
   </div>
 
   <div id="toast" class="toast hidden"></div>
+
+  <div id="incomingCall" class="call-modal hidden">
+    <div class="call-box">
+      <div class="call-title">🔔 Incoming call</div>
+      <div id="incomingCallFrom" class="call-from"></div>
+      <div class="call-actions">
+        <button id="answerCallBtn" class="btn btn-primary">Answer</button>
+        <button id="dismissCallBtn" class="btn btn-outline">Dismiss</button>
+      </div>
+    </div>
+  </div>
 
   <script src="/js/signaling.js"></script>
   <script src="/js/webrtc.js"></script>
