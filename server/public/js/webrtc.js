@@ -231,7 +231,7 @@ class WebRTCManager {
 
     pc.onicecandidate = (event) => {
       if (event.candidate) {
-        this.sig.sendIceCandidate(kioskId, event.candidate.toJSON());
+        this.sig.sendIceCandidate(kioskId, event.candidate.toJSON(), true);
       }
     };
 
@@ -251,7 +251,7 @@ class WebRTCManager {
       try {
         meta.makingOffer = true;
         await pc.setLocalDescription();
-        this.sig.sendOffer(kioskId, pc.localDescription);
+        this.sig.sendOffer(kioskId, pc.localDescription, true);
       } catch (err) {
         console.error('[webrtc] broadcast negotiationneeded failed for', kioskId, err);
       } finally {
@@ -361,7 +361,7 @@ class WebRTCManager {
         await this.flushCandidates(`broadcast-${peerId}`);
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
-        this.sig.sendAnswer(from, answer);
+        this.sig.sendAnswer(from, answer, true);
       } catch (err) {
         console.error('handleBroadcastOffer failed:', err);
       }
@@ -398,18 +398,24 @@ class WebRTCManager {
   }
 
   async handleAnswer(data) {
-    const { from, sdp } = data;
-    console.log('[webrtc] handleAnswer from', from);
-    let pc = this.peerConnections.get(from);
-    if (!pc) {
+    const { from, sdp, isBroadcast } = data;
+    console.log('[webrtc] handleAnswer from', from, 'isBroadcast:', !!isBroadcast);
+    // When both a monitor PC and a broadcast PC exist for the same peer (e.g.
+    // during FaceTalk), disambiguate using the isBroadcast flag so the answer is
+    // applied to the correct connection.
+    let pc, meta;
+    if (isBroadcast) {
       pc = this.broadcastPcs.get(from);
+      meta = this.pcMeta.get(`broadcast-${from}`);
+    } else {
+      pc = this.peerConnections.get(from) || this.broadcastPcs.get(from);
+      meta = this.pcMeta.get(from) || this.pcMeta.get(`broadcast-${from}`);
     }
     if (!pc) return;
 
-    const meta = this.pcMeta.get(from) || this.pcMeta.get(`broadcast-${from}`);
     try {
       await pc.setRemoteDescription(new RTCSessionDescription(sdp));
-      await this.flushCandidates(from);
+      await this.flushCandidates(isBroadcast ? `broadcast-${from}` : from);
       if (meta) meta.ignoreOffer = false;
     } catch (err) {
       console.error('handleAnswer failed:', err);
@@ -417,20 +423,19 @@ class WebRTCManager {
   }
 
   async handleIceCandidate(data) {
-    const { from, candidate } = data;
-    let pc = this.peerConnections.get(from);
-    if (!pc) pc = this.broadcastPcs.get(from);
+    const { from, candidate, isBroadcast } = data;
+    let pc, key;
+    if (isBroadcast) {
+      pc = this.broadcastPcs.get(from);
+      key = `broadcast-${from}`;
+    } else {
+      pc = this.peerConnections.get(from) || this.broadcastPcs.get(from);
+      key = this.peerConnections.has(from) ? from : `broadcast-${from}`;
+    }
     if (!pc || !candidate) return;
 
-    const key = this.peerConnections.has(from) ? from : `broadcast-${from}`;
     // Queue candidates until remote description exists. setRemoteDescription /
     // setLocalDescription must be applied first or addIceCandidate throws.
-    const desc = pc.remoteDescription || pc.localDescription;
-    if (!desc || (pc.remoteDescription && pc.signalingState === 'have-local-offer' && !pc.remoteDescription)) {
-      // Still negotiating — queue it.
-      this.queueCandidate(key, candidate);
-      return;
-    }
     if (!pc.remoteDescription) {
       this.queueCandidate(key, candidate);
       return;

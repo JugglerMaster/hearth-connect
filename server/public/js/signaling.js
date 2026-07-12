@@ -333,16 +333,22 @@ class SignalingClient {
     this.send('UNSUBSCRIBE_SOURCE', { publisherId });
   }
 
-  sendOffer(to, sdp) {
-    this.send('OFFER', { to, sdp });
+  sendOffer(to, sdp, isBroadcast = false) {
+    const payload = { to, sdp };
+    if (isBroadcast) payload.isBroadcast = true;
+    this.send('OFFER', payload);
   }
 
-  sendAnswer(to, sdp) {
-    this.send('ANSWER', { to, sdp });
+  sendAnswer(to, sdp, isBroadcast = false) {
+    const payload = { to, sdp };
+    if (isBroadcast) payload.isBroadcast = true;
+    this.send('ANSWER', payload);
   }
 
-  sendIceCandidate(to, candidate) {
-    this.send('ICE_CANDIDATE', { to, candidate });
+  sendIceCandidate(to, candidate, isBroadcast = false) {
+    const payload = { to, candidate };
+    if (isBroadcast) payload.isBroadcast = true;
+    this.send('ICE_CANDIDATE', payload);
   }
 
   requestIceRestart(to) {

@@ -64,6 +64,7 @@
   const monitorTalkBtn = document.getElementById('monitorTalkBtn');
   const monitorFaceTalkBtn = document.getElementById('monitorFaceTalkBtn');
   const monitorQuality = document.getElementById('monitorQuality');
+  const ftDebug = document.getElementById('ftDebug');
   const toast = document.getElementById('toast');
   const homeView = document.getElementById('homeView');
   const deviceList = document.getElementById('deviceList');
@@ -173,6 +174,30 @@
   }
 
   // ─── FaceTalk (base → kiosk reverse video+audio) ──────
+  // Debug readout for the base→kiosk audio/video (FaceTalk/broadcast) link.
+  // Rendered at the top of the monitor video area. Tracks the signaling (WS/SSE)
+  // transport plus the per-kiosk broadcast RTCPeerConnection + track state.
+  let ftDbgState = {
+    wsMethod: '--',
+    wsUp: false,
+    target: null,      // kioskId we are FaceTalking to
+    sourceId: null,    // broadcast source id
+    pc: '--',          // broadcast PC connection state
+    ice: '--',         // broadcast PC ICE state
+    tracks: '--',      // tracks added to the broadcast PC
+  };
+  function renderFtDebug() {
+    if (!ftDebug) return;
+    const d = ftDbgState;
+    const tgt = d.target ? d.target.slice(-4) : '—';
+    ftDebug.textContent =
+      'ft:' + (d.target ? 'ON→' + tgt : 'idle') +
+      '  ws:' + d.wsMethod + (d.wsUp ? '↑' : '↓') +
+      '  src:' + (d.sourceId ? d.sourceId.slice(-6) : '—') +
+      '  pc:' + d.pc + '  ice:' + d.ice +
+      '  tracks:' + d.tracks;
+  }
+
   // Starts a video+audio broadcast from the base station to the watched kiosk
   // and temporarily switches that kiosk's display to 'base' so the feed is
   // shown/heard. The kiosk's previous display/audio mode is restored on hang-up.
@@ -206,6 +231,12 @@
       sig.setDisplayConfig(peerId, 'base', 'base');
 
       faceTalkingTo = peerId;
+      ftDbgState.target = peerId;
+      ftDbgState.sourceId = faceTalkSourceId;
+      ftDbgState.pc = 'new';
+      ftDbgState.ice = 'new';
+      ftDbgState.tracks = '--';
+      renderFtDebug();
       if (monitorFaceTalkBtn) {
         monitorFaceTalkBtn.textContent = '📹 FaceTalking…';
         monitorFaceTalkBtn.classList.add('btn-danger');
@@ -238,6 +269,12 @@
     }
 
     faceTalkingTo = null;
+    ftDbgState.target = null;
+    ftDbgState.sourceId = null;
+    ftDbgState.pc = '--';
+    ftDbgState.ice = '--';
+    ftDbgState.tracks = '--';
+    renderFtDebug();
     if (monitorFaceTalkBtn) {
       monitorFaceTalkBtn.textContent = '📹 FaceTalk';
       monitorFaceTalkBtn.classList.remove('btn-danger');
@@ -454,9 +491,11 @@
     const kiosks = devices.filter(d => d.type === 'kiosk' && d.id !== deviceId);
     const bases = devices.filter(d => d.type === 'base' && d.id !== deviceId);
 
-    // Build broadcast panel HTML
+    // Build broadcast panel HTML.
+    // Only show when NOT actively watching a device feed (no video/audio
+    // option selected). While a feed is open we hide the broadcast controls.
     let broadcastPanel = '';
-    if (bases.length === 0 && devices.some(d => d.id === deviceId && d.type === 'base')) {
+    if (!viewingId && bases.length === 0 && devices.some(d => d.id === deviceId && d.type === 'base')) {
       // We are the only base or first base - show broadcast controls
       broadcastPanel = buildBroadcastPanel();
     }
@@ -940,6 +979,22 @@
     if (monitorControlsTimer) { clearTimeout(monitorControlsTimer); monitorControlsTimer = null; }
   }
 
+  // ─── Fullscreen ────────────────────────────────────
+  function toggleFullscreen() {
+    const el = monitorFeed;
+    if (!el) return;
+    const fsEl = document.fullscreenElement || document.webkitFullscreenElement;
+    if (!fsEl) {
+      // iOS Safari only supports fullscreen on the <video> element itself.
+      if (el.requestFullscreen) el.requestFullscreen().catch(() => {});
+      else if (el.webkitRequestFullscreen) el.webkitRequestFullscreen();
+      else if (monitorVideo.webkitEnterFullscreen) monitorVideo.webkitEnterFullscreen();
+    } else {
+      if (document.exitFullscreen) document.exitFullscreen().catch(() => {});
+      else if (document.webkitExitFullscreen) document.webkitExitFullscreen();
+    }
+  }
+
   function showHome() {
     monitorFeed.classList.add('hidden');
     // homeView is never hidden — the device list stays on screen
@@ -999,6 +1054,7 @@
     if (t.id === 'monitorTalkBtn') { toggleTalk(); return; }
     if (t.id === 'monitorFaceTalkBtn') { toggleFaceTime(); return; }
     if (t.id === 'monitorMuteBtn') { toggleMute(); return; }
+    if (t.id === 'monitorFullscreenBtn') { toggleFullscreen(); return; }
     if (t.id === 'answerCallBtn') { answerCall(); return; }
     if (t.id === 'dismissCallBtn') { dismissCall(); return; }
 
@@ -1192,6 +1248,7 @@
 
   rtc.onConnectionStateChange = (peerId, state) => {
     console.log('[webrtc] peer', peerId, 'connection state:', state);
+    if (peerId === 'broadcast-' + faceTalkingTo) { ftDbgState.pc = state; renderFtDebug(); }
     if (peerId === viewingId && (state === 'failed' || state === 'disconnected' || state === 'closed')) {
       recoverWatch();
     }
@@ -1199,6 +1256,7 @@
 
   rtc.onIceConnectionStateChange = (peerId, state) => {
     console.log('[webrtc] peer', peerId, 'ice state:', state);
+    if (peerId === 'broadcast-' + faceTalkingTo) { ftDbgState.ice = state; renderFtDebug(); }
     if (peerId === viewingId && (state === 'failed' || state === 'disconnected' || state === 'closed')) {
       recoverWatch();
     }
@@ -1232,6 +1290,9 @@
     sig.on('open', () => {
       connectionDot.className = 'status-dot reconnecting';
       sig.joinRoom('default', deviceId);
+      ftDbgState.wsMethod = sig.useSSE ? 'SSE' : 'WS';
+      ftDbgState.wsUp = true;
+      renderFtDebug();
     });
 
     sig.on('welcome', (data) => {
@@ -1245,6 +1306,8 @@
 
     sig.on('close', () => {
       connectionDot.className = 'status-dot offline';
+      ftDbgState.wsUp = false;
+      renderFtDebug();
     });
 
     sig.on('sourceAdded', (source) => {
@@ -1303,7 +1366,11 @@
           broadcastStream.getTracks().forEach(track => {
             pc.addTrack(track, broadcastStream);
           });
+          const t = broadcastStream.getTracks();
+          ftDbgState.tracks = t.filter(x => x.kind === 'video').length + 'v ' +
+            t.filter(x => x.kind === 'audio').length + 'a';
         }
+        if (kioskId === faceTalkingTo) { ftDbgState.pc = 'subscribed'; renderFtDebug(); }
       }
     });
 

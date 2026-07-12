@@ -95,6 +95,31 @@
   const enableCamOverlay = document.getElementById('enableCamOverlay');
   const enableCamBtn = document.getElementById('enableCamBtn');
   const remoteAudio = document.getElementById('remoteAudio');
+  const ftDebug = document.getElementById('ftDebug');
+
+  // Debug readout for the base station → monitor audio/video (FaceTalk/broadcast)
+  // link, shown at the top of the video area. Tracks the signaling transport
+  // plus the incoming broadcast RTCPeerConnection + received track state.
+  const ftDbgState = {
+    wsMethod: '--',
+    wsUp: false,
+    base: null,       // base station deviceId sending us the broadcast
+    display: '--',    // current display mode
+    audio: '--',      // current audio mode
+    pc: '--',         // broadcast PC connection state
+    ice: '--',        // broadcast PC ICE state
+    tracks: '--',     // tracks received on the broadcast stream
+  };
+  function renderFtDebug() {
+    if (!ftDebug) return;
+    const d = ftDbgState;
+    ftDebug.textContent =
+      'ft:' + (d.base ? 'RX←' + d.base.slice(-4) : 'idle') +
+      '  ws:' + d.wsMethod + (d.wsUp ? '↑' : '↓') +
+      '  disp:' + d.display + '/' + d.audio +
+      '  pc:' + d.pc + '  ice:' + d.ice +
+      '  tracks:' + d.tracks;
+  }
 
   function logEvent(msg) {
     if (debugEvent) debugEvent.textContent = 'ev:' + msg;
@@ -216,6 +241,11 @@
       baseVideoActive = false;
       broadcastPeerId = null;
       applyDisplayConfig(currentConfig.displayMode || 'self', currentConfig.audioMode || 'mute');
+      ftDbgState.base = null;
+      ftDbgState.pc = '--';
+      ftDbgState.ice = '--';
+      ftDbgState.tracks = '--';
+      renderFtDebug();
     }
   }
 
@@ -441,9 +471,11 @@
 
       rtc.onConnectionStateChange = (peerId, state) => {
         console.log('[kiosk] peer', peerId, 'state:', state);
+        if (peerId.startsWith('broadcast-')) { ftDbgState.pc = state; renderFtDebug(); }
       };
       rtc.onIceConnectionStateChange = (peerId, state) => {
         console.log('[kiosk] peer', peerId, 'ice:', state);
+        if (peerId.startsWith('broadcast-')) { ftDbgState.ice = state; renderFtDebug(); }
       };
 
       // Add tracks to any subscribers that already exist
@@ -542,6 +574,9 @@
       if (debugMethod) debugMethod.textContent = 'method:' + (sig.useSSE ? 'SSE' : 'WS');
       logEvent(sig.useSSE ? 'sse:open' : 'ws:open');
       sig.joinRoom('default', deviceId);
+      ftDbgState.wsMethod = sig.useSSE ? 'SSE' : 'WS';
+      ftDbgState.wsUp = true;
+      renderFtDebug();
     });
 
     sig.on('welcome', async (data) => {
@@ -577,6 +612,8 @@
       publishedType = null;
       if (debugMethod) debugMethod.textContent = 'method:' + (sig.useSSE ? 'SSE' : 'WS');
       logEvent((sig.useSSE ? 'sse:close' : 'ws:close') + (code != null ? ':' + code : ''));
+      ftDbgState.wsUp = false;
+      renderFtDebug();
     });
 
     // ─── Remote (talkback / broadcast / announcement) audio + video ─────
@@ -611,6 +648,11 @@
         // can render it even if the display mode was switched after the
         // track arrived (otherwise the video silently never shows).
         broadcastStream = stream;
+        // Reflect the base sender + received tracks in the debug readout.
+        ftDbgState.base = peerId.replace(/^broadcast-/, '');
+        ftDbgState.tracks = stream.getVideoTracks().length + 'v ' +
+          stream.getAudioTracks().length + 'a';
+        renderFtDebug();
         if (track.kind === 'video') {
           // While the base is pushing its camera (FaceTalk/broadcast), show it
           // unconditionally — this overrides the device's display-mode setting
@@ -705,6 +747,9 @@
       applyDisplayConfig(data.displayMode, data.audioMode);
       // Re-apply speaker volume / audio-mode gating to any live remote audio.
       if (typeof applyRemoteAudio === 'function') applyRemoteAudio();
+      ftDbgState.display = data.displayMode;
+      ftDbgState.audio = data.audioMode;
+      renderFtDebug();
     });
 
     // Handle broadcast subscriber joined (kiosk receiving base's broadcast)
@@ -716,6 +761,9 @@
         // Create a recv broadcast peer connection to receive base's broadcast.
         // (handleOffer will reuse this same PC when the offer arrives.)
         rtc.createBroadcastPeerConnection(broadcastPeerId, true);
+        ftDbgState.base = broadcastPeerId;
+        ftDbgState.pc = 'new';
+        renderFtDebug();
       } else {
         subscriberCount++;
         debugSubs.textContent = 'subs:' + subscriberCount;
