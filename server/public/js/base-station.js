@@ -492,10 +492,12 @@
     const bases = devices.filter(d => d.type === 'base' && d.id !== deviceId);
 
     // Build broadcast panel HTML.
-    // Only show when NOT actively watching a device feed (no video/audio
-    // option selected). While a feed is open we hide the broadcast controls.
+    // Only show when NOT actively showing the monitor feed (no video/audio
+    // option selected and no self-test running). While the feed pane is open
+    // we hide the broadcast controls.
+    const feedOpen = viewingId || (monitorFeed && !monitorFeed.classList.contains('hidden'));
     let broadcastPanel = '';
-    if (!viewingId && bases.length === 0 && devices.some(d => d.id === deviceId && d.type === 'base')) {
+    if (!feedOpen && bases.length === 0 && devices.some(d => d.id === deviceId && d.type === 'base')) {
       // We are the only base or first base - show broadcast controls
       broadcastPanel = buildBroadcastPanel();
     }
@@ -959,6 +961,41 @@
     showMonitorControls(); // reveal controls when a feed opens
   }
 
+  // ─── Local self-video test ─────────────────────────
+  // Grabs the base station's own camera and shows it in the monitor pane.
+  // Pure local getUserMedia — no WebRTC — to confirm the monitor <video>
+  // surface renders at all, independent of the signaling/peer pipeline.
+  let selfTestStream = null;
+  async function testSelfVideo() {
+    if (selfTestStream) {
+      selfTestStream.getTracks().forEach(t => t.stop());
+      selfTestStream = null;
+      monitorVideo.srcObject = null;
+      stopView();
+      showToast('Self-video test stopped');
+      return;
+    }
+    try {
+      selfTestStream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'user' }, audio: false,
+      });
+    } catch (err) {
+      console.error('[base] self-video test failed:', err);
+      showToast('Camera error: ' + err.name);
+      return;
+    }
+    viewingId = null;
+    viewMode = 'video';
+    showMonitor();
+    monitorVideo.classList.remove('hidden');
+    monitorPlaceholder.classList.add('hidden');
+    monitorVideo.srcObject = selfTestStream;
+    monitorVideo.muted = true;
+    monitorVideo.play().catch(() => {});
+    renderDevices();
+    showToast('Showing base station camera');
+  }
+
   // ─── Monitor overlay auto-hide ──────────────────────
   // Controls are hidden until the user taps the video, then fade in and
   // auto-hide after 5s of inactivity (tapping again re-shows + resets timer).
@@ -1051,6 +1088,7 @@
   document.addEventListener('click', (e) => {
     const t = e.target;
     if (t.id === 'stopMonitorBtn') { stopView(); return; }
+    if (t.id === 'testSelfVideoBtn') { testSelfVideo(); return; }
     if (t.id === 'monitorTalkBtn') { toggleTalk(); return; }
     if (t.id === 'monitorFaceTalkBtn') { toggleFaceTime(); return; }
     if (t.id === 'monitorMuteBtn') { toggleMute(); return; }
