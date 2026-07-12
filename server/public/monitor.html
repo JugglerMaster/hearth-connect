@@ -5,19 +5,19 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1.0, user-scalable=no">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <title>Kiosk — Hearth-Connect</title>
+  <title>Monitor — Hearth-Connect</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
   <link rel="stylesheet" href="/css/style.css">
 </head>
-<body class="kiosk-page">
+<body class="monitor-page">
   <video id="cameraFeed" class="fullscreen-video" autoplay playsinline muted></video>
-  <!-- Remote (talkback / announcement) audio from the base station -->
+  <!-- Remote (talkback / announcement / facetalk) audio+video from the base station -->
   <audio id="remoteAudio" autoplay playsinline></audio>
 
   <div class="kiosk-overlay">
     <div class="status-row">
       <span id="connectionDot" class="status-dot offline"></span>
-      <span id="deviceLabel" class="device-label">Kiosk</span>
+      <span id="deviceLabel" class="device-label">Monitor</span>
     </div>
     <div class="debug-bar">
       <span id="debugMethod">method:--</span>
@@ -29,13 +29,13 @@
     <div id="debugEvent" class="debug-event">ev:--</div>
   </div>
 
-  <div class="kiosk-actions">
-    <button id="doorbellBtn" class="btn btn-primary btn-large">🔔 Ring Doorbell</button>
-  </div>
+  <!-- The doorbell button was removed from this page. The DOORBELL signaling
+       message is still relayed by the server and is kept as a reusable building
+       block for a future chime/announce feature. -->
 
   <div id="enableCamOverlay" class="enable-cam-overlay hidden">
     <button id="enableCamBtn" class="btn btn-primary btn-large">📷 Tap to enable camera</button>
-    <p class="enable-cam-note">iOS requires a tap before the camera can be accessed. Tap to start the kiosk.</p>
+    <p class="enable-cam-note">iOS requires a tap before the camera can be accessed. Tap to start the monitor.</p>
   </div>
 
   <div id="kioskToast" class="toast hidden"></div>

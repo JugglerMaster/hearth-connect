@@ -3,7 +3,21 @@
 
   const sig = new SignalingClient();
   const rtc = new WebRTCManager(sig);
-  let deviceId = localStorage.getItem('hearth_kioskDeviceId');
+  // ─── localStorage keys (renamed from "kiosk" → "monitor") ──────────
+  // Migrate any previous "kiosk" keys so existing devices keep their id/label/settings.
+  function migrateKey(oldKey, newKey) {
+    try {
+      const v = localStorage.getItem(oldKey);
+      if (v !== null && localStorage.getItem(newKey) === null) {
+        localStorage.setItem(newKey, v);
+        localStorage.removeItem(oldKey);
+      }
+    } catch {}
+  }
+  migrateKey('hearth_kioskDeviceId', 'hearth_monitorDeviceId');
+  migrateKey('hearth_kioskSettings', 'hearth_monitorSettings');
+  migrateKey('hearth_deviceLabel', 'hearth_monitorLabel');
+  let deviceId = localStorage.getItem('hearth_monitorDeviceId');
   let cameraSourceId = null;
   let publishedType = null;
   let subscriberCount = 0;
@@ -19,7 +33,7 @@
   // Each kiosk remembers the last settings it had, restored on load even
   // before the server connection is established. Base-station changes that
   // arrive over signaling are merged in and re-saved here.
-  const SETTINGS_KEY = 'hearth_kioskSettings';
+  const SETTINGS_KEY = 'hearth_monitorSettings';
 
   function defaultSettings() {
     const base = {
@@ -81,7 +95,6 @@
   const enableCamOverlay = document.getElementById('enableCamOverlay');
   const enableCamBtn = document.getElementById('enableCamBtn');
   const remoteAudio = document.getElementById('remoteAudio');
-  const doorbellBtn = document.getElementById('doorbellBtn');
 
   function logEvent(msg) {
     if (debugEvent) debugEvent.textContent = 'ev:' + msg;
@@ -484,10 +497,10 @@
     if (!deviceId) {
       deviceId = 'kiosk-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6);
     }
-    localStorage.setItem('hearth_kioskDeviceId', deviceId);
+    localStorage.setItem('hearth_monitorDeviceId', deviceId);
     sig.deviceId = deviceId;
     sig.deviceType = 'kiosk';
-    sig.deviceLabel = localStorage.getItem('hearth_deviceLabel') || 'Kiosk';
+    sig.deviceLabel = localStorage.getItem('hearth_monitorLabel') || 'Monitor';
 
     retryCameraBtn.addEventListener('click', () => {
       hideCameraError();
@@ -515,7 +528,7 @@
 
     sig.on('welcome', async (data) => {
       deviceId = data.deviceId;
-      localStorage.setItem('hearth_kioskDeviceId', deviceId);
+      localStorage.setItem('hearth_monitorDeviceId', deviceId);
       deviceLabel.textContent = sig.deviceLabel;
       connectionDot.className = 'status-dot online';
       applyConfig(data.config);
@@ -630,13 +643,9 @@
       setTimeout(() => el.classList.add('hidden'), ms);
     }
 
-    if (doorbellBtn) {
-      doorbellBtn.addEventListener('click', () => {
-        sig.ringDoorbell(sig.deviceLabel || 'Kiosk');
-        showToast('🔔 Doorbell sent');
-        logEvent('doorbell');
-      });
-    }
+    // NOTE: The doorbell button was removed from the monitor page. The DOORBELL
+    // signaling message is still relayed by the server (SignalingHandler.handleDoorbell)
+    // and is kept as a reusable building block for a future chime/announce feature.
 
     sig.on('configUpdated', (data) => {
       applyConfig(data.config);
@@ -732,7 +741,7 @@
 
     if (config.label) {
       sig.deviceLabel = config.label;
-      localStorage.setItem('hearth_deviceLabel', config.label);
+      localStorage.setItem('hearth_monitorLabel', config.label);
       deviceLabel.textContent = config.label;
     }
 

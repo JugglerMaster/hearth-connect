@@ -60,6 +60,10 @@ class ConfigManager {
                 this.flush();
             }
         }, 5000);
+        // Don't let the background autosave timer keep a process alive when
+        // nothing else is pending (e.g. the test runner, or a server that has
+        // otherwise closed all connections).
+        this.saveTimer.unref?.();
     }
     flush() {
         if (!this.dirty)

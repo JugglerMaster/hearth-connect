@@ -41,6 +41,7 @@ export declare class ChannelManager {
     clearRecentlySeen(): void;
     updateHeartbeat(deviceId: string): void;
     broadcastToRoom(roomId: string, message: object, excludeDeviceId?: string): void;
+    broadcastToType(type: DeviceType, message: object, excludeDeviceId?: string): void;
     sendTo(deviceId: string, message: object): void;
     broadcastAll(message: object, excludeDeviceId?: string): void;
 }

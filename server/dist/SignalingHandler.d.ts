@@ -26,6 +26,8 @@ export declare class SignalingHandler {
     private handleCapabilities;
     private handleAudioPeak;
     private handleRemoveDevice;
+    private handleDoorbell;
+    private handleCallState;
     private handleRelay;
     private handleSetConfig;
     private handleGetConfig;

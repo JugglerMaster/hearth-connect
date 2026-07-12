@@ -178,7 +178,11 @@ class ChannelManager {
         const client = this.clients.get(deviceId);
         if (!client)
             return;
-        client.disconnectTimer = setTimeout(callback, ms);
+        const timer = setTimeout(callback, ms);
+        // Don't keep the process (e.g. test runner / unattended server) alive
+        // solely because of a pending grace-period timer with nothing else pending.
+        timer.unref?.();
+        client.disconnectTimer = timer;
     }
     cancelDisconnectTimer(deviceId) {
         const client = this.clients.get(deviceId);
@@ -230,6 +234,16 @@ class ChannelManager {
     broadcastToRoom(roomId, message, excludeDeviceId) {
         const clients = this.getClientsInRoom(roomId);
         for (const client of clients) {
+            if (client.deviceId === excludeDeviceId)
+                continue;
+            this.sendToConn(client.connId, message);
+        }
+    }
+    // Broadcast to all connected clients of a given device type (e.g. every base).
+    broadcastToType(type, message, excludeDeviceId) {
+        for (const client of this.clients.values()) {
+            if (client.deviceType !== type)
+                continue;
             if (client.deviceId === excludeDeviceId)
                 continue;
             this.sendToConn(client.connId, message);

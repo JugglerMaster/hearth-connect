@@ -79,7 +79,7 @@ app.get('/api/status', (_req, res) => {
 // Generate camera URL with QR code for kiosk discovery
 app.post('/api/server-url', (_req, res) => {
     const base = `${proto}://${_req.headers.host || 'localhost'}:${PORT}`;
-    const cameraUrl = `${base}/camera.html`;
+    const cameraUrl = `${base}/monitor.html`;
     const serverUrl = base;
     // Generate QR code as base64 PNG (600px for easy scanning)
     qrcode_1.default.toDataURL(cameraUrl, { width: 600, margin: 4 }).then((dataUrl) => {

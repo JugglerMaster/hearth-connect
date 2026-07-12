@@ -64,6 +64,7 @@
   const monitorVolume = document.getElementById('monitorVolume');
   const monitorMuteBtn = document.getElementById('monitorMuteBtn');
   const monitorTalkBtn = document.getElementById('monitorTalkBtn');
+  const monitorFaceTalkBtn = document.getElementById('monitorFaceTalkBtn');
   const monitorQuality = document.getElementById('monitorQuality');
   const toast = document.getElementById('toast');
   const homeView = document.getElementById('homeView');
@@ -79,6 +80,9 @@
 
   // Talk / mute / call state (per active view)
   let talkingTo = null;       // deviceId we are currently talking to
+  let faceTalkingTo = null;   // kioskId we are currently pushing video+audio to
+  let faceTalkSourceId = null; // broadcast source id owned by FaceTalk
+  let faceTalkRestore = null; // { displayMode, audioMode } to restore on hang-up
   let monitorMuted = false;   // base station speaker mute for the live stream
   let statsStop = null;       // getStats polling cleanup for the active view
   let mutedVolume = 100;      // volume to restore after unmute
@@ -168,6 +172,86 @@
       monitorTalkBtn.classList.add('btn-outline');
     }
     console.log('[base] talkback OFF to', peerId);
+  }
+
+  // ─── FaceTalk (base → kiosk reverse video+audio) ──────
+  // Starts a video+audio broadcast from the base station to the watched kiosk
+  // and temporarily switches that kiosk's display to 'base' so the feed is
+  // shown/heard. The kiosk's previous display/audio mode is restored on hang-up.
+  async function startFaceTime(peerId) {
+    if (faceTalkingTo === peerId) return;
+    try {
+      const dev = devices.find(d => d.id === peerId);
+      faceTalkRestore = {
+        displayMode: dev?.config?.displayMode || 'self',
+        audioMode: dev?.config?.audioMode || 'mute',
+      };
+
+      if (!localBroadcastStream) {
+        await ensureBroadcastStream();
+      }
+      if (!localBroadcastStream) {
+        showToast('FaceTalk failed: no camera/mic available');
+        return;
+      }
+
+      // Keep FaceTalk's source id separate from a manually-started broadcast
+      // so stopping FaceTalk doesn't tear down an independent broadcast.
+      faceTalkSourceId = 'broadcast-' + deviceId + '-' + Date.now();
+      broadcastStream = localBroadcastStream;
+      // Mark as broadcasting so the base creates a broadcast PC when the kiosk
+      // subscribes to this source (see the subscriberJoined handler).
+      isBroadcasting = true;
+      sig.broadcastSource(faceTalkSourceId, 'Base Station FaceTalk', 'video+audio');
+
+      // Switch the target kiosk to show/hear the base's broadcast.
+      sig.setDisplayConfig(peerId, 'base', 'base');
+
+      faceTalkingTo = peerId;
+      if (monitorFaceTalkBtn) {
+        monitorFaceTalkBtn.textContent = '📹 FaceTalking…';
+        monitorFaceTalkBtn.classList.add('btn-danger');
+        monitorFaceTalkBtn.classList.remove('btn-outline');
+      }
+      console.log('[base] FaceTalk ON to', peerId);
+    } catch (err) {
+      console.error('[base] startFaceTime failed', err);
+      showToast('Camera/microphone unavailable for FaceTalk');
+    }
+  }
+
+  function stopFaceTime(peerId) {
+    if (!faceTalkingTo) return;
+    if (faceTalkSourceId) {
+      sig.unbroadcastSource(faceTalkSourceId);
+      faceTalkSourceId = null;
+    }
+    // Close only the broadcast PC opened to this kiosk for FaceTalk.
+    broadcastSubscribers.forEach(kioskId => {
+      if (kioskId === peerId) rtc.closeBroadcastPeerConnection(kioskId);
+    });
+    broadcastSubscribers.delete(peerId);
+    // Restore the broadcasting flag to reflect any manual broadcast still active.
+    isBroadcasting = !!broadcastSourceId;
+
+    if (faceTalkRestore) {
+      sig.setDisplayConfig(faceTalkingTo, faceTalkRestore.displayMode, faceTalkRestore.audioMode);
+      faceTalkRestore = null;
+    }
+
+    faceTalkingTo = null;
+    if (monitorFaceTalkBtn) {
+      monitorFaceTalkBtn.textContent = '📹 FaceTalk';
+      monitorFaceTalkBtn.classList.remove('btn-danger');
+      monitorFaceTalkBtn.classList.add('btn-outline');
+    }
+    console.log('[base] FaceTalk OFF to', peerId);
+  }
+
+  function toggleFaceTime() {
+    if (!viewingId) { showToast('Open a device feed first'); return; }
+    if (faceTalkingTo) stopFaceTime(faceTalkingTo);
+    else startFaceTime(viewingId);
   }
 
   function toggleTalk() {
@@ -342,6 +426,31 @@
     monitorVideo.classList.remove('hidden');
     monitorPlaceholder.classList.add('hidden');
     monitorMode.textContent = '📹 Watching';
+  }
+
+  // In-place update of a device's dB readout + alert highlight. Used by the
+  // AUDIO_PEAK handler so we never rebuild the device list (which would clobber
+  // an open display/audio <select> the operator is interacting with).
+  function updateAudioMeterUi(id) {
+    const st = audioState[id];
+    if (!st) return;
+    const item = deviceList.querySelector('.device-item[data-id="' + id + '"]');
+    if (!item) return;
+    const dbText = (st.levelDb != null) ? ` ${Math.round(st.levelDb)}dB` : '';
+    let readout = item.querySelector('.db-readout');
+    if (st.levelDb != null) {
+      if (!readout) {
+        readout = document.createElement('span');
+        readout.className = 'db-readout';
+        const name = item.querySelector('.device-name');
+        if (name) name.appendChild(readout);
+      }
+      readout.textContent = dbText;
+    } else if (readout) {
+      readout.remove();
+    }
+    if (st.alerting) item.classList.add('audio-alert');
+    else item.classList.remove('audio-alert');
   }
 
   function renderDevices() {
@@ -620,6 +729,25 @@
     }
   }
 
+  // Ensure a base-station broadcast media stream exists, acquiring one with
+  // sensible defaults if needed. Unlike startBroadcastPreview this does NOT
+  // depend on the Broadcast panel's <select>/<video> DOM being present, so it
+  // can be used by FaceTalk (triggered from the monitor overlay).
+  async function ensureBroadcastStream() {
+    if (localBroadcastStream) return localBroadcastStream;
+    try {
+      localBroadcastStream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } },
+        audio: true,
+      });
+      console.log('[base] Broadcast stream acquired for FaceTalk');
+    } catch (err) {
+      console.error('[base] ensureBroadcastStream failed:', err);
+      localBroadcastStream = null;
+    }
+    return localBroadcastStream;
+  }
+
   async function toggleBroadcast() {
     const btn = document.getElementById('toggleBroadcastBtn');
     if (!btn) return;
@@ -808,8 +936,9 @@
     showHome();
     renderDevices();
 
-    // Tear down talkback + quality polling tied to the closed view.
+    // Tear down talkback + FaceTalk + quality polling tied to the closed view.
     if (talkingTo) stopTalk(talkingTo);
+    if (faceTalkingTo) stopFaceTime(faceTalkingTo);
     if (statsStop) { statsStop(); statsStop = null; }
     if (monitorQuality) monitorQuality.textContent = '';
   }
@@ -880,6 +1009,7 @@
     const t = e.target;
     if (t.id === 'stopMonitorBtn') { stopView(); return; }
     if (t.id === 'monitorTalkBtn') { toggleTalk(); return; }
+    if (t.id === 'monitorFaceTalkBtn') { toggleFaceTime(); return; }
     if (t.id === 'monitorMuteBtn') { toggleMute(); return; }
     if (t.id === 'answerCallBtn') { answerCall(); return; }
     if (t.id === 'dismissCallBtn') { dismissCall(); return; }
@@ -1159,14 +1289,13 @@
         broadcastSubscribers.add(kioskId);
         // Create a broadcast peer connection for this kiosk
         const pc = rtc.createBroadcastPeerConnection(kioskId);
-        // Add our broadcast tracks
+        // Add our broadcast tracks — onnegotiationneeded (perfect negotiation)
+        // fires automatically and sends the offer, so no explicit offer call.
         if (broadcastStream) {
           broadcastStream.getTracks().forEach(track => {
             pc.addTrack(track, broadcastStream);
           });
         }
-        // Create offer
-        rtc.createBroadcastOffer(kioskId);
       }
     });
 
@@ -1189,7 +1318,11 @@
         levelDb: data.levelDb,
         alerting: !!data.peak,
       };
-      renderDevices();
+      // Update the dB readout + alert highlight in place. Do NOT call
+      // renderDevices() here — it rebuilds the whole device list and would
+      // destroy a <select> (display/audio dropdown) that the operator is
+      // currently interacting with, making it impossible to change the value.
+      updateAudioMeterUi(data.deviceId);
     });
 
     sig.on('deviceRemoved', (data) => {
