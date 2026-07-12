@@ -191,7 +191,7 @@
     // an active watch session.
     if (type !== publishedType) {
       if (publishedType) sig.unpublishSource(cameraSourceId);
-      sig.publishSource(cameraSourceId, sig.deviceLabel || 'Kiosk', type);
+      sig.publishSource(cameraSourceId, sig.deviceLabel || 'Monitor', type);
       publishedType = type;
     }
   }
