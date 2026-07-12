@@ -1032,6 +1032,20 @@
     }
   }
 
+  // Exiting fullscreen on iOS/Safari can leave the <video> paused/frozen.
+  // Re-kick playback whenever fullscreen state changes.
+  function resumeMonitorVideo() {
+    if (monitorVideo && monitorVideo.srcObject) {
+      monitorVideo.play().catch(() => {});
+    }
+  }
+  document.addEventListener('fullscreenchange', resumeMonitorVideo);
+  document.addEventListener('webkitfullscreenchange', resumeMonitorVideo);
+  // The <video> also fires its own fullscreen end event under iOS's native path.
+  document.addEventListener('DOMContentLoaded', () => {
+    if (monitorVideo) monitorVideo.addEventListener('webkitendfullscreen', resumeMonitorVideo);
+  });
+
   function showHome() {
     monitorFeed.classList.add('hidden');
     // homeView is never hidden — the device list stays on screen
