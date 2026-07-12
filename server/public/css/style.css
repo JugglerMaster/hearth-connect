@@ -610,12 +610,21 @@ input[type="text"]:focus {
   align-items: center;
   gap: 6px;
   z-index: 10;
+  /* Hidden until the user taps the video; fades in and auto-hides after 5s. */
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.3s ease;
+}
+.monitor-overlay.visible {
+  opacity: 1;
+  pointer-events: auto;
 }
 
 /* FaceTalk button scales with the viewport so it never gets clipped on small
-   iOS screens. Uses clamp() for fluid sizing and is allowed to grow/shrink. */
+   iOS screens. Uses clamp() for fluid sizing and is allowed to grow/shrink,
+   but stays inline with the other buttons (never full width). */
 .monitor-ft-btn {
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   min-width: 0;
   padding: 8px 12px;
   font-size: clamp(11px, 2.6vw, 14px);
@@ -624,15 +633,10 @@ input[type="text"]:focus {
   text-overflow: ellipsis;
 }
 
-/* On very narrow phones, let the action buttons take the full width row so
-   none are cut off. */
 @media (max-width: 480px) {
   .monitor-overlay .btn-small {
     padding: 7px 10px;
     font-size: 12px;
-  }
-  .monitor-ft-btn {
-    flex: 1 1 100%;
   }
 }
 

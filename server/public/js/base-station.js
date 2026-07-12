@@ -55,8 +55,6 @@
   const connectionDot = document.getElementById('connectionDot');
   const monitorFeed = document.getElementById('monitorFeed');
   const monitorVideo = document.getElementById('monitorVideo');
-  const monitorLabel = document.getElementById('monitorLabel');
-  const monitorMode = document.getElementById('monitorMode');
   const monitorError = document.getElementById('monitorError');
   const monitorStatus = document.getElementById('monitorStatus');
   const monitorPlaceholder = document.getElementById('monitorPlaceholder');
@@ -252,12 +250,14 @@
     if (!viewingId) { showToast('Open a device feed first'); return; }
     if (faceTalkingTo) stopFaceTime(faceTalkingTo);
     else startFaceTime(viewingId);
+    showMonitorControls();
   }
 
   function toggleTalk() {
     if (!viewingId) { showToast('Open a device feed first'); return; }
     if (talkingTo) stopTalk(viewingId);
     else startTalk(viewingId);
+    showMonitorControls();
   }
 
   // ─── Speaker mute (affects the live GainNode, not just stored config) ──
@@ -411,7 +411,6 @@
     if (viewMode === 'audio') {
       monitorVideo.classList.add('hidden');
       monitorPlaceholder.classList.remove('hidden');
-      monitorMode.textContent = '🔊 Listening';
       return;
     }
     // Video mode:
@@ -420,12 +419,10 @@
       // Keep waiting — do NOT downgrade viewMode, just show a connecting state.
       monitorVideo.classList.add('hidden');
       monitorPlaceholder.classList.remove('hidden');
-      monitorMode.textContent = '📹 Connecting…';
       return;
     }
     monitorVideo.classList.remove('hidden');
     monitorPlaceholder.classList.add('hidden');
-    monitorMode.textContent = '📹 Watching';
   }
 
   // In-place update of a device's dB readout + alert highlight. Used by the
@@ -904,7 +901,7 @@
     monitorVideo.srcObject = null;
     monitorVideo.muted = true;
     monitorError.classList.add('hidden');
-    showMonitorStatus(null);
+    hideMonitorControls();
     showHome();
     renderDevices();
 
@@ -918,10 +915,29 @@
   function showMonitor() {
     // Keep the device list visible — only reveal the monitor feed
     monitorFeed.classList.remove('hidden');
-    const src = sources.find(s => s.publisherId === viewingId);
-    monitorLabel.textContent = src ? src.label : 'Unknown';
     monitorError.classList.add('hidden');
     showMonitorStatus(null);
+    showMonitorControls(); // reveal controls when a feed opens
+  }
+
+  // ─── Monitor overlay auto-hide ──────────────────────
+  // Controls are hidden until the user taps the video, then fade in and
+  // auto-hide after 5s of inactivity (tapping again re-shows + resets timer).
+  let monitorControlsTimer = null;
+  function showMonitorControls() {
+    const overlay = document.querySelector('.monitor-overlay');
+    if (!overlay) return;
+    overlay.classList.add('visible');
+    if (monitorControlsTimer) clearTimeout(monitorControlsTimer);
+    monitorControlsTimer = setTimeout(() => {
+      overlay.classList.remove('visible');
+      monitorControlsTimer = null;
+    }, 5000);
+  }
+  function hideMonitorControls() {
+    const overlay = document.querySelector('.monitor-overlay');
+    if (overlay) overlay.classList.remove('visible');
+    if (monitorControlsTimer) { clearTimeout(monitorControlsTimer); monitorControlsTimer = null; }
   }
 
   function showHome() {
@@ -1200,6 +1216,16 @@
     sig.deviceType = 'base';
     sig.deviceLabel = 'Base Station';
     sig.connect();
+
+    // Tap the monitor feed to reveal the controls (they auto-hide after 5s).
+    if (monitorFeed) {
+      monitorFeed.addEventListener('click', (e) => {
+        // Ignore taps that land on the controls themselves (buttons/slider),
+        // so interacting with them doesn't restart the hide timer unexpectedly.
+        if (e.target.closest('.monitor-overlay')) return;
+        showMonitorControls();
+      });
+    }
 
     setInterval(watchdog, 2000);
 
