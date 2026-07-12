@@ -239,10 +239,12 @@
         // Could show a placeholder div here
         break;
       case 'base':
-        // Show base station's broadcast stream
+        // Show base station's broadcast stream. Keep the <video> element muted —
+        // the base's audio track is routed through the separate <audio> element
+        // (remoteAudio) in onRemoteTrack, so unmuting here would double-play it.
         if (broadcastStream) {
           video.srcObject = broadcastStream;
-          video.muted = false; // Play base audio
+          video.muted = true;
           video.play().catch(() => {});
         }
         break;
@@ -588,6 +590,10 @@
     rtc.onRemoteTrack = (peerId, stream, track) => {
       console.log('[kiosk] onRemoteTrack', peerId, track.kind);
       if (peerId.startsWith('broadcast-') || peerId === broadcastPeerId) {
+        // Remember the base's broadcast stream so applyDisplayConfig('base')
+        // can render it even if the display mode was switched after the
+        // track arrived (otherwise the video silently never shows).
+        broadcastStream = stream;
         if (track.kind === 'video') {
           // Show the base's broadcast video when in 'base' display mode.
           if ((currentConfig.displayMode || 'self') === 'base' && !callActive) {
