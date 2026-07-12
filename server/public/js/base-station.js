@@ -1033,11 +1033,18 @@
   }
 
   // Exiting fullscreen on iOS/Safari can leave the <video> paused/frozen.
-  // Re-kick playback whenever fullscreen state changes.
+  // A plain play() often isn't enough — the decoder is stuck — so re-attach
+  // the stream (detach + reassign) to force a hard re-render, then resume.
   function resumeMonitorVideo() {
-    if (monitorVideo && monitorVideo.srcObject) {
+    const s = monitorVideo && monitorVideo.srcObject;
+    if (!s) return;
+    monitorVideo.srcObject = null;
+    // Reassign on the next frame so Safari registers the detach first.
+    requestAnimationFrame(() => {
+      monitorVideo.srcObject = s;
+      monitorVideo.muted = true;
       monitorVideo.play().catch(() => {});
-    }
+    });
   }
   document.addEventListener('fullscreenchange', resumeMonitorVideo);
   document.addEventListener('webkitfullscreenchange', resumeMonitorVideo);
