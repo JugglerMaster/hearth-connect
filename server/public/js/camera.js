@@ -28,6 +28,7 @@
   // Broadcast state
   let broadcastPeerId = null;  // Base station ID we're receiving broadcast from
   let broadcastStream = null;  // Remote stream from base broadcast
+  let baseVideoActive = false; // Base is pushing its camera to us (FaceTalk/broadcast)
 
   // ─── Persistent device settings (localStorage) ──────────
   // Each kiosk remembers the last settings it had, restored on load even
@@ -623,7 +624,8 @@
     // reaches the kiosk speaker.
     let talkbackActive = false;       // base is actively talking to us
     let callActive = false;           // we are in a call with the base
-    let baseVideoActive = false;      // base is pushing its camera to us (FaceTalk/broadcast)
+    // baseVideoActive is module-scoped (see top) so applyDisplayConfig and
+    // unsubscribeFromBroadcast — defined outside init() — can read it too.
 
     function applyRemoteAudio() {
       if (!remoteAudio) return;
