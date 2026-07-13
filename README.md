@@ -1,5 +1,7 @@
 # Hearth-Connect
 
+**v0.3** — Two-Way Audio & Video
+
 HTML5 video intercom / baby monitor system. Runs on iPads/iPhones via Safari. Self-hosted.
 
 > **In progress:** a native **Linux agent** (headless monitor client, no browser) targeting **Raspberry Pi 3+** is under active development.
@@ -170,56 +172,55 @@ hearth-connect/
 
 ## Roadmap
 
-### v0.2 — Multi-Room & Auth
+### Multi-Room & Auth
 - [ ] Multiple named rooms (create/join from base station)
 - [ ] Optional PIN per room (viewer access control)
 - [ ] Pairing tokens for kiosk provisioning (QR contains token, not just URL)
 - [ ] Device ownership (prevent unauthorized config pushes)
 
-### v0.3 — Two-Way Audio & Video ✅ (shipped)
+### Two-Way Audio & Video ✅ (shipped)
 - [x] **Two-way audio** — base station mic → monitor speaker (FaceTalk + press-and-hold Broadcast Message announcement)
 - [x] **Two-way video** — base station camera → monitor display (FaceTalk; monitor renders incoming video via `base` display mode)
 - [x] Broadcast target routing — send to all monitors or a single selected monitor
 - [x] Video call UI on base station (FaceTalk button, fullscreen, volume slider, base camera released on hang-up)
 - [x] iOS hardening — silent-switch-safe audio, fullscreen pause/freeze-on-exit recovery, fast-tap broadcast race
-- [ ] Audio focus enforcement — ensure only the audio-focused source plays at once (manual/last-active)
 
-### v0.4 — Smart Audio Notifications
+### Smart Audio Notifications
 - [ ] **Audio gating** — base station audio muted until kiosk dB exceeds threshold (baby cry detection)
 - [ ] Configurable trigger level, hysteresis, and cooldown period
 - [ ] Optional push notification (APNs / web push) when threshold breached while base station backgrounded
 - [ ] Per-source alert profiles (daytime vs nighttime sensitivity)
 
-### v0.5 — Battery-Aware Client
+### Battery-Aware Client
 - [ ] **Battery Status API** integration — detect charging state & level
 - [ ] Auto-reduce resolution/framerate when unplugged (e.g., 1080p→480p, 30→15 fps)
 - [ ] Disable torch, night mode, keep-awake when on battery
 - [ ] Optional aggressive mode: audio-only when battery < 20%
 - [ ] Visual indicator on base station showing kiosk power state
 
-### v0.6 — Alternative Host Platforms
+### Alternative Host Platforms
 - [ ] **Raspberry Pi** — headless kiosk via V4L2/ALSA (USB camera + mic), systemd service, no browser
 - [ ] **iOS Native App** — Swift/Capacitor wrapper for background WebRTC, push notifications, no Safari limitations
 - [ ] **Android App** — same capabilities as iOS native
 - [ ] **Linux/macOS/Windows** — Electron or Tauri desktop client for base station
 
-### v0.7 — QR Code Sharing & Provisioning
+### QR Code Sharing & Provisioning
 - [ ] QR contains pairing token + room + server URL (not just URL)
 - [ ] One-scan kiosk enrollment — no manual room entry
 - [ ] Token expiry & single-use enforcement
 - [ ] Base station "Invite Kiosk" generates printable/shareable QR
 
-### v0.8 — Scaling (SFU)
+### Scaling (SFU)
 - [ ] Integrate **mediasoup** or **LiveKit** as optional SFU
 - [ ] Base station subscribes to SFU instead of P2P mesh
 - [ ] Enable 5+ simultaneous cameras without mesh explosion
 
-### v0.9 — Viewer App
+### Viewer App
 - [ ] Dedicated `viewer.html` — read-only monitor (no admin controls)
 - [ ] Viewer config: allowedSources, defaultSource, audioAutoPlay, talkbackEnabled, PIN
 - [ ] "Add to Home Screen" PWA manifest for kiosk/viewer
 
-### v1.0 — Recording & Platform Polish
+### Recording & Platform Polish
 - [ ] Optional MediaRecorder → segment to disk (WebM/MP4)
 - [ ] Audio alert webhooks (Home Assistant, ntfy, Pushover)
 - [ ] Motion detection via canvas diff (browser-side) → trigger recording
