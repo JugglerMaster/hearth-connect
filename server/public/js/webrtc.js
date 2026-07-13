@@ -300,7 +300,7 @@ class WebRTCManager {
     try {
       const offer = await pc.createOffer({ iceRestart: true });
       await pc.setLocalDescription(offer);
-      this.sig.sendOffer(kioskId, offer);
+      this.sig.sendOffer(kioskId, offer, true);
       // Retry the restart once if it does not recover within the lock window.
       setTimeout(() => {
         if (pc && pc.connectionState !== 'connected') {

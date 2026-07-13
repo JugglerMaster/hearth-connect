@@ -103,3 +103,54 @@ hearth-connect/
 ├── favicon.svg
 └── README.md
 ```
+
+## Client-Side Verification (ad-hoc)
+
+The repo has no client test suite (the only tests are server-side TS in
+`server/test/`). Browser-only client logic in `server/public/js/*.js`
+(e.g. the base-station "Hold to Broadcast" press-and-hold flow) can be
+behaviorally verified without a browser by running the **real** file inside a
+Node `vm` with hand-rolled stubs — no `jsdom`/network/install needed.
+
+Approach:
+- Create a zero-dependency Node script under `/tmp` named
+  `hermes-verify-<feature>.js` (tempfile; delete when done).
+- Build a minimal DOM shim:
+  - `makeEl(id)` → object with `classList` (add/remove/contains),
+    `innerHTML` (setter can detect a known element id in the HTML and
+    materialize it), `textContent`, `value`, `dataset`, `style.setProperty`,
+    and an `_fire(type, ev)` that invokes `addEventListener` handlers.
+  - `document.getElementById` returns pre-created fixed-id elements, plus the
+    dynamically created control when present.
+  - `window` with `addEventListener`/`_fire` so window-level handlers are
+    reachable.
+  - `localStorage` (in-memory) and `navigator.mediaDevices.getUserMedia`
+    returning a **manually-resolved** `Promise` (so you can simulate the mic
+    permission resolving *after* a release, to test the fast-tap race).
+- Stub the two classes the IIFE instantiates:
+  - `SignalingClient` — capture the instance in the constructor, expose
+    `on`/`emit`, and record `broadcastSource` / `unbroadcastSource` calls.
+  - `WebRTCManager` — `createBroadcastPeerConnection` returns a no-op
+    `{ addTrack(){} }`.
+- `vm.createContext(sandbox)` + `vm.runInContext(realFileSource)` to load the
+  actual client file unmodified.
+- Drive it: fire `DOMContentLoaded` (runs `init()`), emit a `welcome`
+  message with a `base` + at least one `kiosk` device and a **hidden**
+  `monitorFeed` so `renderDevices()` builds the broadcast panel and
+  materializes `#toggleBroadcastButton`; then dispatch real events
+  (`mousedown`/`mouseup`/`touchstart`/`touchend`, plus `window` releases)
+  and assert `broadcastSource`/`unbroadcastSource` calls + button style/label.
+
+Key things to assert for press-and-hold:
+1. `mousedown` → `getUserMedia` called, broadcast NOT yet started.
+2. After mic resolves → `broadcastSource` called, button → danger "release to stop".
+3. `mouseup` → `unbroadcastSource` called, button reverts.
+4. Window-level `touchend` (release outside button) also stops it.
+5. **Fast-tap race**: `mousedown` then immediate `mouseup` *before* the mic
+   resolves → when the mic finally resolves, `broadcastSource` is never called
+   and the late-acquired mic track is stopped (no leak / no stuck-on broadcast).
+6. Right-click (`button: 2`) does not start a broadcast.
+
+This caught the stuck-on-broadcast race and confirmed release-anywhere handling.
+It does NOT exercise real WebRTC media flow, iOS Safari specifics, or the live
+kiosk receive side — those still need an on-device check.

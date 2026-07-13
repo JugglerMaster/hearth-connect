@@ -683,12 +683,60 @@ input[type="text"]:focus {
   }
 }
 
-.monitor-overlay span {
+.monitor-overlay > span {
   background: rgba(0, 0, 0, 0.6);
   color: #fff;
   padding: 4px 8px;
   border-radius: 4px;
   font-size: 12px;
+}
+
+/* ─── Icon buttons (monitor overlay) ───────────────────
+   Icon-only controls. Active state = solid fill + white glyph, driven by a
+   single renderControlButtons() in JS so the visual always matches the real
+   toggle state (talking / facetalking / muted / fullscreen). */
+.icon-btn {
+  width: 42px;
+  height: 42px;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border-radius: 10px;
+  border: 1px solid var(--fg-muted);
+  background: rgba(0, 0, 0, 0.45);
+  color: var(--fg);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease, transform 0.1s ease;
+  -webkit-tap-highlight-color: transparent;
+}
+.icon-btn:active { transform: scale(0.92); }
+.icon-btn svg { width: 20px; height: 20px; display: block; }
+
+/* Mute carries two glyphs; show the right one for the current state. */
+.icon-btn .ic-muted { display: none; }
+.icon-btn.active .ic-unmuted { display: none; }
+.icon-btn.active .ic-muted { display: block; }
+
+/* Active = live / sending / destructive → danger fill. */
+.icon-btn.active {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #fff;
+  box-shadow: 0 0 0 2px rgba(247, 74, 74, 0.35);
+}
+/* Fullscreen active uses the primary (non-destructive) accent. */
+.icon-btn.fs.active {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #fff;
+  box-shadow: 0 0 0 2px rgba(74, 124, 247, 0.35);
+}
+/* Stop is a one-shot destructive action, not a toggle. */
+.icon-btn.stop {
+  border-color: var(--danger-dim);
+  color: var(--danger);
 }
 
 .monitor-overlay .monitor-mode {
@@ -829,6 +877,14 @@ input[type="text"]:focus {
   font-size: 11px;
   color: var(--fg-dim);
   font-weight: 400;
+}
+
+/* "System broadcasts disabled" indicator (💤) next to a kiosk's name. */
+.device-name .broadcast-off {
+  margin-left: 4px;
+  font-size: 13px;
+  filter: grayscale(0.2);
+  opacity: 0.8;
 }
 
 /* Disabled (greyed-out) buttons, e.g. Video when no video stream */
@@ -1152,6 +1208,25 @@ input[type="text"]:focus {
 
 .broadcast-panel {
   margin-bottom: 16px;
+}
+
+/* "Send to" target selector in the broadcast panel */
+.broadcast-target-label {
+  display: block;
+  font-size: 12px;
+  color: var(--fg-dim);
+  margin-bottom: 4px;
+}
+
+.broadcast-target-select {
+  padding: 8px 10px;
+  font-size: 14px;
+  border-radius: 8px;
+  border: 1px solid var(--border, #3a3a3a);
+  background: var(--input-bg, #1e1e1e);
+  color: var(--fg, #fff);
+  -webkit-appearance: none;
+  appearance: none;
 }
 
 .broadcast-preview video {

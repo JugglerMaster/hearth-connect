@@ -363,8 +363,8 @@ class SignalingClient {
     this.send('SET_CONFIG', { targetDeviceId, config });
   }
 
-  getConfig() {
-    this.send('GET_CONFIG');
+  getConfig(targetDeviceId) {
+    this.send('GET_CONFIG', targetDeviceId ? { targetDeviceId } : {});
   }
 
   requestTalk(targetPublisherId) {
@@ -387,8 +387,8 @@ class SignalingClient {
     this.send('REMOVE_DEVICE', { targetDeviceId });
   }
 
-  broadcastSource(sourceId, label, type) {
-    this.send('BROADCAST_SOURCE', { sourceId, label, type });
+  broadcastSource(sourceId, label, type, targetDeviceId) {
+    this.send('BROADCAST_SOURCE', { sourceId, label, type, targetDeviceId });
   }
 
   unbroadcastSource(sourceId) {

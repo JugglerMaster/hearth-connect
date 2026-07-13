@@ -41,6 +41,9 @@ export interface DeviceConfig {
   displayMode?: DisplayMode;
   audioMode?: AudioMode;
 
+  // When true the kiosk will not receive system broadcasts ("Broadcast Message").
+  broadcastDisabled?: boolean;
+
   // Base station broadcast
   broadcastSourceId?: string;
   isBroadcasting?: boolean;
@@ -133,6 +136,9 @@ export interface MediaSourceInfo {
   label: string;
   type: SourceType;
   status: 'live' | 'idle';
+  // When set, the broadcast is targeted at a single kiosk; the server only
+  // delivers SOURCE_ADDED to that device. Undefined/'' means all devices.
+  targetDeviceId?: string;
 }
 
 // ─── WebSocket message types ─────────────────────────────────

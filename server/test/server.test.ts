@@ -239,6 +239,45 @@ test('broadcastToType only reaches clients of the requested type', () => {
   assert.ok(!kiosk.sent.some((m: any) => m.type === 'DOORBELL'), 'kiosk did not get the type-scoped message');
 });
 
+test('BROADCAST_SOURCE with targetDeviceId only notifies that kiosk', () => {
+  const { channels, handler } = newServer();
+  const base = makeWs();
+  const k1 = makeWs();
+  const k2 = makeWs();
+  join(handler, channels, base, 'b1', 'base', 'Base');
+  join(handler, channels, k1, 'k1', 'kiosk', 'K1');
+  join(handler, channels, k2, 'k2', 'kiosk', 'K2');
+
+  handler.handle(base, JSON.stringify({
+    type: 'BROADCAST_SOURCE',
+    payload: { sourceId: 's1', label: 'Targeted', type: 'audio-only', targetDeviceId: 'k2' },
+  }));
+
+  const k1added = k1.sent.find((m: any) => m.type === 'SOURCE_ADDED');
+  const k2added = k2.sent.find((m: any) => m.type === 'SOURCE_ADDED');
+  assert.ok(!k1added, 'untargeted kiosk k1 did not receive the broadcast');
+  assert.ok(k2added, 'targeted kiosk k2 received the broadcast');
+  assert.equal(k2added.payload.targetDeviceId, 'k2', 'target carried on the source');
+});
+
+test('BROADCAST_SOURCE without targetDeviceId notifies every kiosk', () => {
+  const { channels, handler } = newServer();
+  const base = makeWs();
+  const k1 = makeWs();
+  const k2 = makeWs();
+  join(handler, channels, base, 'b1', 'base', 'Base');
+  join(handler, channels, k1, 'k1', 'kiosk', 'K1');
+  join(handler, channels, k2, 'k2', 'kiosk', 'K2');
+
+  handler.handle(base, JSON.stringify({
+    type: 'BROADCAST_SOURCE',
+    payload: { sourceId: 's2', label: 'All', type: 'audio-only' },
+  }));
+
+  assert.ok(k1.sent.find((m: any) => m.type === 'SOURCE_ADDED'), 'k1 received the broadcast');
+  assert.ok(k2.sent.find((m: any) => m.type === 'SOURCE_ADDED'), 'k2 received the broadcast');
+});
+
 // ─── cleanup ──────────────────────────────────────────────
 
 test('cleanup temp config dirs', () => {
