@@ -1156,12 +1156,22 @@
 
   document.addEventListener('click', (e) => {
     const t = e.target;
-    if (t.id === 'stopMonitorBtn') { stopView(); return; }
-    if (t.id === 'testSelfVideoBtn') { testSelfVideo(); return; }
-    if (t.id === 'monitorTalkBtn') { toggleTalk(); return; }
-    if (t.id === 'monitorFaceTalkBtn') { toggleFaceTime(); return; }
-    if (t.id === 'monitorMuteBtn') { toggleMute(); return; }
-    if (t.id === 'monitorFullscreenBtn') { toggleFullscreen(); return; }
+    // Use closest() so a tap that lands on the inner <svg>/<path> glyph (or any
+    // nested element) still resolves to the owning button. Checking e.target.id
+    // directly misses when the glyph is the event target — which is most taps
+    // on these icon buttons.
+    const icon = t.closest && t.closest('#stopMonitorBtn, #monitorTalkBtn, #monitorFaceTalkBtn, #monitorMuteBtn, #monitorFullscreenBtn, #testSelfVideoBtn');
+    if (icon) {
+      switch (icon.id) {
+        case 'stopMonitorBtn': stopView(); break;
+        case 'monitorTalkBtn': toggleTalk(); break;
+        case 'monitorFaceTalkBtn': toggleFaceTime(); break;
+        case 'monitorMuteBtn': toggleMute(); break;
+        case 'monitorFullscreenBtn': toggleFullscreen(); break;
+        case 'testSelfVideoBtn': testSelfVideo(); break;
+      }
+      return;
+    }
     if (t.id === 'answerCallBtn') { answerCall(); return; }
     if (t.id === 'dismissCallBtn') { dismissCall(); return; }
 

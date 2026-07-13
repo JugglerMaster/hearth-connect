@@ -712,7 +712,12 @@ input[type="text"]:focus {
   -webkit-tap-highlight-color: transparent;
 }
 .icon-btn:active { transform: scale(0.92); }
-.icon-btn svg { width: 20px; height: 20px; display: block; }
+.icon-btn svg { width: 20px; height: 20px; display: block; pointer-events: none; }
+/* Glyphs are purely decorative — never let them steal the tap target from the
+   button. Without this, a tap on the icon lands on the <svg>/<path>, so the
+   delegated handler's e.target.id check misses and you have to mash the button
+   edge to register a click. */
+.icon-btn svg * { pointer-events: none; }
 
 /* Mute carries two glyphs; show the right one for the current state. */
 .icon-btn .ic-muted { display: none; }
