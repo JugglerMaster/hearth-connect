@@ -820,7 +820,7 @@
       "label": "Monitor",
       "roomId": "default",
       "createdAt": 1783962423718,
-      "lastSeenAt": 1783972218400,
+      "lastSeenAt": 1783973793336,
       "config": {
         "label": "",
         "camera": "front",
@@ -846,7 +846,7 @@
       "label": "Base Station",
       "roomId": "default",
       "createdAt": 1783962436243,
-      "lastSeenAt": 1783972914021,
+      "lastSeenAt": 1783974110783,
       "config": {
         "label": "",
         "visibleSources": [],
@@ -862,7 +862,7 @@
       "label": "Base Station",
       "roomId": "default",
       "createdAt": 1783962462875,
-      "lastSeenAt": 1783972204321,
+      "lastSeenAt": 1783973007027,
       "config": {
         "label": "",
         "visibleSources": [],

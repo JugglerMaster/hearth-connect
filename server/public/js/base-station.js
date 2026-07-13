@@ -277,6 +277,16 @@
     // Restore the broadcasting flag to reflect any manual broadcast still active.
     isBroadcasting = !!broadcastSourceId;
 
+    // Release the base camera/mic when FaceTalk ends (mirrors stopAnnounce for
+    // the audio path). Previously localBroadcastStream was cached for reuse, so
+    // the camera indicator light stayed on until a full page refresh. Only stop
+    // it if no other feature is still using it (a manual broadcast).
+    if (localBroadcastStream && !broadcastSourceId) {
+      localBroadcastStream.getTracks().forEach(t => t.stop());
+      localBroadcastStream = null;
+      broadcastStream = null;
+    }
+
     if (faceTalkRestore) {
       sig.setDisplayConfig(faceTalkingTo, faceTalkRestore.displayMode, faceTalkRestore.audioMode);
       faceTalkRestore = null;
