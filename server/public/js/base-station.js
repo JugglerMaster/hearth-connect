@@ -103,15 +103,26 @@
   let mutedVolume = 100;      // volume to restore after unmute
 
   // ─── Volume control ──
-  // Slider 0–200 → gain 0–2×.  100 = unity, 200 = double (+6 dB).
-  // Audio is routed through a MediaStreamSource + GainNode (NOT through the
-  // video element).  The video element is muted so its direct Safari audio path
-  // doesn't bypass the GainNode.
+  // Two audio routing modes:
+  //  (A) GainNode path (USE_GAIN_NODE = true): MediaStreamSource → GainNode →
+  //      destination, with the video element muted. Slider 0–200 → gain 0–2×
+  //      (allows >100% boost). This is the iOS 12 "quiet audio" workaround.
+  //      DOWNSIDE: on iOS 13+ (e.g. iOS 15) the Web Audio path is silenced by
+  //      the hardware ring/silent switch, so the base is inaudible in silent
+  //      mode.
+  //  (B) Video-element path (USE_GAIN_NODE = false, default): audio plays
+  //      through the UNMUTED video element, whose "playback" audio category
+  //      ignores the silent switch. Slider maps 0–100% → element.volume 0–1
+  //      (no >100% boost). This fixes the iOS 15 silent-switch problem.
+  //
+  // Flip USE_GAIN_NODE back to true if iOS 12 devices need the boost again.
+  const USE_GAIN_NODE = false;
   let audioCtx = null;
   let gainNode = null;
   let audioSourceNode = null; // MediaStreamAudioSourceNode (disconnected on stop)
 
   function ensureAudioGraph() {
+    if (!USE_GAIN_NODE) return;
     if (audioCtx) {
       if (audioCtx.state === 'suspended') audioCtx.resume();
       return;
@@ -126,6 +137,7 @@
   }
 
   function connectAudioSource(stream) {
+    if (!USE_GAIN_NODE) return;
     if (!gainNode || !audioCtx) return;
     if (audioSourceNode) {
       try { audioSourceNode.disconnect(); } catch {}
@@ -141,9 +153,13 @@
   function applyVolume(value) {
     const n = parseFloat(value);
     const v = Math.max(0, Math.min(200, isNaN(n) ? 100 : n));
-    const gain = v / 100; // 0→0, 100→1.0, 200→2.0
-    if (gainNode) {
-      gainNode.gain.value = gain;
+    if (USE_GAIN_NODE) {
+      // 0→0, 100→1.0, 200→2.0 (gain path supports >100% boost)
+      if (gainNode) gainNode.gain.value = v / 100;
+    } else {
+      // Video-element path: element.volume is capped at 1.0, so map the slider
+      // 0–100% → 0.0–1.0 (values above 100 clamp to full volume).
+      if (monitorVideo) monitorVideo.volume = Math.min(1, v / 100);
     }
   }
 
@@ -434,8 +450,12 @@
     applyViewMode();
     ensureAudioGraph();
     connectAudioSource(stream);
+    // Video-element audio path (default): the element must be UNMUTED so its
+    // "playback" audio category plays through the silent switch. applyVolume
+    // sets element.volume. In GainNode mode the element stays muted so audio
+    // only flows through the Web Audio graph.
+    monitorVideo.muted = USE_GAIN_NODE;
     applyVolume(monitorVolume.value);
-    monitorVideo.muted = true; // Video element renders video only; audio goes through GainNode
     monitorVideo.play().catch(() => {});
   }
 
