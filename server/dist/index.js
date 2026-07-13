@@ -41,6 +41,7 @@ const path = __importStar(require("path"));
 const http = __importStar(require("http"));
 const https = __importStar(require("https"));
 const crypto_1 = require("crypto");
+const child_process_1 = require("child_process");
 const express_1 = __importDefault(require("express"));
 const ws_1 = require("ws");
 const qrcode_1 = __importDefault(require("qrcode"));
@@ -89,15 +90,76 @@ app.post('/api/server-url', (_req, res) => {
     });
 });
 // ─── Server Creation ───────────────────────────────────────
+// Generate the self-signed TLS certs in CERT_DIR if they're missing. Mirrors
+// deploy/gen-cert.sh: the CA is created once and reused on later launches (so
+// iOS devices that already trust it don't need to re-install the profile), and
+// the server cert's SAN covers localhost + 127.0.0.1 + the LAN IP(s) so devices
+// reaching https://<lan-ip>:<port> don't trip a name-mismatch warning (which
+// would otherwise force a fresh camera/mic permission prompt on every reload).
+// Certs are per-deployment and never committed (see .gitignore).
+function ensureCerts() {
+    const caKey = path.join(CERT_DIR, 'ca.key');
+    const caPem = path.join(CERT_DIR, 'ca.pem');
+    const serverKey = path.join(CERT_DIR, 'server.key');
+    const serverCrt = path.join(CERT_DIR, 'server.crt');
+    if (fs.existsSync(serverCrt) && fs.existsSync(serverKey)) {
+        return; // already have a server cert — no need to regenerate
+    }
+    // Make sure openssl is available before we try anything.
+    try {
+        (0, child_process_1.execFileSync)('openssl', ['version'], { stdio: 'ignore' });
+    }
+    catch {
+        console.error(`[TLS] cert/key missing in ${CERT_DIR} and openssl is not available ` +
+            'to generate them. Install openssl or run deploy/gen-cert.sh manually.');
+        process.exit(1);
+    }
+    fs.mkdirSync(CERT_DIR, { recursive: true });
+    // 1. CA — reuse if present, else create it.
+    if (!fs.existsSync(caPem) || !fs.existsSync(caKey)) {
+        console.log('[TLS] generating CA…');
+        (0, child_process_1.execFileSync)('openssl', ['genrsa', '-out', caKey, '2048'], { stdio: 'ignore' });
+        (0, child_process_1.execFileSync)('openssl', [
+            'req', '-x509', '-new', '-nodes',
+            '-key', caKey, '-sha256', '-days', '3650',
+            '-out', caPem, '-subj', '/CN=HearthConnect CA/O=HearthConnect',
+        ], { stdio: 'ignore' });
+    }
+    else {
+        console.log('[TLS] reusing existing CA');
+    }
+    // 2. Server key + CSR.
+    (0, child_process_1.execFileSync)('openssl', ['genrsa', '-out', serverKey, '2048'], { stdio: 'ignore' });
+    const csr = path.join(CERT_DIR, 'server.csr');
+    (0, child_process_1.execFileSync)('openssl', [
+        'req', '-new', '-key', serverKey, '-out', csr,
+        '-subj', '/CN=hearth.local/O=HearthConnect',
+    ], { stdio: 'ignore' });
+    // 3. SAN extension: domain + localhost + 127.0.0.1 + any extra IPs.
+    const ext = path.join(CERT_DIR, 'server.ext');
+    const extraIps = (process.env.EXTRA_IPS || '')
+        .split(',').map(s => s.trim()).filter(Boolean);
+    let san = 'DNS.1=hearth.local\nDNS.2=localhost\nIP.1=127.0.0.1\n';
+    extraIps.forEach((ip, i) => { san += `IP.${i + 2}=${ip}\n`; });
+    fs.writeFileSync(ext, 'authorityKeyIdentifier=keyid,issuer\n' +
+        'basicConstraints=CA:FALSE\n' +
+        'keyUsage=digitalSignature,nonRepudiation,keyEncipherment,dataEncipherment\n' +
+        'subjectAltName=@alt_names\n\n[alt_names]\n' + san);
+    // 4. Sign with the CA.
+    (0, child_process_1.execFileSync)('openssl', [
+        'x509', '-req', '-in', csr, '-CA', caPem, '-CAkey', caKey,
+        '-CAcreateserial', '-out', serverCrt, '-days', '365',
+        '-sha256', '-extfile', ext,
+    ], { stdio: 'ignore' });
+    fs.rmSync(csr, { force: true });
+    fs.rmSync(ext, { force: true });
+    console.log(`[TLS] generated server cert in ${CERT_DIR}`);
+}
 function createServer() {
     if (TLS_ENABLED) {
+        ensureCerts();
         const certPath = path.join(CERT_DIR, 'server.crt');
         const keyPath = path.join(CERT_DIR, 'server.key');
-        if (!fs.existsSync(certPath) || !fs.existsSync(keyPath)) {
-            console.error(`TLS enabled but cert/key not found in ${CERT_DIR}/. ` +
-                'Run deploy/gen-cert.sh to generate them, or start without --tls.');
-            process.exit(1);
-        }
         const credentials = {
             cert: fs.readFileSync(certPath),
             key: fs.readFileSync(keyPath),

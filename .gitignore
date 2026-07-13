@@ -1,1 +1,8 @@
 server/node_modules/
+
+# Self-signed TLS certs are generated per deployment (deploy/gen-cert.sh) and
+# must never be committed — they contain private keys (ca.key) and are unique
+# per host/LAN. The server also regenerates them on launch if missing.
+server/certs/
+deploy/certs/
+
