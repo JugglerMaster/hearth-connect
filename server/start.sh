@@ -1,3 +1,4 @@
+npm install
 # if you changed anything under server/src/ (TypeScript), rebuild first:
 npm run build
 
