@@ -43,21 +43,26 @@ async function runAssertions(page) {
     out.push({ name: 'device-panel-present', pass: false, detail: e.message });
   }
 
-  // 4. Signaling connection indicator state (real #connectionDot className).
+  // 5. Live signaling: did renderDevices populate #deviceList with rows?
+  //    With the server UP, a `welcome` message should have rendered device
+  //    rows. This proves the WS round-trip delivered data to the client.
   try {
-    const sig = await page.evaluate(() => {
-      const dot = document.getElementById('connectionDot');
-      const dotClass = dot ? dot.className : '(no #connectionDot)';
-      const hasGlobal = !!(window.__signaling && typeof window.__signaling === 'object');
-      return { dotClass, hasGlobal };
+    const info = await page.evaluate(() => {
+      const el = document.getElementById('deviceList');
+      if (!el) return { count: -1 };
+      return {
+        count: el.children.length,
+        sample: el.textContent.trim().slice(0, 80),
+      };
     });
+    const populated = info.count > 0;
     out.push({
-      name: 'signaling-state-probe',
-      pass: !!sig,
-      detail: `connectionDot="${sig.dotClass}" window.__signaling=${sig.hasGlobal}`,
+      name: 'device-list-populated',
+      pass: populated,
+      detail: `rows=${info.count}${info.sample ? ` text="${info.sample}"` : ''}`,
     });
   } catch (e) {
-    out.push({ name: 'signaling-state-probe', pass: false, detail: e.message });
+    out.push({ name: 'device-list-populated', pass: false, detail: e.message });
   }
 
   return out;
