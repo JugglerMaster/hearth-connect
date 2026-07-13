@@ -12,17 +12,20 @@ DOM inspection, console capture, and signaling-handshake checks.
 - Attaches to an already-open Safari tab (or navigates to one).
 - Evaluates JS in the page (DOM/state inspection).
 - Captures `console` + `pageerror` output to your terminal.
-- Takes screenshots.
 - Runs DOM-only assertions (`assertions.js`) on a real device.
+- Screenshot is NOT supported on iOS WebInspector (`Page.captureScreenshot`
+  is absent) — the `SCREENSHOT` env var is accepted but will warn and skip.
 
 ## Architecture
 ```
-Puppeteer (puppeteer-core)
+CDPPage (ws, in bridge.js/cdp.js)
   ↔ remotedebug-ios-webkit-adapter  (localhost:9000, Chrome DevTools Protocol)
-  ↔ ios-webkit-debug-proxy          (localhost:9222, WebInspector)
+  ↔ ios-webkit-debug-proxy          (localhost:9222, WebInspector; run as -c "*:9222" -d)
   ↔ usbmuxd                         (USB)
   ↔ iOS Safari
 ```
+NOTE: We use raw CDP via the `ws` package, NOT puppeteer — the adapter does
+not implement puppeteer's browser handshake (puppeteer.connect hangs).
 
 ## Host install (Debian/Ubuntu)
 ```bash
@@ -62,7 +65,7 @@ bash run.sh stop     # tear down
 
 # Or run the bridge directly with env knobs:
 SERVER_URL=https://192.168.1.50:8090 PAGE=base-station.html ROOM=test \
-  NAVIGATE=1 SCREENSHOT=/tmp/ios.png node bridge.js
+  NAVIGATE=1 node bridge.js
 ```
 
 ### Env knobs (bridge.js)
@@ -72,7 +75,7 @@ SERVER_URL=https://192.168.1.50:8090 PAGE=base-station.html ROOM=test \
 | `PAGE` | `base-station.html` | `monitor.html` \| `base-station.html` \| `viewer.html` |
 | `ROOM` | _(empty)_ | appended as `?room=` |
 | `NAVIGATE` | _(unset)_ | set `1` to auto-open the page if no matching tab |
-| `SCREENSHOT` | _(empty)_ | write a PNG screenshot to this path |
+| `SCREENSHOT` | _(empty)_ | **not supported** on iOS; warn+skip |
 | `DEVICE_UDID` | _(auto)_ | pin a specific device |
 | `ADAPTER_PORT` | `9000` | adapter CDP port |
 | `PROXY_PORT` | `9222` | ios-webkit-debug-proxy port |
@@ -86,8 +89,9 @@ SERVER_URL=https://192.168.1.50:8090 PAGE=base-station.html ROOM=test \
 - Not for CI — keep it out of the production Docker image.
 
 ## Files
-- `bridge.js` — CDP connect + console capture + screenshot + assertions hook
+- `bridge.js` — CDP attach + console capture + assertions hook (raw CDP)
+- `cdp.js` — minimal CDP client over `ws` (no puppeteer)
 - `assertions.js` — DOM/state assertions (no camera)
 - `run.sh` — start/stop/status orchestration
-- `package.json` — `puppeteer-core` + `ws` + `chalk`
+- `package.json` — `ws` + `chalk`
 - `PLAN.md` — design notes and server-fit analysis

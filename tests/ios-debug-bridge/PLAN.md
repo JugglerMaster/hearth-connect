@@ -18,18 +18,26 @@ Linux host
   ├─ server/  (node + ts-node, serves static + WS signaling on :8090, TLS)
   │
   ├─ ios-webkit-debug-proxy        (usbmuxd → Safari inspector tunnel)
+  │     run as: ios_webkit_debug_proxy -c "*:9222" -d
   │     exposes WebInspector JSON-RPC on localhost:9222
   │
   ├─ remotedebug-ios-webkit-adapter (wraps 9222 as Chrome DevTools Protocol)
+  │     run as: remotedebug_ios_webkit_adapter -p 9000
   │     exposes CDP endpoint on localhost:9000
   │
-  └─ tests/ios-debug-bridge/  (Node + puppeteer-core)
-        bridge.js: puppeteer.connect({ browserWSEndpoint }) → drives iOS
-        Safari tabs via CDP: navigate, evaluate, screenshot, capture console.
+  └─ tests/ios-debug-bridge/  (Node + ws, raw CDP — NOT puppeteer)
+        bridge.js → cdp.js (CDPPage): talks directly to the page target's
+        WebSocket. Drives iOS Safari: navigate, evaluate, capture console.
 ```
 
-Data flow: Puppeteer ↔ adapter (CDP) ↔ ios-webkit-debug-proxy (WebInspector)
-↔ usbmuxd (USB) ↔ iOS Safari.
+Data flow: CDPPage (ws) ↔ adapter (CDP) ↔ ios-webkit-debug-proxy
+(WebInspector) ↔ usbmuxd (USB) ↔ iOS Safari.
+
+### Why raw CDP, not puppeteer
+`remotedebug-ios-webkit-adapter` does NOT implement puppeteer's browser-level
+target handshake, so `puppeteer.connect()` hangs forever. Talking directly to
+the page target's `webSocketDebuggerUrl` (via the `ws` package) works reliably.
+See `cdp.js` for the minimal CDP client.
 
 ## Required components & install (see README.md for the one-liner)
 
