@@ -1,10 +1,25 @@
 #!/usr/bin/env python3
-"""Hearth-Connect native agent for Raspberry Pi (Pi OS Lite, headless).
-
-Connects to a Hearth-Connect server over WebSocket, enumerates V4L2 cameras and ALSA
-microphones, and publishes whatever media is available (video+audio / video-only /
-audio-only) via GStreamer webrtcbin. Speaks the same signaling protocol as the browser kiosk.
-"""
+# Hearth-Connect native agent for Raspberry Pi (Pi OS Lite, headless).
+#
+# Connects to a Hearth-Connect server over WebSocket, enumerates V4L2 cameras and
+# ALSA microphones, and publishes whatever media is available (video+audio /
+# video-only / audio-only) via GStreamer webrtcbin. Speaks the same signaling
+# protocol as the browser kiosk, INCLUDING:
+#   - Two-way talkback: the monitor peer connection is sendrecv, so the base
+#     station's reverse (talkback) audio arrives on the same audio m-line. We
+#     decode and play it through an ALSA sink, gated by TALK_ENABLED/DISABLED
+#     (and by the kiosk's audioMode config, which the base sets to 'base' during
+#     FaceTalk).
+#   - Broadcasts: when the base station publishes a broadcast source the Pi
+#     receives SOURCE_ADDED, subscribes (SUBSCRIBE_BROADCAST), answers the base's
+#     broadcast offer, and plays the incoming audio (announcements always play;
+#     FaceTalk video is received but dropped to fakesink since the Pi is headless).
+#
+# RAM NOTE: the dominant memory cost is GStreamer + the encoder, which is the
+# same native stack regardless of the glue language. Python + PyGObject adds only
+# ~50-100MB. We stay well under 1GB by (1) preferring the Pi's hardware H.264
+# encoder (v4l2h264enc) over software x264, (2) capping concurrent subscriber
+# pipelines (MAX_SUBSCRIBERS), and (3) keeping conservative default resolution.
 
 import asyncio
 import json
@@ -37,8 +52,16 @@ AUDIO_DEVICE = os.environ.get('AUDIO_DEVICE', '')
 RESOLUTION = os.environ.get('RESOLUTION', '720p')
 FRAMERATE = int(os.environ.get('FRAMERATE', '24'))
 
-DIMS = {'480p': (640, 480), '720p': (1280, 720), '1080p': (1920, 1080)}
+# Talkback / broadcast receive sink configuration.
+SPEAKER_DEVICE = os.environ.get('SPEAKER_DEVICE', '')
+AUDIO_SINK = os.environ.get('AUDIO_SINK', '')  # e.g. 'alsasink device=hw:0,0' overrides SPEAKER_DEVICE
 
+# Hard cap on simultaneous subscriber pipelines. Each viewer gets its own
+# GStreamer pipeline; on a 1GB Pi this bounds memory/CPU. Beyond the cap we
+# politely tell the server the subscriber left so the base doesn't hang.
+MAX_SUBSCRIBERS = int(os.environ.get('MAX_SUBSCRIBERS', '4'))
+
+DIMS = {'480p': (640, 480), '720p': (1280, 720), '1080p': (1920, 1080)}
 STUN = 'stun://stun.l.google.com:19302'
 
 
@@ -50,16 +73,53 @@ def gst_element_exists(name):
     return Gst.ElementFactory.find(name) is not None
 
 
-class WebrtcSession:
+def audio_sink_str():
+    if AUDIO_SINK:
+        return AUDIO_SINK
+    if SPEAKER_DEVICE:
+        return 'alsasink device=' + SPEAKER_DEVICE
+    return 'alsasink'
+
+
+def make_audio_recv_chain(pipeline, volume, mute):
+    """Build an RTP-Opus -> ALSA receive chain and add it to a running pipeline.
+
+    Returns (bin, rxvol_element). The volume element is pre-set so the chain is
+    safe to link before any samples arrive.
+    """
+    chain = Gst.parse_bin_from_description(
+        'queue ! rtpopusdepay ! opusdec ! audioconvert ! audioresample ! '
+        'volume name=rxvol ! ' + audio_sink_str(), True)
+    pipeline.add(chain)
+    chain.set_state(Gst.State.PLAYING)
+    rxvol = chain.get_by_name('rxvol')
+    rxvol.set_property('volume', volume)
+    rxvol.set_property('mute', mute)
+    return chain, rxvol
+
+
+def make_video_recv_chain(pipeline):
+    """Receive base video (FaceTalk) and drop it — the Pi is headless (no display)."""
+    chain = Gst.parse_bin_from_description(
+        'queue ! rtph264depay ! avdec_h264 ! videoconvert ! fakesink', True)
+    pipeline.add(chain)
+    chain.set_state(Gst.State.PLAYING)
+    return chain
+
+
+class MonitorSession:
+    """Per-subscriber sendrecv session: publishes Pi media AND receives the
+    base station's talkback audio on the same audio m-line."""
+
     def __init__(self, agent, subscriber_id):
         self.agent = agent
         self.subscriber_id = subscriber_id
-        self.pipeline = None
-        self.webrtc = None
         self.has_video = agent.has_video
         self.has_audio = agent.has_audio
         self.alert_armed = True
         self.last_level_ts = 0
+        self.talkback_active = agent.talkback_active
+        self.rxvol = None
         self.build()
 
     def build(self):
@@ -69,6 +129,9 @@ class WebrtcSession:
         cfg_audio = self.agent.config.get('audioDevice') or AUDIO_DEVICE
         if self.has_video:
             enc = 'v4l2h264enc' if gst_element_exists('v4l2h264enc') else 'x264enc'
+            if enc == 'x264enc':
+                log.warning('hardware H.264 encoder (v4l2h264enc) not found — '
+                            'falling back to software x264enc (higher RAM/CPU on Pi)')
             dev = ('device=' + cfg_video) if cfg_video else ''
             parts.append(
                 'v4l2src {dev} ! videoconvert ! video/x-raw,format=I420,width={w},height={h},framerate={fr}/1 '
@@ -79,15 +142,54 @@ class WebrtcSession:
             parts.append(
                 'alsasrc {dev} ! audioconvert ! audioresample ! level ! opusenc ! rtpopuspay ! queue ! wb'.format(dev=dev))
         pipeline_str = ' '.join(parts)
-        log.info('session %s pipeline: %s', self.subscriber_id, pipeline_str)
+        log.info('monitor session %s pipeline: %s', self.subscriber_id, pipeline_str)
         self.pipeline = Gst.parse_launch(pipeline_str)
         self.webrtc = self.pipeline.get_by_name('wb')
         self.webrtc.connect('on-negotiation-needed', self.on_negotiation_needed)
         self.webrtc.connect('on-ice-candidate', self.on_ice_candidate)
+        self.webrtc.connect('pad-added', self.on_pad_added)
         bus = self.pipeline.get_bus()
         bus.add_signal_watch()
         bus.connect('message', self.on_bus_message)
         self.pipeline.set_state(Gst.State.PLAYING)
+
+    def on_pad_added(self, element, pad):
+        # The recv (talkback) audio pad appears dynamically. (Video on the
+        # monitor PC is sendonly, so no recv video pad is expected here.)
+        caps = pad.get_current_caps()
+        if not caps:
+            return
+        st = caps.get_structure(0)
+        media = st.get_string('media')
+        if media == 'audio' or 'OPUS' in (st.get_string('encoding-name') or ''):
+            chain, self.rxvol = make_audio_recv_chain(
+                self.pipeline, self.agent.speaker_volume(), self._initial_mute())
+            try:
+                pad.link(chain.get_static_pad('sink'))
+            except Exception as e:
+                log.warning('audio recv link failed: %s', e)
+            self.apply_rx_volume()
+        elif media == 'video':
+            try:
+                chain = make_video_recv_chain(self.pipeline)
+                pad.link(chain.get_static_pad('sink'))
+            except Exception as e:
+                log.warning('video recv link failed: %s', e)
+
+    def _initial_mute(self):
+        # Muted until talkback is enabled or the base sets audioMode='base'.
+        return not (self.agent.talkback_active or self.agent.config.get('audioMode') == 'base')
+
+    def set_talkback(self, active):
+        self.talkback_active = active
+        self.apply_rx_volume()
+
+    def apply_rx_volume(self):
+        if not self.rxvol:
+            return
+        self.rxvol.set_property('volume', self.agent.speaker_volume())
+        allowed = self.agent.talkback_active or self.agent.config.get('audioMode') == 'base'
+        self.rxvol.set_property('mute', not allowed)
 
     def on_negotiation_needed(self, element):
         promise = Gst.Promise.new_with_change_func(self.on_offer_created)
@@ -100,7 +202,8 @@ class WebrtcSession:
         promise2 = Gst.Promise.new_with_change_func(self.on_local_description_set)
         self.webrtc.emit('set-local-description', offer, promise2)
         text = offer.sdp.as_text()
-        self.agent.enqueue_ws({'type': 'OFFER', 'payload': {'to': self.subscriber_id, 'sdp': {'type': 'offer', 'sdp': text}}})
+        self.agent.enqueue_ws({'type': 'OFFER', 'payload': {
+            'to': self.subscriber_id, 'sdp': {'type': 'offer', 'sdp': text}}})
 
     def on_local_description_set(self, promise):
         promise.wait()
@@ -142,6 +245,109 @@ class WebrtcSession:
             self.pipeline = None
 
 
+class BroadcastSession:
+    """Recvonly session for a base-station broadcast (FaceTalk / announcement).
+
+    The base is the offerer; the Pi answers. Audio (always played) and video
+    (dropped to fakesink, headless) are wired up dynamically as their RTP pads
+    appear, so both audio-only announcements and video+audio FaceTalk work.
+    """
+
+    def __init__(self, agent, publisher_id):
+        self.agent = agent
+        self.publisher_id = publisher_id
+        self.rxvol = None
+        self._remote_set = False
+        self.build()
+
+    def build(self):
+        log.info('broadcast session from %s', self.publisher_id)
+        self.pipeline = Gst.parse_launch('webrtcbin name=wb stun-server=' + STUN)
+        self.webrtc = self.pipeline.get_by_name('wb')
+        self.webrtc.connect('on-negotiation-needed', self.on_negotiation_needed)
+        self.webrtc.connect('on-ice-candidate', self.on_ice_candidate)
+        self.webrtc.connect('pad-added', self.on_pad_added)
+        bus = self.pipeline.get_bus()
+        bus.add_signal_watch()
+        bus.connect('message', self.on_bus_message)
+        self.pipeline.set_state(Gst.State.PLAYING)
+
+    def on_pad_added(self, element, pad):
+        caps = pad.get_current_caps()
+        if not caps:
+            return
+        st = caps.get_structure(0)
+        media = st.get_string('media')
+        try:
+            if media == 'audio' or 'OPUS' in (st.get_string('encoding-name') or ''):
+                chain, self.rxvol = make_audio_recv_chain(
+                    self.pipeline, self.agent.speaker_volume(), False)  # announcements always play
+                pad.link(chain.get_static_pad('sink'))
+            elif media == 'video':
+                chain = make_video_recv_chain(self.pipeline)
+                pad.link(chain.get_static_pad('sink'))
+        except Exception as e:
+            log.warning('broadcast recv link failed: %s', e)
+
+    def on_negotiation_needed(self, element):
+        # We are the answerer: only create an answer once the remote offer is set.
+        if not self._remote_set:
+            return
+        # 'create-answer' takes a different signature than 'create-offer' in
+        # some GStreamer versions, so guard both call styles.
+        try:
+            promise = Gst.Promise.new_with_change_func(self.on_answer_created)
+            element.emit('create-answer', None, promise)
+        except Exception as e:
+            log.warning('create-answer emit failed: %s', e)
+
+    def on_answer_created(self, promise):
+        promise.wait()
+        reply = promise.get_reply()
+        answer = reply.get_value('answer')
+        promise2 = Gst.Promise.new_with_change_func(self.on_local_description_set)
+        self.webrtc.emit('set-local-description', answer, promise2)
+        text = answer.sdp.as_text()
+        self.agent.enqueue_ws({'type': 'ANSWER', 'payload': {
+            'to': self.publisher_id, 'sdp': {'type': 'answer', 'sdp': text},
+            'isBroadcast': True}})
+
+    def on_local_description_set(self, promise):
+        promise.wait()
+
+    def on_ice_candidate(self, element, cand):
+        self.agent.enqueue_ws({'type': 'ICE_CANDIDATE', 'payload': {
+            'to': self.publisher_id,
+            'candidate': cand.candidate,
+            'sdpMLineIndex': cand.sdpMLineIndex,
+            'sdpMid': cand.sdpMid,
+            'isBroadcast': True,
+        }})
+
+    def on_bus_message(self, bus, message):
+        # No audio-level alerts on the receive side.
+        return True
+
+    def set_remote_offer(self, sdp_text):
+        sdp = GstSdp.SDPMessage.new()
+        GstSdp.sdp_message_parse_buffer(sdp_text.encode(), sdp)
+        offer = GstWebRTC.WebRTCSessionDescription.new(GstWebRTC.WebRTCSDPType.OFFER, sdp)
+        self._remote_set = True
+        promise = Gst.Promise.new_with_change_func(self.on_remote_set)
+        self.webrtc.emit('set-remote-description', offer, promise)
+
+    def add_ice(self, cand, mline, mid):
+        self.webrtc.emit('add-ice-candidate', mline, cand)
+
+    def on_remote_set(self, promise):
+        promise.wait()
+
+    def close(self):
+        if self.pipeline:
+            self.pipeline.set_state(Gst.State.NULL)
+            self.pipeline = None
+
+
 class Agent:
     def __init__(self):
         self.device_id = 'pi-' + rand_id()
@@ -151,10 +357,16 @@ class Agent:
         self.config = {}
         self.video_devices = []
         self.audio_devices = []
-        self.sessions = {}
+        self.sessions = {}          # subscriberId -> MonitorSession (sendrecv, talkback)
+        self.broadcast_sessions = {}  # publisherId -> BroadcastSession (recvonly)
+        self.broadcast_sources = {}   # publisherId -> source dict from SOURCE_ADDED
         self.ws_queue = asyncio.Queue()
         self.loop = None
         self.reconnect_delay = 1
+        self.talkback_active = False
+        self._last_published_type = None
+        self._last_video_device = VIDEO_DEVICE
+        self._last_audio_device = AUDIO_DEVICE
 
     def enqueue_ws(self, msg):
         if self.loop:
@@ -167,6 +379,12 @@ class Agent:
             msg = await self.ws_queue.get()
             if self.ws and self.ws.open:
                 await self.ws.send(json.dumps(msg))
+
+    def speaker_volume(self):
+        v = self.config.get('speakerVolume')
+        if v is None:
+            return 0.5
+        return max(0.0, min(1.0, float(v)))
 
     def on_audio_level(self, session, db):
         now = time.time()
@@ -208,16 +426,14 @@ class Agent:
                     self.audio_devices.append({'id': 'hw:' + card + ',0', 'label': name})
         except Exception as e:
             log.warning('arecord -l failed: %s', e)
-        if not self.video_devices:
-            self.has_video = False
-        if not self.audio_devices:
-            self.has_audio = False
+        self.has_video = bool(self.video_devices)
+        self.has_audio = bool(self.audio_devices)
 
     def pick_defaults(self):
         if not VIDEO_DEVICE and self.video_devices:
-            self.config['videoDevice'] = self.video_devices[0]['id']
+            self.config.setdefault('videoDevice', self.video_devices[0]['id'])
         if not AUDIO_DEVICE and self.audio_devices:
-            self.config['audioDevice'] = self.audio_devices[0]['id']
+            self.config.setdefault('audioDevice', self.audio_devices[0]['id'])
 
     def source_type(self):
         if self.has_video and self.has_audio:
@@ -247,19 +463,88 @@ class Agent:
             self.ensure_media()
         elif t == 'SUBSCRIBER_JOINED':
             sub = p.get('subscriberId')
+            is_broadcast = p.get('isBroadcast')
+            if is_broadcast:
+                return  # broadcast sessions are driven by the base's OFFER
             if sub and sub not in self.sessions:
-                self.sessions[sub] = WebrtcSession(self, sub)
+                if len(self.sessions) >= MAX_SUBSCRIBERS:
+                    log.warning('subscriber cap %d reached — rejecting %s', MAX_SUBSCRIBERS, sub)
+                    self.enqueue_ws({'type': 'SUBSCRIBER_LEFT', 'payload': {'subscriberId': sub}})
+                    return
+                self.sessions[sub] = MonitorSession(self, sub)
         elif t == 'SUBSCRIBER_LEFT':
             sub = p.get('subscriberId')
             sess = self.sessions.pop(sub, None)
             if sess:
                 sess.close()
+        elif t == 'OFFER':
+            frm = p.get('from')
+            is_broadcast = p.get('isBroadcast')
+            if is_broadcast:
+                sess = self.broadcast_sessions.get(frm)
+                if not sess:
+                    sess = BroadcastSession(self, frm)
+                    self.broadcast_sessions[frm] = sess
+                sess.set_remote_offer(p['sdp']['sdp'])
+            else:
+                # The Pi is the offerer on the monitor PC; the base never offers
+                # there. Ignore (a renegotiation offer would need answerer logic).
+                log.debug('ignoring non-broadcast OFFER from %s', frm)
         elif t == 'ANSWER':
-            if p.get('from') in self.sessions:
-                self.sessions[p['from']].set_remote_answer(p['sdp']['sdp'])
+            # Only the monitor PC (offerer) receives an ANSWER. The broadcast PC
+            # is the answerer, so it never gets one — ignore broadcast ANSWERs.
+            frm = p.get('from')
+            if not p.get('isBroadcast') and frm in self.sessions:
+                self.sessions[frm].set_remote_answer(p['sdp']['sdp'])
         elif t == 'ICE_CANDIDATE':
-            if p.get('from') in self.sessions:
-                self.sessions[p['from']].add_ice(p['candidate'], p['sdpMLineIndex'], p['sdpMid'])
+            frm = p.get('from')
+            is_broadcast = p.get('isBroadcast')
+            if is_broadcast:
+                sess = self.broadcast_sessions.get(frm)
+                if sess:
+                    sess.add_ice(p['candidate'], p['sdpMLineIndex'], p['sdpMid'])
+            elif frm in self.sessions:
+                self.sessions[frm].add_ice(p['candidate'], p['sdpMLineIndex'], p['sdpMid'])
+        elif t == 'TALK_ENABLED':
+            log.info('talkback ENABLED from %s', p.get('from'))
+            self.talkback_active = True
+            for s in self.sessions.values():
+                s.set_talkback(True)
+        elif t == 'TALK_DISABLED':
+            log.info('talkback DISABLED from %s', p.get('from'))
+            self.talkback_active = False
+            for s in self.sessions.values():
+                s.set_talkback(False)
+        elif t == 'SET_DISPLAY_CONFIG':
+            self.config['audioMode'] = p.get('audioMode')
+            self.config['displayMode'] = p.get('displayMode')
+            log.info('display config: audio=%s display=%s', p.get('audioMode'), p.get('displayMode'))
+            for s in self.sessions.values():
+                s.apply_rx_volume()
+        elif t == 'SOURCE_ADDED':
+            src = p
+            if src.get('isBroadcast') and src.get('publisherId') != self.device_id:
+                tid = src.get('targetDeviceId')
+                if tid and tid != self.device_id:
+                    log.info('broadcast targeted elsewhere (%s) — ignoring', tid)
+                    return
+                if self.config.get('broadcastDisabled'):
+                    log.info('broadcasts disabled — ignoring broadcast source %s', src.get('id'))
+                    return
+                pub = src.get('publisherId')
+                self.broadcast_sources[pub] = src
+                log.info('subscribing to broadcast from %s', pub)
+                self.enqueue_ws({'type': 'SUBSCRIBE_BROADCAST', 'payload': {'publisherId': pub}})
+        elif t == 'SOURCE_REMOVED':
+            sid = p.get('sourceId')
+            for pub, src in list(self.broadcast_sources.items()):
+                if src.get('id') == sid:
+                    log.info('broadcast source removed: %s — unsubscribing', sid)
+                    self.enqueue_ws({'type': 'UNSUBSCRIBE_BROADCAST', 'payload': {'publisherId': pub}})
+                    sess = self.broadcast_sessions.pop(pub, None)
+                    if sess:
+                        sess.close()
+                    del self.broadcast_sources[pub]
         elif t == 'CONFIG_UPDATED':
             self.config = p.get('config', {}) or {}
             self.apply_config()
@@ -268,8 +553,6 @@ class Agent:
 
     def ensure_media(self):
         self.enumerate_devices()
-        self.has_video = bool(self.video_devices)
-        self.has_audio = bool(self.audio_devices)
         self.send_capabilities()
         if self.source_type() != 'none':
             self.publish_source()
@@ -283,6 +566,27 @@ class Agent:
         }})
 
     def apply_config(self):
+        # Re-apply speaker volume live to any active receive chains.
+        for s in self.sessions.values():
+            s.apply_rx_volume()
+        for s in self.broadcast_sessions.values():
+            if s.rxvol:
+                s.rxvol.set_property('volume', self.speaker_volume())
+
+        # If broadcasts were just disabled, tear down any active broadcast sessions
+        # AND proactively unsubscribe from any sources we'd tracked (a source may
+        # be queued before its OFFER arrives; the base still holds our subscribe).
+        if self.config.get('broadcastDisabled'):
+            for pub, sess in list(self.broadcast_sessions.items()):
+                sess.close()
+                self.enqueue_ws({'type': 'UNSUBSCRIBE_BROADCAST', 'payload': {'publisherId': pub}})
+            self.broadcast_sessions.clear()
+            for pub in list(self.broadcast_sources.keys()):
+                self.enqueue_ws({'type': 'UNSUBSCRIBE_BROADCAST', 'payload': {'publisherId': pub}})
+            self.broadcast_sources.clear()
+
+        # Source (device) switching: rebuild monitor sessions if the device or
+        # source type changed.
         self.enumerate_devices()
         prev_type = self._last_published_type
         prev_video = self._last_video_device
@@ -301,17 +605,15 @@ class Agent:
             for sess in self.sessions.values():
                 sess.close()
             self.sessions.clear()
-
-    _last_published_type = None
-    _last_video_device = VIDEO_DEVICE
-    _last_audio_device = AUDIO_DEVICE
+            self._last_video_device = self.config.get('videoDevice', VIDEO_DEVICE)
+            self._last_audio_device = self.config.get('audioDevice', AUDIO_DEVICE)
 
     async def run(self):
         self.loop = asyncio.get_event_loop()
         Gst.init(None)
-        glib_thread = GLib.MainLoop()
+        glib_loop = GLib.MainLoop()
         import threading
-        threading.Thread(target=glib_thread.run, daemon=True).start()
+        threading.Thread(target=glib_loop.run, daemon=True).start()
         while True:
             try:
                 log.info('connecting to %s', WS_URL)

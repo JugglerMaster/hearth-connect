@@ -4,7 +4,8 @@
 
 A headless Raspberry Pi client for Hearth-Connect. Runs on **Pi OS Lite** (no desktop, no
 screen) as a native Python + GStreamer WebRTC publisher. It streams the camera and/or
-microphone to a Hearth-Connect room, and the base station can monitor and switch its inputs.
+microphone to a Hearth-Connect room, and the base station can monitor, talk back to, and
+broadcast announcements to it — exactly like the browser kiosk.
 
 This is a **kiosk client deployment** — the Pi acts as a camera/mic publisher (like a browser kiosk).
 
@@ -14,8 +15,16 @@ This is a **kiosk client deployment** — the Pi acts as a camera/mic publisher 
 - Publishes `video+audio`, `video-only`, or `audio-only` depending on what's attached.
 - Reports its device list to the base station via `CAPABILITIES` so inputs can be switched.
 - Sends `AUDIO_PEAK` alerts when audio rises above the configured threshold (with hysteresis).
+- **Two-way talkback**: the monitor peer connection is sendrecv, so the base station's
+  talkback audio arrives on the same audio m-line and is played to the attached speaker,
+  gated by `TALK_ENABLED` / `TALK_DISABLED` (and by `audioMode: 'base'` set during FaceTalk).
+- **Receives broadcasts**: subscribes to base-station broadcast sources (`SOURCE_ADDED` →
+  `SUBSCRIBE_BROADCAST`), answers the base's offer, and plays incoming audio. "Broadcast
+  Message" announcements always play; FaceTalk (`video+audio`) is received and its video is
+  dropped (the Pi is headless). Respects `broadcastDisabled`.
 - Auto-reconnects to the server with exponential backoff.
-- Reacts to `CONFIG_UPDATED` (resolution, frame rate, selected video/audio device, alert config).
+- Reacts to `CONFIG_UPDATED` (resolution, frame rate, selected video/audio device, alert
+  config, talkback/broadcast toggles).
 
 ## Install (Pi OS Lite)
 
@@ -44,9 +53,14 @@ Edit `/opt/hearth-pi-agent/config.env`:
 | `AUDIO_DEVICE` | ALSA id, e.g. `hw:1,0`; blank = first available             |
 | `RESOLUTION` | `480p` / `720p` / `1080p`                                      |
 | `FRAMERATE`  | `15` / `24` / `30`                                             |
+| `SPEAKER_DEVICE` | ALSA speaker id (e.g. `hw:0,0`); blank = default. Used for talkback + announcements |
+| `AUDIO_SINK` | Full ALSA sink override (e.g. `alsasink device=hw:0,0`); takes precedence over `SPEAKER_DEVICE` |
+| `MAX_SUBSCRIBERS` | Max simultaneous viewer connections (1GB-Pi guard, default `4`) |
 
 For the camera, enable it once: `sudo raspi-config` → Interface → Camera (or `libcamera`).
 Set a USB mic as the default capture device if needed (`~/.asoundrc` / `alsactl`).
+To hear talkback/broadcasts, attach a speaker/headphones and set `SPEAKER_DEVICE` (or leave
+blank for the default ALSA playback device).
 
 ## Install the self-signed CA (optional)
 
@@ -79,7 +93,13 @@ python3 pi-agent.py
 ## Notes
 
 - The agent only **publishes** media; it never renders video locally, so no display server
-  (X/Wayland) is required.
-- Encoder preference: `v4l2h264enc` (Pi hardware) when available, else `x264enc`.
+  (X/Wayland) is required. Received broadcast/FaceTalk video is dropped to a `fakesink`.
+- Encoder preference: `v4l2h264enc` (Pi hardware) when available, else `x264enc` (software,
+  higher RAM/CPU — avoid on 1GB Pis; prefer `480p`/`720p`).
+- Talkback and broadcast audio are decoded and played to the ALSA speaker. Volume follows
+  `speakerVolume` from config; talkback is gated by `TALK_ENABLED`/`TALK_DISABLED`.
 - Audio alerting uses the GStreamer `level` element; `audioAlertEnabled`,
   `audioAlertThresholdDb`, and `audioAlertHysteresisDb` are pushed from the base station.
+- **RAM on 1GB Pis**: the dominant cost is GStreamer + the encoder, not the Python glue
+  (~50-100MB). Use the Pi hardware encoder, keep `RESOLUTION` at `720p` or below, and lower
+  `MAX_SUBSCRIBERS` if many viewers watch at once.
