@@ -1210,6 +1210,25 @@ input[type="text"]:focus {
   margin-bottom: 16px;
 }
 
+/* "Send to" target selector in the broadcast panel */
+.broadcast-target-label {
+  display: block;
+  font-size: 12px;
+  color: var(--fg-dim);
+  margin-bottom: 4px;
+}
+
+.broadcast-target-select {
+  padding: 8px 10px;
+  font-size: 14px;
+  border-radius: 8px;
+  border: 1px solid var(--border, #3a3a3a);
+  background: var(--input-bg, #1e1e1e);
+  color: var(--fg, #fff);
+  -webkit-appearance: none;
+  appearance: none;
+}
+
 .broadcast-preview video {
   width: 100%;
   max-height: 200px;

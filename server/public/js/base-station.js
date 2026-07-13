@@ -37,6 +37,13 @@
   let isAnnouncing = false;
   let announceStream = null;       // audio-only MediaStream for the announcement
   let announceSourceId = null;     // broadcast source id for the announcement
+  // Press-and-hold bookkeeping: the button only broadcasts while held. The
+  // `holding` flag gates startAnnounce; `gen`/`currentAnnounceGen` let a
+  // release cancel an in-flight (async) start so a broadcast can't get stuck on.
+  let announceHolding = false;
+  let announceGen = 0;
+  let currentAnnounceGen = 0;
+  let announceWindowBound = false;  // window release handlers bound only once
 
   // Grid view state
   let gridMode = false; // false = single view, true = 2x2 grid
@@ -216,7 +223,8 @@
       // Mark as broadcasting so the base creates a broadcast PC when the kiosk
       // subscribes to this source (see the subscriberJoined handler).
       isBroadcasting = true;
-      sig.broadcastSource(faceTalkSourceId, 'Base Station FaceTalk', 'video+audio');
+      // Respect the user's chosen target (default 'all' = every kiosk).
+      sig.broadcastSource(faceTalkSourceId, 'Base Station FaceTalk', 'video+audio', broadcastTarget);
 
       // Switch the target kiosk to show/hear the base's broadcast.
       sig.setDisplayConfig(peerId, 'base', 'base');
@@ -497,18 +505,47 @@
     }
   }
 
+  // Broadcast target selection: 'all' broadcasts to every kiosk; a deviceId
+  // restricts the broadcast to that single kiosk. Stored here so both the
+  // "Hold to Broadcast" announcement and FaceTalk respect the user's choice.
+  let broadcastTarget = 'all';
+
   function buildBroadcastPanel() {
-    const announcing = isAnnouncing;
+    // Build the target <select>: an "All devices" option plus one per kiosk.
+    const kiosks = devices.filter(d => d.type === 'kiosk' && d.id !== deviceId);
+    const options = ['<option value="all">All devices</option>']
+      .concat(kiosks.map(k => `<option value="${k.id}">${k.label}</option>`))
+      .join('');
     return `
       <div class="broadcast-panel panel">
         <h3>📢 Broadcast</h3>
-        <p class="hint" style="margin-bottom:8px">Send a voice message to every kiosk at once (except this base).</p>
-        <button id="toggleBroadcastBtn" class="btn ${announcing ? 'btn-danger' : 'btn-primary'}" style="width:100%">
-          ${announcing ? '⏹ Stop Broadcast' : '📢 Broadcast Message'}
+        <p class="hint" style="margin-bottom:8px">Press and hold to send a voice message. Choose a device to target just that one, or all devices at once.</p>
+        <label class="broadcast-target-label" for="broadcastTargetSelect">Send to</label>
+        <select id="broadcastTargetSelect" class="broadcast-target-select" style="width:100%;margin-bottom:8px">
+          ${options}
+        </select>
+        <button id="toggleBroadcastButton" class="btn btn-primary" style="width:100%">
+          📢 Hold to Broadcast
         </button>
         <div id="broadcastStatus" class="monitor-status hidden" style="margin-top:8px"></div>
       </div>
     `;
+  }
+
+  // Keep the stored target in sync with the dropdown whenever the panel renders,
+  // and bind the panel's listeners.
+  function attachBroadcastPanelListeners() {
+    const targetSel = document.getElementById('broadcastTargetSelect');
+    if (targetSel) {
+      // Restore the previously chosen target (survives re-renders).
+      targetSel.value = broadcastTarget;
+      targetSel.addEventListener('change', (e) => {
+        broadcastTarget = (e.target.value) || 'all';
+        console.log('[base] broadcast target set to', broadcastTarget);
+      });
+    }
+    const btn = document.getElementById('toggleBroadcastButton');
+    if (!btn) return;
   }
 
   function renderListView(kiosks, broadcastPanel) {
@@ -626,9 +663,44 @@
   // ─── Broadcast Functions ────────────────────────────────
 
   function attachBroadcastPanelListeners() {
-    const btn = document.getElementById('toggleBroadcastBtn');
+    const btn = document.getElementById('toggleBroadcastButton');
     if (!btn) return;
-    btn.addEventListener('click', toggleAnnounce);
+
+    // Press-and-hold: broadcast only while the button is physically pressed
+    // (walkie-talkie style). Start on press, stop on release.
+    const startHold = (e) => {
+      // Ignore secondary pointers / right-clicks.
+      if (e && e.button != null && e.button !== 0) return;
+      if (e && e.cancelable) e.preventDefault();
+      if (announceHolding) return; // already holding
+      announceHolding = true;
+      announceGen++;
+      currentAnnounceGen = announceGen;
+      startAnnounce();
+    };
+    const endHold = (e) => {
+      if (e && e.cancelable) e.preventDefault();
+      if (!announceHolding) return; // not currently holding
+      stopAnnounce();
+    };
+
+    btn.addEventListener('mousedown', startHold);
+    btn.addEventListener('touchstart', startHold, { passive: false });
+    btn.addEventListener('mouseup', endHold);
+    btn.addEventListener('mouseleave', endHold);
+    btn.addEventListener('touchend', endHold);
+    btn.addEventListener('touchcancel', endHold);
+
+    // Release anywhere (even outside the button, e.g. if the panel re-renders
+    // mid-press) still stops the broadcast. Bind the window-level release
+    // handlers only once — renderDevices() recreates the button and calls this
+    // repeatedly, and button listeners die with the old element, but window
+    // listeners would otherwise leak.
+    if (!announceWindowBound) {
+      announceWindowBound = true;
+      window.addEventListener('mouseup', endHold);
+      window.addEventListener('touchend', endHold);
+    }
   }
 
   // Acquire an audio-only stream for the "Broadcast Message" button. Kept
@@ -663,20 +735,22 @@
     return localBroadcastStream;
   }
 
-  async function toggleAnnounce() {
-    if (isAnnouncing) {
-      stopAnnounce();
-    } else {
-      await startAnnounce();
-    }
-    renderDevices(); // refresh the button label/state
-  }
-
   // Start an audio-only broadcast. The server fans it out to every online
   // kiosk except this base; each kiosk auto-plays it as an announcement.
+  // `holding`/`gen` let a release that arrives during the async getUserMedia
+  // await cancel a broadcast that hasn't started yet (press-and-hold model).
   async function startAnnounce() {
     if (!announceStream) {
       await ensureAnnounceStream();
+    }
+    // The button may have been released (or re-pressed) while we awaited the
+    // mic permission. Bail if we're no longer supposed to be broadcasting.
+    if (!announceHolding || announceGen !== currentAnnounceGen) {
+      if (announceStream) {
+        announceStream.getTracks().forEach(t => t.stop());
+        announceStream = null;
+      }
+      return;
     }
     if (!announceStream) {
       showToast('Microphone unavailable for broadcast');
@@ -686,20 +760,31 @@
     announceSourceId = 'announce-' + deviceId + '-' + Date.now();
     isAnnouncing = true;
 
-    // Publish an AUDIO-ONLY broadcast source (no camera). The kiosk plays it
+    // Publish an AUDIO-ONLY broadcast source (no camera). The kiosk(s) play it
     // regardless of its display/audio mode, so the announcement is never silent.
-    sig.broadcastSource(announceSourceId, 'Base Station Broadcast', 'audio-only');
+    // When broadcastTarget is a specific deviceId, the server only delivers the
+    // SOURCE_ADDED to that kiosk.
+    sig.broadcastSource(announceSourceId, 'Base Station Broadcast', 'audio-only', broadcastTarget);
 
     const status = document.getElementById('broadcastStatus');
     if (status) {
       status.textContent = 'Broadcasting… speak now';
       status.classList.remove('hidden');
     }
+    const btn = document.getElementById('toggleBroadcastButton');
+    if (btn) {
+      btn.classList.remove('btn-primary');
+      btn.classList.add('btn-danger');
+      btn.textContent = '⏹ Broadcasting… release to stop';
+    }
     showToast('Broadcasting message to all kiosks');
     console.log('[base] Announce started:', announceSourceId);
   }
 
   function stopAnnounce() {
+    announceHolding = false;
+    announceGen++;            // invalidate any in-flight startAnnounce
+    currentAnnounceGen = announceGen;
     isAnnouncing = false;
     if (announceSourceId) {
       sig.unbroadcastSource(announceSourceId);
@@ -716,6 +801,12 @@
     }
     const status = document.getElementById('broadcastStatus');
     if (status) status.classList.add('hidden');
+    const btn = document.getElementById('toggleBroadcastButton');
+    if (btn) {
+      btn.classList.remove('btn-danger');
+      btn.classList.add('btn-primary');
+      btn.textContent = '📢 Hold to Broadcast';
+    }
     showToast('Broadcast stopped');
     console.log('[base] Announce stopped');
   }
@@ -1100,8 +1191,10 @@
     const removeFromGridBtn = t.closest('.remove-from-grid');
     if (removeFromGridBtn) { removeFromGrid(removeFromGridBtn.dataset.id); return; }
 
-    // Broadcast controls
-    if (t.id === 'toggleBroadcastBtn') { toggleAnnounce(); return; }
+    // Broadcast controls — press-and-hold is wired directly on the button in
+    // attachBroadcastPanelListeners (mousedown/touchstart→start, up→stop), so
+    // there is nothing to do here for clicks (it would double-trigger).
+    if (t.id === 'toggleBroadcastButton') { return; }
   });
 
   function showConfig(device) {
@@ -1392,6 +1485,12 @@
     // Handle subscriber joining our broadcast (kiosk wants to receive our stream)
     sig.on('subscriberJoined', (data) => {
       if (!data.isBroadcast) return;
+      // If we're broadcasting to a specific device, ignore subscribers that
+      // aren't that device (defensive — the server already filters delivery).
+      if (broadcastTarget !== 'all' && data.subscriberId !== broadcastTarget) {
+        console.log('[base] ignoring broadcast subscriber', data.subscriberId, '(target is', broadcastTarget + ')');
+        return;
+      }
       // Either FaceTalk (video+audio, isBroadcasting) or a "Broadcast Message"
       // announcement (audio-only, isAnnouncing) — pick the active local stream.
       const outStream = announceStream || broadcastStream || localBroadcastStream;

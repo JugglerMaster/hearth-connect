@@ -387,8 +387,8 @@ class SignalingClient {
     this.send('REMOVE_DEVICE', { targetDeviceId });
   }
 
-  broadcastSource(sourceId, label, type) {
-    this.send('BROADCAST_SOURCE', { sourceId, label, type });
+  broadcastSource(sourceId, label, type, targetDeviceId) {
+    this.send('BROADCAST_SOURCE', { sourceId, label, type, targetDeviceId });
   }
 
   unbroadcastSource(sourceId) {

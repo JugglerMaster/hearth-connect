@@ -381,6 +381,7 @@ class SignalingHandler {
         const rawType = payload.type || 'video+audio';
         const validTypes = ['video+audio', 'video-only', 'audio-only', 'none'];
         const type = validTypes.includes(rawType) ? rawType : 'video+audio';
+        const targetDeviceId = payload.targetDeviceId || undefined;
         if (!sourceId) {
             this.sendError(transport, 'INVALID_PARAMS', 'sourceId required');
             return;
@@ -390,19 +391,26 @@ class SignalingHandler {
             this.sendError(transport, 'INTERNAL_ERROR', 'Failed to add broadcast source');
             return;
         }
-        // Mark as broadcast source
+        // Carry the broadcast target (if any) on the source so it can be enforced
+        // at fan-out time and so late-joiners / reconnects respect it too.
         source.isBroadcast = true;
-        // Notify all clients (kiosks and other bases)
-        this.channels.broadcastAll({
-            type: 'SOURCE_ADDED',
-            payload: source,
-        });
+        source.targetDeviceId = targetDeviceId || undefined;
+        // Notify the targeted kiosk only, or every client when broadcasting to all.
+        const targets = targetDeviceId
+            ? this.channels.getClientsInRoom(client.roomId).filter(c => c.deviceId === targetDeviceId)
+            : this.channels.getClientsInRoom(client.roomId).filter(c => c.deviceId !== client.deviceId);
+        for (const target of targets) {
+            this.channels.sendTo(target.deviceId, {
+                type: 'SOURCE_ADDED',
+                payload: source,
+            });
+        }
         // Update base config to track broadcast
         this.config.updateDeviceConfig(client.deviceId, {
             broadcastSourceId: sourceId,
             isBroadcasting: true,
         });
-        console.log(`Broadcast source published: ${sourceId} by ${client.deviceId}`);
+        console.log(`Broadcast source published: ${sourceId} by ${client.deviceId}` + (targetDeviceId ? ` → ${targetDeviceId}` : ' → all'));
     }
     handleUnbroadcastSource(transport, payload) {
         const client = this.channels.getClientByConnId(transport.connId);

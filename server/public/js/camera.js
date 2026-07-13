@@ -790,9 +790,14 @@
     });
 
     // Handle source added - auto-subscribe to broadcasts, unless this kiosk
-    // has system broadcasts disabled (set remotely by the base, or locally).
+    // has system broadcasts disabled (set remotely by the base, or locally),
+    // or the broadcast is targeted at a different device.
     sig.on('sourceAdded', (source) => {
       if (source.isBroadcast && source.publisherId !== deviceId) {
+        if (source.targetDeviceId && source.targetDeviceId !== deviceId) {
+          console.log('[kiosk] broadcast targeted elsewhere (' + source.targetDeviceId + ') — ignoring');
+          return;
+        }
         if (currentConfig.broadcastDisabled) {
           console.log('[kiosk] broadcasts disabled — ignoring broadcast source', source.id);
           return;

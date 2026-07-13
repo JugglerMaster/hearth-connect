@@ -136,6 +136,9 @@ export interface MediaSourceInfo {
   label: string;
   type: SourceType;
   status: 'live' | 'idle';
+  // When set, the broadcast is targeted at a single kiosk; the server only
+  // delivers SOURCE_ADDED to that device. Undefined/'' means all devices.
+  targetDeviceId?: string;
 }
 
 // ─── WebSocket message types ─────────────────────────────────
