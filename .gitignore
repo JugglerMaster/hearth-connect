@@ -6,3 +6,7 @@ server/node_modules/
 server/certs/
 deploy/certs/
 
+# Runtime state (per-deployment device/room config) + scratch notes.
+data/
+updates.txt
+

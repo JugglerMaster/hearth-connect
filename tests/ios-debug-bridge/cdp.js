@@ -20,13 +20,41 @@ class CDPPage {
     this._handlers = {};
   }
 
-  async attach() {
+  async attach({ enableTimeout = 20000, retries = 2 } = {}) {
+    // iOS WebInspector + this adapter occasionally drop the FIRST
+    // Runtime.enable after a fresh WebSocket connects (intermittent — the
+    // same command succeeds on retry). Retry the whole open+enable once or
+    // twice; do NOT loop-spam (that wedges the single inspector session).
+    let lastErr;
+    for (let attempt = 1; attempt <= retries; attempt++) {
+      try {
+        await this._openAndEnable(enableTimeout);
+        return;
+      } catch (e) {
+        lastErr = e;
+        if (attempt < retries) {
+          await new Promise((r) => setTimeout(r, 800));
+        }
+      }
+    }
+    throw lastErr;
+  }
+
+  _openAndEnable(enableTimeout) {
     return new Promise((resolve, reject) => {
-      this._ws = new WebSocket(this.wsUrl);
-      this._ws.on('message', (data) => {
+      const t = setTimeout(() => {
+        try { this._ws && this._ws.close(); } catch {}
+        reject(new Error('CDP enable timed out — device likely locked, backgrounded, or inspector link flaky'));
+      }, enableTimeout);
+
+      const ws = new WebSocket(this.wsUrl);
+      this._ws = ws;
+
+      const onMsg = (data) => {
         let msg;
         try { msg = JSON.parse(data); } catch { return; }
-        if (msg.id && this._pending.has(msg.id)) {
+        if (!msg || typeof msg !== 'object') return;
+        if (typeof msg.id === 'number' && this._pending.has(msg.id)) {
           const fn = this._pending.get(msg.id);
           this._pending.delete(msg.id);
           fn(msg);
@@ -34,15 +62,21 @@ class CDPPage {
         if (msg.method && this._handlers[msg.method]) {
           this._handlers[msg.method].forEach((h) => h(msg.params));
         }
-      });
-      this._ws.on('error', reject);
-      this._ws.on('open', async () => {
+      };
+      ws.on('message', onMsg);
+      ws.on('error', (e) => { console.warn('[cdp] ws error:', e.message); });
+
+      ws.on('open', async () => {
         try {
-          await this._cmd('Runtime.enable');
-          await this._cmd('DOM.enable');
-          await this._cmd('Page.enable');
+          for (const m of ['Runtime.enable', 'DOM.enable', 'Page.enable', 'Console.enable']) {
+            await this._cmd(m);
+          }
+          clearTimeout(t);
           resolve();
-        } catch (e) { reject(e); }
+        } catch (e) {
+          clearTimeout(t);
+          reject(e);
+        }
       });
     });
   }
@@ -54,7 +88,7 @@ class CDPPage {
   _cmd(method, params = {}) {
     return new Promise((resolve, reject) => {
       const id = ++this._id;
-      const t = setTimeout(() => { this._pending.delete(id); reject(new Error(`CDP ${method} timed out`)); }, 8000);
+      const t = setTimeout(() => { this._pending.delete(id); reject(new Error(`CDP ${method} timed out`)); }, 20000);
       this._pending.set(id, (msg) => {
         clearTimeout(t);
         if (msg.error) reject(new Error(msg.error.message));
