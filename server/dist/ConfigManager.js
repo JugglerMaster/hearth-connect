@@ -205,6 +205,11 @@ class ConfigManager {
                     twoWayAudioEnabled: true,
                     showFeed: false,
                     keepAwake: true,
+                    displayMode: 'blank',
+                    audioMode: 'mute',
+                    broadcastDisabled: false,
+                    audioAlertEnabled: true,
+                    audioAlertThresholdDb: -40,
                 };
             case 'base':
                 return {

@@ -813,6 +813,108 @@
         "showFeed": false,
         "keepAwake": true
       }
+    },
+    "kiosk-1783955125295-cabw": {
+      "id": "kiosk-1783955125295-cabw",
+      "type": "kiosk",
+      "label": "Monitor",
+      "roomId": "default",
+      "createdAt": 1783962423718,
+      "lastSeenAt": 1783972218400,
+      "config": {
+        "label": "",
+        "camera": "front",
+        "resolution": "720p",
+        "frameRate": 30,
+        "nightMode": false,
+        "torch": false,
+        "micSensitivity": 0.8,
+        "speakerVolume": 0.5,
+        "twoWayAudioEnabled": true,
+        "showFeed": false,
+        "keepAwake": true,
+        "broadcastDisabled": false,
+        "displayMode": "blank",
+        "audioMode": "base",
+        "audioAlertEnabled": true,
+        "audioAlertThresholdDb": -40
+      }
+    },
+    "base-1783959829537-c1k8": {
+      "id": "base-1783959829537-c1k8",
+      "type": "base",
+      "label": "Base Station",
+      "roomId": "default",
+      "createdAt": 1783962436243,
+      "lastSeenAt": 1783972262911,
+      "config": {
+        "label": "",
+        "visibleSources": [],
+        "audioFocusMode": "manual",
+        "gridLayout": "1x1",
+        "idleTimeout": 0,
+        "isBroadcasting": false
+      }
+    },
+    "base-1783955167179-m2mz": {
+      "id": "base-1783955167179-m2mz",
+      "type": "base",
+      "label": "Base Station",
+      "roomId": "default",
+      "createdAt": 1783962462875,
+      "lastSeenAt": 1783972204321,
+      "config": {
+        "label": "",
+        "visibleSources": [],
+        "audioFocusMode": "manual",
+        "gridLayout": "1x1",
+        "idleTimeout": 0
+      }
+    },
+    "base-probe-1783967544196": {
+      "id": "base-probe-1783967544196",
+      "type": "base",
+      "label": "Probe",
+      "roomId": "default",
+      "createdAt": 1783967544198,
+      "lastSeenAt": 1783967604212,
+      "config": {
+        "label": "",
+        "visibleSources": [],
+        "audioFocusMode": "manual",
+        "gridLayout": "1x1",
+        "idleTimeout": 0
+      }
+    },
+    "base-probe-1783967625809": {
+      "id": "base-probe-1783967625809",
+      "type": "base",
+      "label": "Probe",
+      "roomId": "default",
+      "createdAt": 1783967625810,
+      "lastSeenAt": 1783967686330,
+      "config": {
+        "label": "",
+        "visibleSources": [],
+        "audioFocusMode": "manual",
+        "gridLayout": "1x1",
+        "idleTimeout": 0
+      }
+    },
+    "base-fix-1783970463292": {
+      "id": "base-fix-1783970463292",
+      "type": "base",
+      "label": "Fix",
+      "roomId": "default",
+      "createdAt": 1783970463294,
+      "lastSeenAt": 1783970523911,
+      "config": {
+        "label": "",
+        "visibleSources": [],
+        "audioFocusMode": "manual",
+        "gridLayout": "1x1",
+        "idleTimeout": 0
+      }
     }
   }
 }

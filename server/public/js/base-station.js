@@ -61,8 +61,11 @@
   // Watch recovery state
   let recovering = false;
   let recoverTimer = null;
+  let recoverAttempts = 0;             // reset on successful track arrival
   const WATCH_DEAD_MS = 8000;
   const RECOVER_TIMEOUT = 10000;
+  const MAX_RECOVER_ATTEMPTS = 4;      // fast retries before falling back to slow retry
+  const RECOVER_RETRY_MS = 15000;      // slow background retry cadence after that
 
   const connectionDot = document.getElementById('connectionDot');
   const monitorFeed = document.getElementById('monitorFeed');
@@ -302,6 +305,14 @@
 
   // ─── Connection-quality indicator (getStats) ──────────
   function updateQuality(stats) {
+    // Treat live stats as proof the media path is alive and refresh the
+    // watchdog's activity timestamp. Previously lastActivity was only set when a
+    // track first ARRIVED, so after WATCH_DEAD_MS (8s) of a running view the
+    // watchdog always thought the stream was dead and forced a needless
+    // teardown/reconnect — which then failed to recover on any real WiFi blip.
+    if (viewingId && stats && (stats.state === 'connected' || stats.iceState === 'connected' || stats.iceState === 'completed')) {
+      lastActivity[viewingId] = Date.now();
+    }
     if (!monitorQuality) return;
     if (!stats || stats.state !== 'connected') {
       monitorQuality.textContent = stats ? `(${stats.state})` : '';
@@ -483,13 +494,16 @@
     const bases = devices.filter(d => d.type === 'base' && d.id !== deviceId);
 
     // Build broadcast panel HTML.
-    // Only show when NOT actively showing the monitor feed (no video/audio
-    // option selected and no self-test running). While the feed pane is open
-    // we hide the broadcast controls.
+    // Show the broadcast controls whenever a monitor feed is NOT open. We used
+    // to also require `bases.length === 0` ("only the first base may broadcast"),
+    // but `bases` is derived from the server's recentlySeenDevices list, which
+    // includes OFFLINE bases across a 24h window. Any stale base entry made the
+    // panel disappear (missing on desktop, and vanishing ~60s after a
+    // reconnecting base's DEVICE_STATUS arrived). Every base station is allowed
+    // to broadcast, so just gate on the feed being closed.
     const feedOpen = viewingId || (monitorFeed && !monitorFeed.classList.contains('hidden'));
     let broadcastPanel = '';
-    if (!feedOpen && bases.length === 0 && devices.some(d => d.id === deviceId && d.type === 'base')) {
-      // We are the only base or first base - show broadcast controls
+    if (!feedOpen) {
       broadcastPanel = buildBroadcastPanel();
     }
 
@@ -679,8 +693,12 @@
       startAnnounce();
     };
     const endHold = (e) => {
-      if (e && e.cancelable) e.preventDefault();
       if (!announceHolding) return; // not currently holding
+      // Only preventDefault when we're actually ending a held broadcast. This
+      // handler is bound at the WINDOW level, and calling preventDefault on
+      // every touchend cancels iOS's synthesized `click`, which broke the
+      // delegated audio/video/settings buttons on iPhone/iPad.
+      if (e && e.cancelable) e.preventDefault();
       stopAnnounce();
     };
 
@@ -709,7 +727,7 @@
   async function ensureAnnounceStream() {
     if (announceStream) return announceStream;
     try {
-      announceStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      announceStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
       console.log('[base] Announce mic acquired');
     } catch (err) {
       console.error('[base] ensureAnnounceStream failed:', err);
@@ -725,7 +743,7 @@
     try {
       localBroadcastStream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } },
-        audio: true,
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       });
       console.log('[base] Broadcast stream acquired for FaceTalk');
     } catch (err) {
@@ -894,6 +912,7 @@
     viewingId = null;
     viewMode = null;
     recovering = false;
+    recoverAttempts = 0;
     if (recoverTimer) { clearTimeout(recoverTimer); recoverTimer = null; }
     if (audioSourceNode) {
       try { audioSourceNode.disconnect(); } catch {}
@@ -1111,8 +1130,9 @@
   function recoverWatch() {
     if (!viewingId || recovering) return;
     recovering = true;
-    console.log('[view] recovering', viewingId);
-    showMonitorStatus('Reconnecting…');
+    recoverAttempts++;
+    console.log('[view] recovering', viewingId, 'attempt', recoverAttempts);
+    showMonitorStatus(recoverAttempts > 1 ? `Reconnecting… (${recoverAttempts})` : 'Reconnecting…');
     const pc = rtc.peerConnections.get(viewingId);
     if (pc) pc._restarting = true; // prevent webrtc.js internal ICE-restart racing us
     rtc.closePeerConnection(viewingId);
@@ -1121,12 +1141,22 @@
 
     if (recoverTimer) clearTimeout(recoverTimer);
     recoverTimer = setTimeout(() => {
-      if (recovering) {
-        recovering = false;
+      if (!recovering) return;
+      recovering = false;
+      if (!viewingId) return;
+      // Keep retrying instead of giving up after one attempt — a transient WiFi
+      // blip often needs a few rounds. Only surface the hard failure after
+      // several tries, and keep retrying (slower) so it self-heals when the
+      // network returns rather than sitting dead until the user intervenes.
+      if (recoverAttempts < MAX_RECOVER_ATTEMPTS) {
+        recoverWatch();
+      } else {
         showMonitorStatus(null);
-        monitorError.textContent = 'Stream lost. Device may be offline.';
+        monitorError.textContent = 'Stream lost — still retrying…';
         monitorError.classList.remove('hidden');
         renderDevices();
+        // Slow background retry; onRemoteTrack clears this state on success.
+        recoverTimer = setTimeout(() => { if (viewingId) recoverWatch(); }, RECOVER_RETRY_MS);
       }
     }, RECOVER_TIMEOUT);
   }
@@ -1376,6 +1406,7 @@
     streams[peerId] = stream;
     lastActivity[peerId] = Date.now();
     if (peerId === viewingId) {
+      recoverAttempts = 0; // media is flowing again — reset the recovery backoff
       if (recovering) {
         recovering = false;
         if (recoverTimer) { clearTimeout(recoverTimer); recoverTimer = null; }
@@ -1597,7 +1628,11 @@
     sig.on('configResult', (data) => {
       if (data.config) {
         const d = devices.find(dev => dev.id === data.targetDeviceId);
-        if (d) d.config = data.config;
+        // MERGE, don't replace: a Save fires SET_CONFIG (full) followed by
+        // SET_DISPLAY_CONFIG (only displayMode/audioMode). The latter's
+        // CONFIG_RESULT carries a partial config, so a blind assign would wipe
+        // resolution/frameRate/broadcastDisabled/etc. from our cache.
+        if (d) d.config = Object.assign({}, d.config, data.config);
         // If the settings panel is open for this device and the user hasn't
         // started editing, re-render so the kiosk's authoritative current
         // audio/video settings appear. We only refresh when the form still

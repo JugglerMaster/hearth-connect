@@ -381,7 +381,12 @@ class SignalingHandler {
         const rawType = payload.type || 'video+audio';
         const validTypes = ['video+audio', 'video-only', 'audio-only', 'none'];
         const type = validTypes.includes(rawType) ? rawType : 'video+audio';
-        const targetDeviceId = payload.targetDeviceId || undefined;
+        // The base sends 'all' (its default dropdown value) to mean "every kiosk".
+        // Treat 'all'/'' as no target — otherwise the fan-out below filters delivery
+        // to a device literally named 'all', which matches nobody, so the broadcast
+        // silently reaches no one.
+        const rawTarget = payload.targetDeviceId || undefined;
+        const targetDeviceId = rawTarget && rawTarget !== 'all' ? rawTarget : undefined;
         if (!sourceId) {
             this.sendError(transport, 'INVALID_PARAMS', 'sourceId required');
             return;
@@ -503,6 +508,7 @@ class SignalingHandler {
         }
         // Persist config
         this.config.updateDeviceConfig(targetDeviceId, { displayMode, audioMode });
+        const fullConfig = this.config.getDeviceConfig(targetDeviceId);
         // Push to target kiosk if connected
         const targetClient = this.channels.getClient(targetDeviceId);
         if (targetClient) {
@@ -511,10 +517,12 @@ class SignalingHandler {
                 payload: { displayMode, audioMode },
             });
         }
-        // Acknowledge to requesting base
+        // Acknowledge to requesting base with the FULL persisted config (not just
+        // the two changed fields) so the base's cache stays complete and consistent
+        // with the SET_CONFIG reply.
         this.send(transport, {
             type: 'CONFIG_RESULT',
-            payload: { targetDeviceId, ok: true, config: { displayMode, audioMode } },
+            payload: { targetDeviceId, ok: true, config: fullConfig || { displayMode, audioMode } },
         });
         console.log(`Display config set for ${targetDeviceId}: display=${displayMode}, audio=${audioMode}`);
     }

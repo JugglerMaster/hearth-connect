@@ -13,6 +13,12 @@
   <video id="cameraFeed" class="fullscreen-video" autoplay playsinline muted></video>
   <!-- Remote (talkback / announcement / facetalk) audio+video from the base station -->
   <audio id="remoteAudio" autoplay playsinline></audio>
+  <!-- Keep-awake fallback for iOS < 16.4 (no Wake Lock API): a tiny muted
+       looping inline video. Media playback prevents the screen from sleeping
+       where navigator.wakeLock is unavailable. Hidden 1px, no layout impact. -->
+  <video id="noSleepVideo" muted playsinline loop
+         style="position:fixed;width:1px;height:1px;opacity:0;pointer-events:none;left:0;bottom:0"
+         src="assets/nosleep.mp4"></video>
 
   <!-- Debug: base station → monitor audio/video (FaceTalk/broadcast) connection -->
   <div id="ftDebug" class="ft-debug">ft:idle</div>

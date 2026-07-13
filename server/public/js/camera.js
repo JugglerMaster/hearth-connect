@@ -49,6 +49,11 @@
       twoWayAudioEnabled: true,
       showFeed: false,
       keepAwake: true,
+      displayMode: 'blank',
+      audioMode: 'mute',
+      broadcastDisabled: false,
+      audioAlertEnabled: true,
+      audioAlertThresholdDb: -40,
     };
     // iOS ≤12 is slow — default its new devices to 480p.
     if (isLegacyIOS()) base.resolution = '480p';
@@ -169,10 +174,15 @@
   }
 
   function buildAudioConstraints(config) {
+    // Always enable echo cancellation / noise suppression / auto-gain. Without
+    // echoCancellation the kiosk's mic re-captures audio played out its own
+    // speaker (base talkback / FaceTalk), creating a delayed echo loop back to
+    // the base. These are the WebRTC defaults but must be set explicitly.
+    const proc = { echoCancellation: true, noiseSuppression: true, autoGainControl: true };
     if (config && config.audioDevice) {
-      return { audio: { deviceId: { exact: config.audioDevice } } };
+      return { audio: { deviceId: { exact: config.audioDevice }, ...proc } };
     }
-    return { audio: true };
+    return { audio: proc };
   }
 
   function showCameraError(err) {
@@ -235,15 +245,27 @@
   function unsubscribeFromBroadcast() {
     if (broadcastPeerId) {
       sig.unsubscribeBroadcast(broadcastPeerId);
-      rtc.closePeerConnection(broadcastPeerId);
+      // Broadcast PCs live in a separate map (broadcastPcs) and MUST be closed
+      // via closeBroadcastPeerConnection — closePeerConnection only touches the
+      // monitor-PC map, so the stale broadcast PC used to linger and the NEXT
+      // broadcast reused a dead connection ("worked once then stopped").
+      rtc.closeBroadcastPeerConnection(broadcastPeerId);
       if (broadcastStream) {
         broadcastStream.getTracks().forEach(t => t.stop());
         broadcastStream = null;
       }
+      // Only re-apply the display config if we had actually swapped the <video>
+      // to the base's FaceTalk feed. An AUDIO-ONLY announcement never touches
+      // the video element, so re-applying here would blank a live camera
+      // preview (displayMode 'blank' → srcObject=null) that the announcement
+      // never disturbed.
+      const wasShowingBaseVideo = baseVideoActive;
       baseVideoActive = false;
       broadcastAudioActive = false;
       broadcastPeerId = null;
-      applyDisplayConfig(currentConfig.displayMode || 'self', currentConfig.audioMode || 'mute');
+      if (wasShowingBaseVideo) {
+        applyDisplayConfig(currentConfig.displayMode || 'self', currentConfig.audioMode || 'mute');
+      }
       ftDbgState.base = null;
       ftDbgState.pc = '--';
       ftDbgState.ice = '--';
@@ -276,16 +298,24 @@
         }
         break;
       case 'blank':
-        // Same override: FaceTalk video wins over "blank".
+        // FaceTalk video wins over "blank".
         if (baseVideoActive && broadcastStream) {
           video.srcObject = broadcastStream;
           video.muted = true;
           video.play().catch(() => {});
           break;
         }
-        // Show black/placeholder
-        video.srcObject = null;
-        // Could show a placeholder div here
+        // Fall back to the local camera preview — consistent with startMedia(),
+        // which always shows the kiosk's own camera. Without this, ending a
+        // FaceTalk (which restores displayMode 'blank') left the screen blank
+        // instead of returning to the live camera preview it showed before.
+        if (rtc.localStream) {
+          video.srcObject = rtc.localStream;
+          video.muted = true;
+          video.play().catch(() => {});
+        } else {
+          video.srcObject = null;
+        }
         break;
       case 'base':
         // Show base station's broadcast stream. Keep the <video> element muted —
@@ -572,6 +602,15 @@
       navigator.mediaDevices.addEventListener('devicechange', reportCapabilities);
     }
 
+    // Re-acquire keep-awake when returning to the foreground: the native Wake
+    // Lock is auto-released on background, and the fallback video is paused by
+    // iOS — so re-request whenever the page becomes visible again.
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible' && currentConfig.keepAwake) {
+        requestWakeLock();
+      }
+    });
+
     sig.on('open', () => {
       connectionDot.className = 'status-dot reconnecting';
       if (debugMethod) debugMethod.textContent = 'method:' + (sig.useSSE ? 'SSE' : 'WS');
@@ -856,18 +895,42 @@
     currentConfig = Object.assign({}, currentConfig, defined);
     saveSettings(currentConfig);
 
+    // Re-apply keep-awake if the base toggled it (acquire or release live).
+    if (defined.keepAwake !== undefined) {
+      if (defined.keepAwake) requestWakeLock();
+      else releaseWakeLock();
+    }
+
     if (changed && rtc.localStream) {
       console.log('[kiosk] media config changed, restarting:', currentConfig);
       restartMediaWithConfig();
     }
   }
 
+  // Keep-awake: prefer the Wake Lock API (iOS 16.4+). On older iOS (e.g. 15.x)
+  // it's absent, so fall back to playing a tiny muted looping inline video —
+  // media playback keeps the screen alive. Gated on currentConfig.keepAwake.
   async function requestWakeLock() {
-    try {
-      if ('wakeLock' in navigator) {
+    if (!currentConfig.keepAwake) { releaseWakeLock(); return; }
+    // 1. Native Wake Lock API (modern iOS/Chrome).
+    if ('wakeLock' in navigator) {
+      try {
         wakeLock = await navigator.wakeLock.request('screen');
-      }
-    } catch {}
+        wakeLock.addEventListener?.('release', () => { wakeLock = null; });
+        return;
+      } catch { /* fall through to the video fallback */ }
+    }
+    // 2. Fallback: muted looping inline video (iOS < 16.4).
+    const nsv = document.getElementById('noSleepVideo');
+    if (nsv) {
+      try { await nsv.play(); } catch { /* needs a user gesture on some versions */ }
+    }
+  }
+
+  function releaseWakeLock() {
+    if (wakeLock) { try { wakeLock.release(); } catch {} wakeLock = null; }
+    const nsv = document.getElementById('noSleepVideo');
+    if (nsv) { try { nsv.pause(); } catch {} }
   }
 
   // iOS requires a user gesture before the camera permission prompt can appear.
