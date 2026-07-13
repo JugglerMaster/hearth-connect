@@ -57,8 +57,8 @@ cmd_start() {
     echo "[run] (continuing; the proxy will fail if usbmuxd is absent)"
   fi
 
-  # 2. ios-webkit-debug-proxy → localhost:9222.
-  start_service proxy "$PROXY_BIN" -c "localhost:${PROXY_PORT},:${PROXY_PORT}" -d
+  # 2. ios-webkit-debug-proxy → localhost:9222 (syntax: "*:PORT" = all devices).
+  start_service proxy "$PROXY_BIN" -c "*:${PROXY_PORT}" -d
 
   # 3. adapter → localhost:9000 (wraps 9222 as CDP).
   start_service adapter "$ADAPTER_BIN" --port "${ADAPTER_PORT}" --proxy-port "${PROXY_PORT}"

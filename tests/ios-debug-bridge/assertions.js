@@ -1,15 +1,16 @@
 'use strict';
 
 /**
- * DOM/state assertions that run inside iOS Safari via CDP.
+ * DOM/state assertions that run inside iOS Safari via raw CDP.
  * These deliberately avoid camera/mic (iOS blocks automation there).
  * They verify the page loaded, the client JS initialized, and key UI exists
  * — the same surface the Node-vm logic tests cover, but on a REAL device.
  *
  * Each assertion returns { name, pass, detail }.
+ *
+ * @param {import('./cdp').CDPPage} page
  */
-
-async function runAssertions(page, ctx) {
+async function runAssertions(page) {
   const out = [];
 
   // 1. Page actually loaded (title present).
@@ -26,34 +27,35 @@ async function runAssertions(page, ctx) {
       const scripts = Array.from(document.scripts).map((s) => s.src || '');
       return scripts.some((s) => s.includes('js/') && (s.includes('base-station') || s.includes('camera') || s.includes('viewer') || s.includes('signaling')));
     });
-    out.push({ name: 'client-script-loaded', pass: hasJs, detail: hasJs ? 'found page script' : 'no page script tag' });
+    out.push({ name: 'client-script-loaded', pass: !!hasJs, detail: hasJs ? 'found page script' : 'no page script tag' });
   } catch (e) {
     out.push({ name: 'client-script-loaded', pass: false, detail: e.message });
   }
 
-  // 3. For base-station: after a `welcome` message the broadcast button exists.
-  //    We can't force a server `welcome` from here, but we can check that the
-  //    device list container exists (the panel renders into it).
+  // 3. The device list container exists (base-station renders into #deviceList).
   try {
     const hasDevices = await page.evaluate(() => {
-      const el = document.getElementById('devices') || document.getElementById('deviceList') || document.getElementById('device-list');
+      const el = document.getElementById('deviceList') || document.getElementById('devices') || document.getElementById('device-list');
       return !!el;
     });
-    out.push({ name: 'device-panel-present', pass: hasDevices, detail: hasDevices ? 'panel container found' : 'no device panel container' });
+    out.push({ name: 'device-panel-present', pass: !!hasDevices, detail: hasDevices ? 'panel container found' : 'no device panel container' });
   } catch (e) {
     out.push({ name: 'device-panel-present', pass: false, detail: e.message });
   }
 
-  // 4. Signaling client reached the server (look for a known global or DOM hint).
-  //    Best-effort: check that a websocket-related element/state exists.
+  // 4. Signaling connection indicator state (real #connectionDot className).
   try {
-    const wsState = await page.evaluate(() => {
-      // The client stashes connection state in various places; probe a few.
-      if (window.__signaling && typeof window.__signaling === 'object') return 'window.__signaling present';
-      const status = document.getElementById('status') || document.getElementById('connStatus');
-      return status ? status.textContent : 'no status element';
+    const sig = await page.evaluate(() => {
+      const dot = document.getElementById('connectionDot');
+      const dotClass = dot ? dot.className : '(no #connectionDot)';
+      const hasGlobal = !!(window.__signaling && typeof window.__signaling === 'object');
+      return { dotClass, hasGlobal };
     });
-    out.push({ name: 'signaling-state-probe', pass: !!wsState, detail: String(wsState) });
+    out.push({
+      name: 'signaling-state-probe',
+      pass: !!sig,
+      detail: `connectionDot="${sig.dotClass}" window.__signaling=${sig.hasGlobal}`,
+    });
   } catch (e) {
     out.push({ name: 'signaling-state-probe', pass: false, detail: e.message });
   }
