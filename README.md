@@ -8,8 +8,7 @@ HTML5 video intercom / baby monitor system. Runs on iPads/iPhones via Safari. Se
 
 - **iOS 11+** (iOS 9.3.5 and earlier are **not supported** — WebRTC requires iOS 11+)
 - Safari (or any WebKit-based browser on iOS)
-- Self-hosted server with HTTPS (self-signed certs work; install CA profile on iOS)
-- Docker (recommended) or Node.js 20+
+- Self-hosted server running Node.js 20+ over HTTPS (self-signed certs work; install CA profile on iOS)
 
 ## Features
 
