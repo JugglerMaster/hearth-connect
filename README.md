@@ -103,6 +103,35 @@ cd server && npm install && npm run build && npm start
 
 Open `https://<host>:8090` on the base station iPad; on each camera iPad open the same URL and enter the room name.
 
+### Recommended: install as a systemd service
+
+For a host that boots the server unattended, the **recommended** install is the
+systemd unit. `setupservice.sh` resolves the git checkout, the `node` binary,
+and the service user at runtime (no hard-coded paths), builds the server, and
+writes a generated unit to `/etc/systemd/system/hearth-connect.service`:
+
+```bash
+# system service (runs from your git checkout; `git pull` + rebuild to update)
+sudo ./setupservice.sh
+
+# or as a per-user unit (no root needed for start/stop):
+./setupservice.sh --user
+
+# options:
+#   --port 8090          SERVER_PORT for the unit
+#   --node /path/to/node override the node binary
+#   --no-build           skip `npm run build`
+```
+
+After a code update, rebuild and restart:
+
+```bash
+cd server && npm install && npm run build && sudo systemctl restart hearth-connect
+```
+
+> The Raspberry Pi agent installs the same way via
+> `deploy/pi-agent/install-systemd.sh`.
+
 ## Deployment
 
 ```bash

@@ -10,3 +10,6 @@ deploy/certs/
 data/
 updates.txt
 
+# Python bytecode (pi-agent + tooling)
+__pycache__/
+*.pyc
