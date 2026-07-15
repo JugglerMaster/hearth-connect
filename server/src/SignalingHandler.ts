@@ -452,8 +452,11 @@ export class SignalingHandler {
       return;
     }
 
-    if (client.deviceType !== 'base') {
-      this.sendError(transport, 'NOT_ALLOWED', 'Only base stations can broadcast');
+    // Base stations AND kiosks (monitors) may broadcast — a monitor can push a
+    // voice message to every other device, and a second base station can be
+    // heard by the first.
+    if (client.deviceType !== 'base' && client.deviceType !== 'kiosk') {
+      this.sendError(transport, 'NOT_ALLOWED', 'Only base stations and kiosks can broadcast');
       return;
     }
 
@@ -482,8 +485,8 @@ export class SignalingHandler {
 
     // Carry the broadcast target (if any) on the source so it can be enforced
     // at fan-out time and so late-joiners / reconnects respect it too.
-    (source as any).isBroadcast = true;
-    (source as any).targetDeviceId = targetDeviceId || undefined;
+    source.isBroadcast = true;
+    source.targetDeviceId = targetDeviceId || undefined;
 
     // Notify the targeted kiosk only, or every client when broadcasting to all.
     const targets: ConnectedClient[] = targetDeviceId
@@ -539,8 +542,8 @@ export class SignalingHandler {
       return;
     }
 
-    if (client.deviceType !== 'kiosk') {
-      this.sendError(transport, 'NOT_ALLOWED', 'Only kiosks can subscribe to broadcasts');
+    if (client.deviceType !== 'kiosk' && client.deviceType !== 'base') {
+      this.sendError(transport, 'NOT_ALLOWED', 'Only kiosks and base stations can subscribe to broadcasts');
       return;
     }
 
@@ -556,8 +559,10 @@ export class SignalingHandler {
     // Authoritative guard: a kiosk with system broadcasts disabled must not
     // receive "Broadcast Message" announcements, even if its client ignores
     // the source. Re-check the stored device config (which the base sets).
+    // Base stations are never subject to this opt-out (they must hear each
+    // other's broadcasts).
     const subscriber = this.config.getDevice(client.deviceId);
-    if (subscriber && subscriber.config && subscriber.config.broadcastDisabled === true) {
+    if (client.deviceType === 'kiosk' && subscriber && subscriber.config && subscriber.config.broadcastDisabled === true) {
       console.log(`Kiosk ${client.deviceId} has broadcasts disabled — denying subscribe`);
       return;
     }

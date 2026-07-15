@@ -307,6 +307,25 @@ input[type="text"]:focus {
   white-space: nowrap;
 }
 
+/* Monitor (kiosk) broadcast button — pinned just above the overlay at the
+   bottom of the screen so it's reachable while the camera is live. */
+.monitor-broadcast-btn {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: 132px;
+  z-index: 5;
+  width: min(80vw, 360px);
+  padding: 16px;
+  font-size: 17px;
+  font-weight: 700;
+  border-radius: 14px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+}
+@media (max-height: 480px) {
+  .monitor-broadcast-btn { bottom: 96px; padding: 12px; font-size: 15px; }
+}
+
 /* Base→monitor A/V (FaceTalk/broadcast) connection debug — pinned to the top
    of the video area on both the base station and the monitor pages. */
 .ft-debug {

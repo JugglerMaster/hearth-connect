@@ -31,6 +31,18 @@
   let broadcastAudioActive = false; // base is sending a "Broadcast Message" announcement
   let baseVideoActive = false; // Base is pushing its camera to us (FaceTalk/broadcast)
 
+  // ─── Monitor (kiosk) broadcast ───────────────────────────
+  // A monitor can push a voice message to every device (all bases + kiosks).
+  // Press-and-hold: the mic is only captured while the button is held.
+  let kioskBroadcasting = false;
+  let kioskBroadcastStream = null;   // audio-only MediaStream for the announcement
+  let kioskBroadcastSourceId = null; // broadcast source id owned by this kiosk
+  let kioskBroadcastSubscribers = new Set(); // deviceIds receiving our broadcast
+  let kioskAnnounceHolding = false;
+  let kioskAnnounceGen = 0;
+  let kioskCurrentAnnounceGen = 0;
+  let kioskAnnounceWindowBound = false;
+
   // ─── Persistent device settings (localStorage) ──────────
   // Each kiosk remembers the last settings it had, restored on load even
   // before the server connection is established. Base-station changes that
@@ -271,6 +283,128 @@
       ftDbgState.ice = '--';
       ftDbgState.tracks = '--';
       renderFtDebug();
+    }
+  }
+
+  // ─── Monitor (kiosk) broadcast ───────────────────────────
+
+  function kioskBroadcastButton() {
+    return document.getElementById('monitorBroadcastBtn');
+  }
+
+  // Acquire an audio-only stream for the monitor's "Broadcast" button. Kept
+  // separate from the camera feed (rtc.localStream) so only the mic is sent —
+  // no camera — and so the two never fight over the same tracks.
+  async function ensureKioskBroadcastStream() {
+    if (kioskBroadcastStream) return kioskBroadcastStream;
+    try {
+      kioskBroadcastStream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      });
+      console.log('[kiosk] broadcast mic acquired');
+    } catch (err) {
+      console.error('[kiosk] ensureKioskBroadcastStream failed:', err);
+      kioskBroadcastStream = null;
+    }
+    return kioskBroadcastStream;
+  }
+
+  // Start an audio-only broadcast to ALL devices (every base + kiosk). The
+  // server fans it out; each receiver auto-plays the announcement. The
+  // holding/gen guards let a release that arrives during the async getUserMedia
+  // await cancel a broadcast that hasn't started yet (press-and-hold model).
+  async function startKioskBroadcast() {
+    if (!kioskBroadcastStream) {
+      await ensureKioskBroadcastStream();
+    }
+    if (!kioskAnnounceHolding || kioskAnnounceGen !== kioskCurrentAnnounceGen) {
+      if (kioskBroadcastStream) {
+        kioskBroadcastStream.getTracks().forEach(t => t.stop());
+        kioskBroadcastStream = null;
+      }
+      return;
+    }
+    if (!kioskBroadcastStream) {
+      showToast('Microphone unavailable for broadcast');
+      return;
+    }
+
+    kioskBroadcastSourceId = 'kiosk-announce-' + deviceId + '-' + Date.now();
+    kioskBroadcasting = true;
+
+    // Publish an AUDIO-ONLY broadcast source (no camera). 'all' = every device.
+    sig.broadcastSource(kioskBroadcastSourceId, sig.deviceLabel || 'Monitor', 'audio-only', 'all');
+
+    const btn = kioskBroadcastButton();
+    if (btn) {
+      btn.classList.remove('btn-primary');
+      btn.classList.add('btn-danger');
+      btn.textContent = '⏹ Broadcasting… release to stop';
+    }
+    showToast('Broadcasting to all devices');
+    console.log('[kiosk] broadcast started:', kioskBroadcastSourceId);
+  }
+
+  function stopKioskBroadcast() {
+    kioskAnnounceHolding = false;
+    kioskAnnounceGen++;            // invalidate any in-flight startKioskBroadcast
+    kioskCurrentAnnounceGen = kioskAnnounceGen;
+    kioskBroadcasting = false;
+    if (kioskBroadcastSourceId) {
+      sig.unbroadcastSource(kioskBroadcastSourceId);
+      kioskBroadcastSourceId = null;
+    }
+    // Tear down the per-device broadcast peer connections we opened.
+    kioskBroadcastSubscribers.forEach(subId => {
+      rtc.closeBroadcastPeerConnection(subId);
+    });
+    kioskBroadcastSubscribers.clear();
+    if (kioskBroadcastStream) {
+      kioskBroadcastStream.getTracks().forEach(t => t.stop());
+      kioskBroadcastStream = null;
+    }
+    const btn = kioskBroadcastButton();
+    if (btn) {
+      btn.classList.remove('btn-danger');
+      btn.classList.add('btn-primary');
+      btn.textContent = '📢 Hold to Broadcast';
+    }
+    showToast('Broadcast stopped');
+    console.log('[kiosk] broadcast stopped');
+  }
+
+  // Wire the press-and-hold broadcast button. Start on press, stop on release.
+  function attachKioskBroadcastButton() {
+    const btn = kioskBroadcastButton();
+    if (!btn) return;
+
+    const startHold = (e) => {
+      if (e && e.button != null && e.button !== 0) return; // ignore right-click
+      if (e && e.cancelable) e.preventDefault();
+      if (kioskAnnounceHolding) return;
+      kioskAnnounceHolding = true;
+      kioskAnnounceGen++;
+      kioskCurrentAnnounceGen = kioskAnnounceGen;
+      startKioskBroadcast();
+    };
+    const endHold = (e) => {
+      if (!kioskAnnounceHolding) return;
+      if (e && e.cancelable) e.preventDefault();
+      stopKioskBroadcast();
+    };
+
+    btn.addEventListener('mousedown', startHold);
+    btn.addEventListener('touchstart', startHold, { passive: false });
+    btn.addEventListener('mouseup', endHold);
+    btn.addEventListener('mouseleave', endHold);
+    btn.addEventListener('touchend', endHold);
+    btn.addEventListener('touchcancel', endHold);
+
+    // Release anywhere still stops the broadcast (e.g. panel re-render mid-press).
+    if (!kioskAnnounceWindowBound) {
+      kioskAnnounceWindowBound = true;
+      window.addEventListener('mouseup', endHold);
+      window.addEventListener('touchend', endHold);
     }
   }
 
@@ -597,6 +731,10 @@
 
     if (enableCamBtn) enableCamBtn.addEventListener('click', enableCamera);
 
+    // Monitor (kiosk) broadcast: press-and-hold to push a voice message to all
+    // devices. The button is static in the DOM, so bind its listeners up front.
+    attachKioskBroadcastButton();
+
     // Legacy iOS (≤12) must surface the camera prompt from a user gesture,
     // so show the tap-to-enable overlay up front. Modern iOS auto-starts.
     if (isLegacyIOS() && enableCamOverlay) {
@@ -774,6 +912,9 @@
     });
 
     sig.on('subscriberJoined', (data) => {
+      // Broadcast subscriptions are handled by the dedicated broadcast
+      // subscriberJoined handler below (we are the publisher in that case).
+      if (data.isBroadcast) return;
       subscriberCount++;
       debugSubs.textContent = 'subs:' + subscriberCount;
       logEvent('subJoined:' + data.subscriberId.slice(-4));
@@ -788,6 +929,12 @@
     });
 
     sig.on('subscriberLeft', (data) => {
+      if (data.isBroadcast) {
+        // A receiver left our broadcast — close its broadcast PC.
+        kioskBroadcastSubscribers.delete(data.subscriberId);
+        rtc.closeBroadcastPeerConnection(data.subscriberId);
+        return;
+      }
       subscriberCount = Math.max(0, subscriberCount - 1);
       debugSubs.textContent = 'subs:' + subscriberCount;
       console.log('[kiosk] subscriberLeft from', data.subscriberId, 'total:', subscriberCount);
@@ -806,30 +953,24 @@
       renderFtDebug();
     });
 
-    // Handle broadcast subscriber joined (kiosk receiving base's broadcast)
+    // Handle broadcast subscriber joined. This event means SOMEONE subscribed
+    // to a broadcast we are PUBLISHING (we are the broadcaster). Create a
+    // sending broadcast PC and push our audio track. The receive side (us
+    // listening to another device's broadcast) is driven by the incoming
+    // OFFER, not by this event — so nothing to do here unless we are actively
+    // broadcasting.
     sig.on('subscriberJoined', (data) => {
-      if (data.isBroadcast) {
-        // Base station is sending its broadcast to us
-        console.log('[kiosk] broadcast subscriberJoined from', data.subscriberId);
-        broadcastPeerId = data.subscriberId;
-        // Create a recv broadcast peer connection to receive base's broadcast.
-        // (handleOffer will reuse this same PC when the offer arrives.)
-        rtc.createBroadcastPeerConnection(broadcastPeerId, true);
-        ftDbgState.base = broadcastPeerId;
-        ftDbgState.pc = 'new';
-        renderFtDebug();
-      } else {
-        subscriberCount++;
-        debugSubs.textContent = 'subs:' + subscriberCount;
-        logEvent('subJoined:' + data.subscriberId.slice(-4));
-        const peerId = data.subscriberId;
-        subscribers.add(peerId);
-        if (!rtc.localStream) {
-          logEvent('NO-LOCALSTREAM');
-          console.log('[kiosk] WARN: no localStream for', peerId, '- will offer once media starts');
-          return;
-        }
-        offerToSubscriber(peerId);
+      if (!data.isBroadcast) return;
+      if (!kioskBroadcastSourceId) return;
+      console.log('[kiosk] broadcast subscriber joined:', data.subscriberId);
+      kioskBroadcastSubscribers.add(data.subscriberId);
+      // autoAddLocal=false: don't send the monitor's camera feed, only the
+      // audio-only announcement stream we captured for the broadcast.
+      const pc = rtc.createBroadcastPeerConnection(data.subscriberId, false, false);
+      if (kioskBroadcastStream) {
+        kioskBroadcastStream.getTracks().forEach(t => {
+          if (!pc.getSenders().some(s => s.track === t)) pc.addTrack(t, kioskBroadcastStream);
+        });
       }
     });
 

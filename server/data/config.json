@@ -151,13 +151,14 @@
       "label": "Base Station",
       "roomId": "pc",
       "createdAt": 1783518604146,
-      "lastSeenAt": 1783716937235,
+      "lastSeenAt": 1784046913957,
       "config": {
         "label": "",
         "visibleSources": [],
         "audioFocusMode": "manual",
         "gridLayout": "1x1",
-        "idleTimeout": 0
+        "idleTimeout": 0,
+        "isBroadcasting": false
       }
     },
     "base-1783518640110-4z4c": {
@@ -463,13 +464,14 @@
       "label": "Base Station",
       "roomId": "default",
       "createdAt": 1783567326633,
-      "lastSeenAt": 1783819344548,
+      "lastSeenAt": 1784135377160,
       "config": {
         "label": "",
         "visibleSources": [],
         "audioFocusMode": "manual",
         "gridLayout": "1x1",
-        "idleTimeout": 0
+        "idleTimeout": 0,
+        "isBroadcasting": false
       }
     },
     "test-1783567620531-lew1": {
@@ -799,9 +801,9 @@
       "label": "Kiosk",
       "roomId": "default",
       "createdAt": 1783819347502,
-      "lastSeenAt": 1783819347502,
+      "lastSeenAt": 1784072206903,
       "config": {
-        "label": "",
+        "label": "Kiosk",
         "camera": "front",
         "resolution": "720p",
         "frameRate": 30,
@@ -811,7 +813,14 @@
         "speakerVolume": 0.5,
         "twoWayAudioEnabled": true,
         "showFeed": false,
-        "keepAwake": true
+        "keepAwake": true,
+        "broadcastDisabled": false,
+        "videoDevice": "A956C16F91F7B701BC1EE6ECC6907C74937E4F37",
+        "audioDevice": "3514D93F7B79CC1199995693A26CDD9B3895C20B",
+        "audioAlertEnabled": true,
+        "audioAlertThresholdDb": -40,
+        "displayMode": "blank",
+        "audioMode": "mute"
       }
     },
     "kiosk-1783955125295-cabw": {
@@ -914,6 +923,22 @@
         "audioFocusMode": "manual",
         "gridLayout": "1x1",
         "idleTimeout": 0
+      }
+    },
+    "base-1784056720738-ol3k": {
+      "id": "base-1784056720738-ol3k",
+      "type": "base",
+      "label": "Base Station",
+      "roomId": "default",
+      "createdAt": 1784056720792,
+      "lastSeenAt": 1784078008766,
+      "config": {
+        "label": "",
+        "visibleSources": [],
+        "audioFocusMode": "manual",
+        "gridLayout": "1x1",
+        "idleTimeout": 0,
+        "isBroadcasting": false
       }
     }
   }

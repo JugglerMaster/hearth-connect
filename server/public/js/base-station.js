@@ -75,6 +75,7 @@
   const monitorPlaceholder = document.getElementById('monitorPlaceholder');
   const stopMonitorBtn = document.getElementById('stopMonitorBtn');
   const monitorVolume = document.getElementById('monitorVolume');
+  const broadcastAudio = document.getElementById('broadcastAudio');
   const monitorMuteBtn = document.getElementById('monitorMuteBtn');
   const monitorTalkBtn = document.getElementById('monitorTalkBtn');
   const monitorFaceTalkBtn = document.getElementById('monitorFaceTalkBtn');
@@ -161,6 +162,8 @@
       // 0–100% → 0.0–1.0 (values above 100 clamp to full volume).
       if (monitorVideo) monitorVideo.volume = Math.min(1, v / 100);
     }
+    // Keep the incoming-broadcast audio element in step with the volume slider.
+    if (broadcastAudio) broadcastAudio.volume = Math.min(1, v / 100);
   }
 
   // ─── Two-way talkback (base → kiosk reverse audio) ─────
@@ -326,6 +329,7 @@
     } else {
       applyVolume(mutedVolume);
     }
+    if (broadcastAudio) broadcastAudio.muted = monitorMuted;
     renderControlButtons();
   }
 
@@ -1435,6 +1439,23 @@
   rtc.onRemoteTrack = (peerId, stream, track) => {
     streams[peerId] = stream;
     lastActivity[peerId] = Date.now();
+    // Incoming broadcast audio from another base station (or a monitor) — play
+    // it through the dedicated broadcast audio element so a second base can
+    // hear broadcasts from the first. This is separate from the live monitor
+    // feed, which always renders the actively-watched kiosk.
+    if (peerId.startsWith('broadcast-')) {
+      const pubId = peerId.replace(/^broadcast-/, '');
+      const pubLabel = (devices.find(d => d.id === pubId) || {}).label || 'another device';
+      if (broadcastAudio) {
+        broadcastAudio.srcObject = stream;
+        broadcastAudio.volume = Math.min(1, (parseFloat(monitorVolume.value) || 100) / 100);
+        broadcastAudio.muted = monitorMuted;
+        broadcastAudio.play().catch(() => {});
+      }
+      showToast('📢 Broadcast from ' + pubLabel);
+      console.log('[base] playing broadcast audio from', pubId);
+      return;
+    }
     if (peerId === viewingId) {
       recoverAttempts = 0; // media is flowing again — reset the recovery backoff
       if (recovering) {
@@ -1521,10 +1542,11 @@
         showToast('Source online: ' + (source.label || source.id));
       }
       
-      // Auto-subscribe to broadcast sources from other bases
+      // Auto-subscribe to broadcast sources from other bases (and kiosks) so a
+      // second base station can hear broadcasts from the first.
       if (source.isBroadcast && source.publisherId !== deviceId) {
         console.log('[base] Broadcast source added from', source.publisherId, '- subscribing');
-        sig.subscribeSource(source.publisherId);
+        sig.subscribeBroadcast(source.publisherId);
       }
       
       renderDevices();
@@ -1537,6 +1559,13 @@
       delete streams[data.sourceId];
       delete streams[pubId];
       subscribed.delete(pubId);
+      // Tear down an incoming broadcast PC + audio element if we were receiving
+      // a broadcast from this device (e.g. another base station's announcement).
+      if (removed && removed.isBroadcast) {
+        rtc.closeBroadcastPeerConnection(pubId);
+        delete streams['broadcast-' + pubId];
+        if (broadcastAudio) broadcastAudio.srcObject = null;
+      }
       if (pubId === viewingId) {
         rtc.closePeerConnection(viewingId);
         if (audioSourceNode) {

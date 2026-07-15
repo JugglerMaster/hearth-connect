@@ -136,6 +136,10 @@ export interface MediaSourceInfo {
   label: string;
   type: SourceType;
   status: 'live' | 'idle';
+  // Marks a source as a broadcast (e.g. a base-station "Broadcast Message" or a
+  // monitor's voice announcement) so subscribers know to treat it as a broadcast
+  // (auto-subscribe via SUBSCRIBE_BROADCAST, auto-play audio, etc.).
+  isBroadcast?: boolean;
   // When set, the broadcast is targeted at a single kiosk; the server only
   // delivers SOURCE_ADDED to that device. Undefined/'' means all devices.
   targetDeviceId?: string;

@@ -32,7 +32,7 @@ This is a **kiosk client deployment** — the Pi acts as a camera/mic publisher 
 
 ```bash
 sudo apt-get install -y git
-git clone <your-repo> hearth-connect
+git clone https://github.com/JugglerMaster/hearth-connect hearth-connect
 cd hearth-connect/deploy/pi-agent
 chmod +x install.sh
 ./install.sh
@@ -137,3 +137,12 @@ hold "Broadcast", and a base-station broadcast announcement plays on the Pi.
 - **RAM on 1GB Pis**: the dominant cost is GStreamer + the encoder, not the Python glue
   (~50-100MB). Use the Pi hardware encoder, keep `RESOLUTION` at `720p` or below, and lower
   `MAX_SUBSCRIBERS` if many viewers watch at once.
+
+## Future plans
+
+- **Physical push-to-talk button**: wire a GPIO button so the Pi can send audio (an
+  announcement) directly, without the base station. Likely implemented as a **broadcast to
+  all** subscribers in the room — the agent captures from the mic and publishes a broadcast
+  source that every other device in the room receives and plays. This needs a new agent
+  message (e.g. `START_BROADCAST`/`STOP_BROADCAST` over the existing monitor/broadcast peer
+  connection) plus debounce/hold handling on the GPIO edge.
