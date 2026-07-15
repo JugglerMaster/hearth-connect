@@ -36,6 +36,50 @@ adb shell am start -n com.hearthconnect/.MainActivity
 - USB: `adb devices` then install.
 - Or WiFi: `adb tcpip 5555` then `adb connect <tab-ip>:5555`.
 
+## Local emulator testing (no tablet needed)
+Useful for quick iteration when the Tab A7 isn't plugged in. Pick the image that
+matches your **host** CPU:
+- x86_64 Linux host → `system-images;android-34;default;x86_64` (needs KVM)
+- ARM host (Apple Silicon / ARM Linux) → `system-images;android-34;default;arm64-v8a`
+
+```bash
+# 1. install emulator binary + image (host arch below is x86_64; swap for arm64-v8a on ARM)
+sdkmanager "emulator" "system-images;android-34;default;x86_64" "platforms;android-34" "build-tools;34.0.0"
+sdkmanager --licenses
+
+# 2. enable KVM on Linux (required for usable speed); log out/in after
+sudo apt install qemu-kvm
+sudo usermod -aG kvm $USER
+
+# 3. create + launch an AVD
+avdmanager create avd -n test34 -k "system-images;android-34;default;x86_64"
+emulator -avd test34 &
+
+# 4. build + install into the emulator (same as a device)
+./gradlew assembleDebug
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+adb shell am start -n com.hearthconnect/.MainActivity
+```
+Notes:
+- Native `google-webrtc` ships an `x86_64` lib, so WebRTC loads in the emulator;
+  the camera is **virtual** (fake feed) — good for code paths, not real video.
+- The app also runs unchanged on **Android 12 (API 31)**; our `PendingIntent` is
+  already `FLAG_IMMUTABLE` and FGS types cover it.
+
+## adb cheat-sheet
+```bash
+adb devices                     # list connected devices / emulators
+adb tcpip 5555                  # switch a USB device to WiFi-adb (do once over USB)
+adb connect 192.168.x.x:5555    # connect over WiFi (Tab A7 LAN IP)
+adb forward tcp:8090 tcp:8090   # host:8090 -> device/emulator :8090 (reach the hub server)
+adb reverse tcp:8090 tcp:8090   # device -> host (if the device needs to hit a host server)
+adb install -r app-debug.apk    # (re)install
+adb shell am start -n com.hearthconnect/.MainActivity
+adb logcat | grep HearthConnect # watch app logs
+```
+After `adb forward tcp:8090 tcp:8090`, open `http://localhost:8090` in a browser
+on the host to hit the embedded signaling server.
+
 ## Next steps (not yet implemented)
 - Port room/device logic from `server/src/SignalingHandler.ts` into `SignalingServer`.
 - Camera capture (`Camera2Capturer`) + `SurfaceViewRenderer` in `WebRTCManager`.
