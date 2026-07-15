@@ -154,3 +154,18 @@ Key things to assert for press-and-hold:
 This caught the stuck-on-broadcast race and confirmed release-anywhere handling.
 It does NOT exercise real WebRTC media flow, iOS Safari specifics, or the live
 kiosk receive side — those still need an on-device check.
+
+### Pi agent (Python)
+
+`deploy/pi-agent/pi-agent.py` is a native GStreamer + WebRTC client (no browser).
+It imports GStreamer/websockets **lazily**, so its pure logic is unit-testable
+without the native stack. Use the same zero-dep philosophy:
+
+- `deploy/pi-agent/test_pi_agent.py` — stdlib `unittest` over the pure helpers
+  (`parse_v4l2_devices`, `parse_arecord_devices`, `source_type`, `audio_peak_decision`,
+  `monitor_pipeline_str`, `broadcast_pipeline_str`). Loads the hyphenated module via
+  `importlib` and runs with `python3 -m unittest test_pi_agent.py` (no GStreamer needed).
+- `deploy/pi-agent/e2e_smoke.py` — spins the real agent (`TEST_SOURCE=1` uses
+  `videotestsrc`/`audiotestsrc` so no camera/mic is required) against a live server and
+  asserts it publishes a source + produces a WebRTC OFFER. Auto-skips when GStreamer /
+  `websockets` / the server are absent, so it's safe in CI. Run on a Pi for the real check.

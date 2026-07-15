@@ -30,14 +30,10 @@ import string
 import subprocess
 import time
 
-import gi
-
-gi.require_version('Gst', '1.0')
-gi.require_version('GstWebRTC', '1.0')
-gi.require_version('GstSdp', '1.0')
-
-from gi.repository import Gst, GstWebRTC, GstSdp, GLib
-import websockets
+# GStreamer and `websockets` are imported lazily inside _load_gst() / run() so
+# this module can be imported (and unit-tested) on machines without the native
+# stack installed.
+Gst = GstWebRTC = GstSdp = GLib = None
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 log = logging.getLogger('hearth-pi-agent')
@@ -51,6 +47,11 @@ VIDEO_DEVICE = os.environ.get('VIDEO_DEVICE', '')
 AUDIO_DEVICE = os.environ.get('AUDIO_DEVICE', '')
 RESOLUTION = os.environ.get('RESOLUTION', '720p')
 FRAMERATE = int(os.environ.get('FRAMERATE', '24'))
+
+# Test-source mode: substitute videotestsrc/audiotestsrc for v4l2src/alsasrc so
+# the agent runs on a headless box with no real camera/mic (used by the e2e
+# smoke test, plan 11). Set TEST_SOURCE=1 to enable.
+TEST_SOURCE = os.environ.get('TEST_SOURCE') == '1'
 
 # Talkback / broadcast receive sink configuration.
 SPEAKER_DEVICE = os.environ.get('SPEAKER_DEVICE', '')
@@ -71,6 +72,127 @@ def rand_id(n=8):
 
 def gst_element_exists(name):
     return Gst.ElementFactory.find(name) is not None
+
+
+def _load_gst():
+    """Lazily import GStreamer + WebRTC bindings and init GStreamer.
+
+    Kept out of the module top level so pi-agent.py can be imported (and unit
+    tested) without the native stack installed.
+    """
+    global Gst, GstWebRTC, GstSdp, GLib
+    if Gst is not None:
+        return
+    import gi
+    gi.require_version('Gst', '1.0')
+    gi.require_version('GstWebRTC', '1.0')
+    gi.require_version('GstSdp', '1.0')
+    from gi.repository import Gst as _Gst, GstWebRTC as _GstWebRTC, \
+        GstSdp as _GstSdp, GLib as _GLib
+    Gst, GstWebRTC, GstSdp, GLib = _Gst, _GstWebRTC, _GstSdp, _GLib
+    Gst.init(None)
+
+
+def parse_v4l2_devices(stdout):
+    """Parse `v4l2-ctl --list-devices` output into [{id,label}] (plan 06 §A)."""
+    devices = []
+    cur = None
+    for line in (stdout or '').splitlines():
+        if line and not line.startswith(('\t', ' ')) and ':' in line:
+            cur = line.strip()
+        elif '/dev/video' in line:
+            dev = line.strip()
+            devices.append({'id': dev, 'label': (cur or dev)})
+    return devices
+
+
+def parse_arecord_devices(stdout):
+    """Parse `arecord -l` output into [{id,label}] (plan 06 §A)."""
+    devices = []
+    for line in (stdout or '').splitlines():
+        if line.startswith('card '):
+            parts = line.split(':')
+            name = parts[1].strip() if len(parts) > 1 else line
+            card = line.split()[1].rstrip(':')
+            devices.append({'id': 'hw:' + card + ',0', 'label': name})
+    return devices
+
+
+def source_type(has_video, has_audio):
+    """Map device availability to the protocol SourceType (plan 01 §7)."""
+    if has_video and has_audio:
+        return 'video+audio'
+    if has_video:
+        return 'video-only'
+    if has_audio:
+        return 'audio-only'
+    return 'none'
+
+
+def audio_peak_decision(db, state, cfg, now):
+    """Pure audio-threshold + hysteresis decision (plan 07 §C/§D).
+
+    state: mutable dict with 'armed' (bool) and 'last_ts' (float, seconds).
+    cfg:   dict with audioAlertEnabled / audioAlertThresholdDb /
+           audioAlertHysteresisDb.
+    Returns (emit_peak, throttled_meter, state). emit_peak / throttled_meter
+    are AUDIO_PEAK payloads to send (or None). State is mutated in place and
+    also returned.
+    """
+    enabled = cfg.get('audioAlertEnabled', True)
+    threshold = cfg.get('audioAlertThresholdDb', -40)
+    hyst = cfg.get('audioAlertHysteresisDb', 6)
+    emit_peak = None
+    if enabled:
+        if db > threshold and state['armed']:
+            emit_peak = {'peak': True, 'levelDb': db, 'ts': int(now * 1000)}
+            state['armed'] = False
+        elif db < threshold - hyst:
+            state['armed'] = True
+    throttled_meter = None
+    if now - state['last_ts'] > 1.0:
+        state['last_ts'] = now
+        throttled_meter = {'peak': False, 'levelDb': db, 'ts': int(now * 1000)}
+    return emit_peak, throttled_meter, state
+
+
+def monitor_pipeline_str(has_video, has_audio, width, height, framerate,
+                         video_device='', audio_device='', enc='x264enc',
+                         stun=STUN, test_source=False):
+    """Build the monitor (sendrecv) GStreamer launch string WITHOUT parsing it.
+
+    Kept pure so it can be unit-tested without GStreamer. test_source swaps in
+    videotestsrc/audiotestsrc so the agent runs on a headless box with no real
+    camera/mic (used by the e2e smoke test, plan 11).
+    """
+    parts = ['webrtcbin name=wb stun-server=' + stun]
+    if has_video:
+        if test_source:
+            src = 'videotestsrc'
+            dev = ''
+        else:
+            src = 'v4l2src'
+            dev = ('device=' + video_device) if video_device else ''
+        parts.append(
+            '{src} {dev} ! videoconvert ! video/x-raw,format=I420,width={w},height={h},framerate={fr}/1 '
+            '! {enc} tune=zerolatency key-int-max=30 ! rtph264pay config-interval=-1 ! queue ! wb'.format(
+                src=src, dev=dev, w=width, h=height, fr=framerate, enc=enc))
+    if has_audio:
+        if test_source:
+            src = 'audiotestsrc'
+            dev = ''
+        else:
+            src = 'alsasrc'
+            dev = ('device=' + audio_device) if audio_device else ''
+        parts.append(
+            '{src} {dev} ! audioconvert ! audioresample ! level ! opusenc ! rtpopuspay ! queue ! wb'.format(
+                src=src, dev=dev))
+    return ' '.join(parts)
+
+
+def broadcast_pipeline_str(stun=STUN):
+    """Build the broadcast (recvonly) webrtcbin launch string (pure)."""
+    return 'webrtcbin name=wb stun-server=' + stun
 
 
 def audio_sink_str():
@@ -124,25 +246,17 @@ class MonitorSession:
 
     def build(self):
         width, height = DIMS.get(RESOLUTION, DIMS['720p'])
-        parts = ['webrtcbin name=wb stun-server=' + STUN]
         cfg_video = self.agent.config.get('videoDevice') or VIDEO_DEVICE
         cfg_audio = self.agent.config.get('audioDevice') or AUDIO_DEVICE
-        if self.has_video:
-            enc = 'v4l2h264enc' if gst_element_exists('v4l2h264enc') else 'x264enc'
-            if enc == 'x264enc':
-                log.warning('hardware H.264 encoder (v4l2h264enc) not found — '
-                            'falling back to software x264enc (higher RAM/CPU on Pi)')
-            dev = ('device=' + cfg_video) if cfg_video else ''
-            parts.append(
-                'v4l2src {dev} ! videoconvert ! video/x-raw,format=I420,width={w},height={h},framerate={fr}/1 '
-                '! {enc} tune=zerolatency key-int-max=30 ! rtph264pay config-interval=-1 ! queue ! wb'.format(
-                    dev=dev, w=width, h=height, fr=FRAMERATE, enc=enc))
-        if self.has_audio:
-            dev = ('device=' + cfg_audio) if cfg_audio else ''
-            parts.append(
-                'alsasrc {dev} ! audioconvert ! audioresample ! level ! opusenc ! rtpopuspay ! queue ! wb'.format(dev=dev))
-        pipeline_str = ' '.join(parts)
+        enc = 'v4l2h264enc' if gst_element_exists('v4l2h264enc') else 'x264enc'
+        if enc == 'x264enc':
+            log.warning('hardware H.264 encoder (v4l2h264enc) not found — '
+                        'falling back to software x264enc (higher RAM/CPU on Pi)')
+        pipeline_str = monitor_pipeline_str(
+            self.has_video, self.has_audio, width, height, FRAMERATE,
+            cfg_video, cfg_audio, enc, STUN, TEST_SOURCE)
         log.info('monitor session %s pipeline: %s', self.subscriber_id, pipeline_str)
+        self.pipeline_str = pipeline_str
         self.pipeline = Gst.parse_launch(pipeline_str)
         self.webrtc = self.pipeline.get_by_name('wb')
         self.webrtc.connect('on-negotiation-needed', self.on_negotiation_needed)
@@ -262,7 +376,8 @@ class BroadcastSession:
 
     def build(self):
         log.info('broadcast session from %s', self.publisher_id)
-        self.pipeline = Gst.parse_launch('webrtcbin name=wb stun-server=' + STUN)
+        self.pipeline_str = broadcast_pipeline_str(STUN)
+        self.pipeline = Gst.parse_launch(self.pipeline_str)
         self.webrtc = self.pipeline.get_by_name('wb')
         self.webrtc.connect('on-negotiation-needed', self.on_negotiation_needed)
         self.webrtc.connect('on-ice-candidate', self.on_ice_candidate)
@@ -388,42 +503,28 @@ class Agent:
 
     def on_audio_level(self, session, db):
         now = time.time()
-        enabled = self.config.get('audioAlertEnabled', True)
-        threshold = self.config.get('audioAlertThresholdDb', -40)
-        hyst = self.config.get('audioAlertHysteresisDb', 6)
-        if enabled:
-            if db > threshold and session.alert_armed:
-                self.enqueue_ws({'type': 'AUDIO_PEAK', 'payload': {
-                    'deviceId': self.device_id, 'levelDb': db, 'peak': True, 'ts': int(now * 1000)}})
-            elif db < threshold - hyst:
-                session.alert_armed = True
-        if now - session.last_level_ts > 1.0:
-            session.last_level_ts = now
+        state = {'armed': session.alert_armed, 'last_ts': session.last_level_ts}
+        emit_peak, throttled, state = audio_peak_decision(db, state, self.config, now)
+        session.alert_armed = state['armed']
+        session.last_level_ts = state['last_ts']
+        if emit_peak is not None:
             self.enqueue_ws({'type': 'AUDIO_PEAK', 'payload': {
-                'deviceId': self.device_id, 'levelDb': db, 'peak': False, 'ts': int(now * 1000)}})
+                'deviceId': self.device_id, **emit_peak}})
+        if throttled is not None:
+            self.enqueue_ws({'type': 'AUDIO_PEAK', 'payload': {
+                'deviceId': self.device_id, **throttled}})
 
     def enumerate_devices(self):
         self.video_devices = []
         self.audio_devices = []
         try:
             out = subprocess.run(['v4l2-ctl', '--list-devices'], capture_output=True, text=True, timeout=10)
-            cur = None
-            for line in out.stdout.splitlines():
-                if line and not line.startswith(('\t', ' ')) and ':' in line:
-                    cur = line.strip()
-                elif '/dev/video' in line:
-                    dev = line.strip()
-                    self.video_devices.append({'id': dev, 'label': (cur or dev)})
+            self.video_devices = parse_v4l2_devices(out.stdout)
         except Exception as e:
             log.warning('v4l2-ctl failed: %s', e)
         try:
             out = subprocess.run(['arecord', '-l'], capture_output=True, text=True, timeout=10)
-            for line in out.stdout.splitlines():
-                if line.startswith('card '):
-                    parts = line.split(':')
-                    name = parts[1].strip() if len(parts) > 1 else line
-                    card = line.split()[1]
-                    self.audio_devices.append({'id': 'hw:' + card + ',0', 'label': name})
+            self.audio_devices = parse_arecord_devices(out.stdout)
         except Exception as e:
             log.warning('arecord -l failed: %s', e)
         self.has_video = bool(self.video_devices)
@@ -436,13 +537,7 @@ class Agent:
             self.config.setdefault('audioDevice', self.audio_devices[0]['id'])
 
     def source_type(self):
-        if self.has_video and self.has_audio:
-            return 'video+audio'
-        if self.has_video:
-            return 'video-only'
-        if self.has_audio:
-            return 'audio-only'
-        return 'none'
+        return source_type(self.has_video, self.has_audio)
 
     def send_capabilities(self):
         self.enqueue_ws({'type': 'CAPABILITIES', 'payload': {
@@ -610,10 +705,11 @@ class Agent:
 
     async def run(self):
         self.loop = asyncio.get_event_loop()
-        Gst.init(None)
+        _load_gst()
         glib_loop = GLib.MainLoop()
         import threading
         threading.Thread(target=glib_loop.run, daemon=True).start()
+        import websockets
         while True:
             try:
                 log.info('connecting to %s', WS_URL)

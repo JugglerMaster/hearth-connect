@@ -1,6 +1,8 @@
 # Hearth-Connect Pi Agent
 
-> **⚠️ UNTESTED** — This agent has not been validated on hardware. Use at your own risk.
+> **⚠️ Hardware-unvalidated** — Pure logic is covered by unit tests (`test_pi_agent.py`,
+> runnable anywhere). The GStreamer media path still needs validation on real Pi hardware
+> (or a Linux box with GStreamer) via `e2e_smoke.py`. Use at your own risk until then.
 
 A headless Raspberry Pi client for Hearth-Connect. Runs on **Pi OS Lite** (no desktop, no
 screen) as a native Python + GStreamer WebRTC publisher. It streams the camera and/or
@@ -56,6 +58,7 @@ Edit `/opt/hearth-pi-agent/config.env`:
 | `SPEAKER_DEVICE` | ALSA speaker id (e.g. `hw:0,0`); blank = default. Used for talkback + announcements |
 | `AUDIO_SINK` | Full ALSA sink override (e.g. `alsasink device=hw:0,0`); takes precedence over `SPEAKER_DEVICE` |
 | `MAX_SUBSCRIBERS` | Max simultaneous viewer connections (1GB-Pi guard, default `4`) |
+| `TEST_SOURCE` | Set `1` to substitute `videotestsrc`/`audiotestsrc` for the real camera/mic (headless e2e testing, no hardware needed) |
 
 For the camera, enable it once: `sudo raspi-config` → Interface → Camera (or `libcamera`).
 Set a USB mic as the default capture device if needed (`~/.asoundrc` / `alsactl`).
@@ -89,6 +92,37 @@ To run manually (foreground) for debugging:
 cd /opt/hearth-pi-agent
 python3 pi-agent.py
 ```
+
+## Testing
+
+The agent's pure logic is unit-tested without GStreamer, a camera, or a server, so the
+tests run anywhere (CI, a dev box — see plan 11). The native media path is exercised
+end-to-end on a Pi (or a Linux box with GStreamer) via a smoke test that auto-skips when
+the native stack is missing.
+
+**Local unit tests (runnable now, no deps):**
+```bash
+cd deploy/pi-agent
+python3 -m unittest test_pi_agent.py -v
+```
+Covers: `v4l2-ctl`/`arecord -l` parsing, `SourceType` decision, the audio
+threshold + hysteresis state machine, and monitor/broadcast GStreamer pipeline-string
+construction (including `TEST_SOURCE` substitution).
+
+**End-to-end smoke test (needs GStreamer + a running server):**
+```bash
+# On a Pi, or any Linux box with GStreamer + `websockets` installed:
+cd deploy/pi-agent
+SERVER_URL=wss://host:8090 ROOM_ID=test python3 -m unittest e2e_smoke.py -v
+```
+`e2e_smoke.py` launches the real agent with `TEST_SOURCE=1` (no real camera/mic needed),
+then acts as a base station + subscriber and asserts the agent publishes a source and
+produces a WebRTC OFFER — proving the GStreamer pipeline builds and SDP negotiation starts.
+It self-skips when GStreamer/websockets/the server are unavailable, so it's safe in CI.
+
+**Manual hardware validation:** deploy as above, open the base station in a browser, and
+confirm a live feed appears for the Pi, talkback audio plays on the Pi's speaker when you
+hold "Broadcast", and a base-station broadcast announcement plays on the Pi.
 
 ## Notes
 
