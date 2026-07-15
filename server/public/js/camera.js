@@ -298,24 +298,20 @@
         }
         break;
       case 'blank':
-        // FaceTalk video wins over "blank".
+        // FaceTalk video wins over "blank" — while the base is pushing its
+        // camera (FaceTalk/broadcast) we always show it, regardless of the
+        // device's display setting.
         if (baseVideoActive && broadcastStream) {
           video.srcObject = broadcastStream;
           video.muted = true;
           video.play().catch(() => {});
           break;
         }
-        // Fall back to the local camera preview — consistent with startMedia(),
-        // which always shows the kiosk's own camera. Without this, ending a
-        // FaceTalk (which restores displayMode 'blank') left the screen blank
-        // instead of returning to the live camera preview it showed before.
-        if (rtc.localStream) {
-          video.srcObject = rtc.localStream;
-          video.muted = true;
-          video.play().catch(() => {});
-        } else {
-          video.srcObject = null;
-        }
+        // Truly blank the screen. "blank" is an explicit owner choice (e.g.
+        // privacy: don't mirror the room on the wall panel) and is distinct
+        // from "self", which shows the local preview. The monitor keeps
+        // publishing its camera/mic — only the on-device preview is hidden.
+        video.srcObject = null;
         break;
       case 'base':
         // Show base station's broadcast stream. Keep the <video> element muted —
@@ -498,6 +494,15 @@
         console.error('play failed:', e);
         debugCamStatus.textContent = 'cam:play-err';
       });
+
+      // Enforce the configured display mode now that the local stream exists.
+      // startMedia() attaches the local preview above, but a 'blank' display
+      // mode must win and clear the <video> (and 'base' shows the broadcast
+      // stream if one is already live). Without this, the on-device preview
+      // always shows the local camera after every (re)start, so the
+      // self/blank toggle never sticks. FaceTalk overrides are still honoured
+      // because applyDisplayConfig checks baseVideoActive first.
+      applyDisplayConfig(currentConfig.displayMode || 'self', currentConfig.audioMode || 'mute');
 
       publishCurrentSource();
       setupAudioAnalyser();
@@ -901,15 +906,53 @@
       else releaseWakeLock();
     }
 
+    // If the display/audio mode changed via a full config update (not just the
+    // dedicated SET_DISPLAY_CONFIG message), re-apply it so the on-device
+    // preview respects self/blank/base even if the targeted message was missed.
+    if ((defined.displayMode !== undefined || defined.audioMode !== undefined) && rtc.localStream) {
+      applyDisplayConfig(currentConfig.displayMode || 'self', currentConfig.audioMode || 'mute');
+    }
+
     if (changed && rtc.localStream) {
       console.log('[kiosk] media config changed, restarting:', currentConfig);
       restartMediaWithConfig();
     }
   }
 
+  // Build a tiny silent WAV as a Blob URL. iOS only suppresses auto-lock while
+  // media is genuinely *playing* (a muted video does not count), so we feed a
+  // short inaudible clip to an <audio> element and loop it. 8-bit PCM at 8 kHz
+  // keeps the blob tiny (~1 KB/s).
+  function makeSilentWavUrl(seconds = 1, sampleRate = 8000) {
+    const numSamples = seconds * sampleRate;
+    const buffer = new ArrayBuffer(44 + numSamples);
+    const view = new DataView(buffer);
+    const writeStr = (off, s) => {
+      for (let i = 0; i < s.length; i++) view.setUint8(off + i, s.charCodeAt(i));
+    };
+    writeStr(0, 'RIFF');
+    view.setUint32(4, 36 + numSamples, true);
+    writeStr(8, 'WAVE');
+    writeStr(12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true); // PCM
+    view.setUint16(22, 1, true); // mono
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate, true); // byte rate (mono, 8-bit)
+    view.setUint16(32, 1, true); // block align
+    view.setUint16(34, 8, true); // bits per sample
+    writeStr(36, 'data');
+    view.setUint32(40, numSamples, true);
+    for (let i = 44; i < 44 + numSamples; i++) view.setUint8(i, 128); // silence
+    return URL.createObjectURL(new Blob([buffer], { type: 'audio/wav' }));
+  }
+
   // Keep-awake: prefer the Wake Lock API (iOS 16.4+). On older iOS (e.g. 15.x)
-  // it's absent, so fall back to playing a tiny muted looping inline video —
-  // media playback keeps the screen alive. Gated on currentConfig.keepAwake.
+  // it's absent, so fall back to playing a tiny silent looping audio track —
+  // media playback keeps the screen alive in the foreground. Bonus: the open
+  // (non-muted) media session also survives a screen lock on iOS, so the
+  // WebRTC audio track keeps flowing as an audio-only source while locked
+  // (the camera stops, but mic audio continues). Gated on keepAwake.
   async function requestWakeLock() {
     if (!currentConfig.keepAwake) { releaseWakeLock(); return; }
     // 1. Native Wake Lock API (modern iOS/Chrome).
@@ -918,19 +961,23 @@
         wakeLock = await navigator.wakeLock.request('screen');
         wakeLock.addEventListener?.('release', () => { wakeLock = null; });
         return;
-      } catch { /* fall through to the video fallback */ }
+      } catch { /* fall through to the audio fallback */ }
     }
-    // 2. Fallback: muted looping inline video (iOS < 16.4).
-    const nsv = document.getElementById('noSleepVideo');
-    if (nsv) {
-      try { await nsv.play(); } catch { /* needs a user gesture on some versions */ }
+    // 2. Fallback: silent looping audio (iOS < 16.4). Must NOT be muted — iOS
+    //    ignores muted media for the purposes of suppressing auto-lock.
+    const nsa = document.getElementById('noSleepAudio');
+    if (nsa) {
+      try {
+        if (!nsa.src) nsa.src = makeSilentWavUrl();
+        await nsa.play();
+      } catch { /* needs a user gesture on some versions */ }
     }
   }
 
   function releaseWakeLock() {
     if (wakeLock) { try { wakeLock.release(); } catch {} wakeLock = null; }
-    const nsv = document.getElementById('noSleepVideo');
-    if (nsv) { try { nsv.pause(); } catch {} }
+    const nsa = document.getElementById('noSleepAudio');
+    if (nsa) { try { nsa.pause(); } catch {} }
   }
 
   // iOS requires a user gesture before the camera permission prompt can appear.
