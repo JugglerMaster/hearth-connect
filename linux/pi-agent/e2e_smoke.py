@@ -137,11 +137,11 @@ class PiAgentE2ETest(unittest.TestCase):
                     self.skipTest('agent did not publish CAPABILITIES in time')
                 await ws.send(json.dumps({'type': 'SUBSCRIBE_SOURCE', 'payload': {
                     'publisherId': agent_id}}))
-                for _ in range(50):
+                for _ in range(60):
                     try:
                         raw = await asyncio.wait_for(ws.recv(), timeout=1.0)
                     except asyncio.TimeoutError:
-                        break
+                        continue  # keep waiting for the OFFER to be relayed
                     msg = json.loads(raw)
                     t = msg.get('type')
                     if t == 'OFFER':
