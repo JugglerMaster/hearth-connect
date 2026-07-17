@@ -95,7 +95,7 @@ class PiAgentE2ETest(unittest.TestCase):
         env['DEVICE_LABEL'] = DEVICE_LABEL
         cls._agent_log = os.path.join(_HERE, 'e2e_agent_out.log')
         cls.agent = subprocess.Popen(
-            [sys.executable, os.path.join(_HERE, 'pi-agent.py')],
+            [sys.executable, '-u', os.path.join(_HERE, 'pi-agent.py')],
             env=env, stdout=open(cls._agent_log, 'w'), stderr=subprocess.STDOUT, text=True)
         cls.loop = asyncio.new_event_loop()
 
