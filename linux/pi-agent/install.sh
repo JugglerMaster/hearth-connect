@@ -16,6 +16,7 @@ sudo apt-get install -y \
   python3-gi-cairo \
   gir1.2-gst-rtsp-server-1.0 \
   gir1.2-gstreamer-1.0 \
+  gir1.2-gst-plugins-bad-1.0 \
   libssl-dev \
   v4l-utils \
   alsa-utils \
