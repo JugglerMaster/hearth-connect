@@ -591,6 +591,8 @@ class Agent:
         return source_type(self.has_video, self.has_audio)
 
     def send_capabilities(self):
+        log.info('send_capabilities: v=%d a=%d (%s)',
+                 len(self.video_devices), len(self.audio_devices), self.device_id)
         self.enqueue_ws({'type': 'CAPABILITIES', 'payload': {
             'deviceId': self.device_id,
             'videoDevices': self.video_devices,
