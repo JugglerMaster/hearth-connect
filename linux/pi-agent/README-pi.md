@@ -1,26 +1,24 @@
 # Hearth-Connect Pi Agent
 
-> **⚠️ Hardware-unvalidated** — Pure logic is covered by unit tests (`test_pi_agent.py`,
-> runnable anywhere). The GStreamer media path still needs validation on real Pi hardware
-> (or a Linux box with GStreamer) via `e2e_smoke.py`. Use at your own risk until then.
-
-> **🚧 Status: not fully working yet.** As of the last update the agent connects to the
-> server over a verified TLS link, correctly reports its capabilities (camera + mic) to the
-> base station, and the GStreamer pipeline now builds. Fixed so far: device enumeration
-> (periodic re-scan so cameras plugged in after boot are seen), a `websockets` API trap
-> (`ws_pump` checked the removed `.open` attribute, so it never sent any queued message),
-> and an invalid `v4l2h264enc tune=zerolatency` in the pipeline (the Pi's hardware encoder
-> rejects `tune`; only `x264enc` uses it). **What is still unverified:**
-> - The actual WebRTC media flow end-to-end (does the base station receive a live
->   video/audio feed from the Pi?). The pipeline builds without error, but a live feed
->   hasn't been confirmed on real hardware.
-> - **Onboard Pi Camera** (CSI): on modern Pi OS it is exposed via `bcm2835-unicam` /
->   `libcamera`, NOT a plain `v4l2src` device. `MonitorSession.build()` currently always uses
->   `v4l2src`, so the Pi Cam will likely fail to capture — it needs `libcamerasrc` detection
->   and a separate pipeline branch. USB UVC cameras (e.g. PS3 Eye) work via `v4l2src`.
-> - Talkback / broadcast audio playback on the Pi's speaker.
-> A temporary `log.info` in `send_capabilities()` is left in for debugging; remove once the
-> media path is confirmed working.
+> **✅ Media flow validated (2026-07-17).** The agent connects over TLS, reports
+> capabilities, and a subscribed base station now receives a full WebRTC **OFFER + ICE
+> candidates** from the Pi with a real USB camera (PS3 Eye) — i.e. the GStreamer pipeline
+> builds, prerolls, negotiates, and gathers candidates end-to-end. Fixed across this work:
+> device enumeration + re-scan, the `websockets` `.open` API trap, `v4l2h264enc` rejecting
+> `tune`/`key-int-max`, webrtcbin needing `! wb.` (request-pad) links **and** an explicit
+> `add-transceiver`, missing `gstreamer1.0-alsa` (`alsasrc`), the `on-ice-candidate` new-API
+> signature, and the client trigger being `SUBSCRIBE_SOURCE` (not `SUBSCRIBER_JOINED`).
+>
+> **Gotchas that will silently break video (now diagnosed):**
+> - **Camera caps must match a real mode.** A PS3 Eye only does `320x240`/`640x480` — asking
+>   for `720p`/`24fps` makes the pipeline never preroll (no OFFER). Set `RESOLUTION`/`FRAMERATE`
+>   to a mode your camera supports (`v4l2-ctl --list-formats-ext`).
+> - **Hardware encoder `v4l2h264enc` stalls on this board** — the pipeline builds but never
+>   prerolls, so no OFFER. Force `VIDEO_ENCODER=x264enc` (software) to get a working feed.
+>
+> **Still unverified:** the *decoded* feed in a real browser base station (signaling is proven;
+> a live render needs an on-device check), onboard Pi CSI camera (`libcamera`/`libcamerasrc`,
+> not plain `v4l2src`), and talkback/broadcast audio playback on the Pi speaker.
 
 A headless Raspberry Pi client for Hearth-Connect. Runs on **Pi OS Lite** (no desktop, no
 screen) as a native Python + GStreamer WebRTC publisher. It streams the camera and/or
@@ -93,6 +91,7 @@ Edit `/opt/hearth-pi-agent/config.env`:
 | `SPEAKER_DEVICE` | ALSA speaker id (e.g. `hw:0,0`); blank = default. Used for talkback + announcements |
 | `AUDIO_SINK` | Full ALSA sink override (e.g. `alsasink device=hw:0,0`); takes precedence over `SPEAKER_DEVICE` |
 | `MAX_SUBSCRIBERS` | Max simultaneous viewer connections (1GB-Pi guard, default `4`) |
+| `VIDEO_ENCODER` | `v4l2h264enc` (Pi hardware, default when present) or `x264enc` (software). Force `x264enc` if the hardware encoder stalls (no preroll / no OFFER). |
 | `TEST_SOURCE` | Set `1` to substitute `videotestsrc`/`audiotestsrc` for the real camera/mic (headless e2e testing, no hardware needed) |
 
 For the camera, enable it once: `sudo raspi-config` → Interface → Camera (or `libcamera`).
@@ -164,7 +163,8 @@ hold "Broadcast", and a base-station broadcast announcement plays on the Pi.
 - The agent only **publishes** media; it never renders video locally, so no display server
   (X/Wayland) is required. Received broadcast/FaceTalk video is dropped to a `fakesink`.
 - Encoder preference: `v4l2h264enc` (Pi hardware) when available, else `x264enc` (software,
-  higher RAM/CPU — avoid on 1GB Pis; prefer `480p`/`720p`).
+  higher RAM/CPU — avoid on 1GB Pis; prefer `480p`). On some boards `v4l2h264enc` stalls the
+  pipeline (no preroll); set `VIDEO_ENCODER=x264enc` in that case.
 - Talkback and broadcast audio are decoded and played to the ALSA speaker. Volume follows
   `speakerVolume` from config; talkback is gated by `TALK_ENABLED`/`TALK_DISABLED`.
 - Audio alerting uses the GStreamer `level` element; `audioAlertEnabled`,
