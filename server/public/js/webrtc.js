@@ -422,8 +422,25 @@ class WebRTCManager {
     }
   }
 
+  // The Pi agent emits ICE candidates as a raw SDP candidate string
+  // ("candidate:..."). Browsers' RTCIceCandidate constructor requires a
+  // dictionary; Chrome is lenient and accepts a bare string, but Firefox
+  // throws — which silently drops every candidate and leaves ICE failed.
+  // Normalize to the dictionary form the spec expects.
+  _normalizeCandidate(candidate, sdpMid, sdpMLineIndex) {
+    if (typeof candidate === 'string') {
+      return { candidate, sdpMid: sdpMid ?? null, sdpMLineIndex: sdpMLineIndex ?? 0 };
+    }
+    // Already an object — fill defaults so Firefox doesn't reject it.
+    return {
+      candidate: candidate.candidate ?? candidate,
+      sdpMid: candidate.sdpMid ?? sdpMid ?? null,
+      sdpMLineIndex: candidate.sdpMLineIndex ?? sdpMLineIndex ?? 0,
+    };
+  }
+
   async handleIceCandidate(data) {
-    const { from, candidate, isBroadcast } = data;
+    const { from, candidate, sdpMid, sdpMLineIndex, isBroadcast } = data;
     let pc, key;
     if (isBroadcast) {
       pc = this.broadcastPcs.get(from);
@@ -434,14 +451,16 @@ class WebRTCManager {
     }
     if (!pc || !candidate) return;
 
+    const cand = this._normalizeCandidate(candidate, sdpMid, sdpMLineIndex);
+
     // Queue candidates until remote description exists. setRemoteDescription /
     // setLocalDescription must be applied first or addIceCandidate throws.
     if (!pc.remoteDescription) {
-      this.queueCandidate(key, candidate);
+      this.queueCandidate(key, cand);
       return;
     }
     try {
-      await pc.addIceCandidate(new RTCIceCandidate(candidate));
+      await pc.addIceCandidate(new RTCIceCandidate(cand));
     } catch (err) {
       console.error('addIceCandidate failed:', err);
     }
@@ -463,7 +482,10 @@ class WebRTCManager {
     const pending = q.splice(0, q.length);
     for (const c of pending) {
       try {
-        await pc.addIceCandidate(new RTCIceCandidate(c));
+        const cand = (typeof c === 'string' || !c.candidate)
+          ? this._normalizeCandidate(c, c && c.sdpMid, c && c.sdpMLineIndex)
+          : c;
+        await pc.addIceCandidate(new RTCIceCandidate(cand));
       } catch (err) {
         console.error('flush addIceCandidate failed:', err);
       }
@@ -622,11 +644,16 @@ class WebRTCManager {
       try {
         const stats = await conn.getStats();
         let inboundBytes = 0, packetsLost = 0, jitter = 0, rttMs = 0, candidate = null;
+        let frameWidth = 0, frameHeight = 0, fps = 0;
         stats.forEach((r) => {
           if (r.type === 'inbound-rtp' && r.kind === 'video') {
             inboundBytes += r.bytesReceived || 0;
             packetsLost += r.packetsLost || 0;
             jitter = r.jitter || 0;
+            // Surface incoming video geometry/framerate for the debug readout.
+            if (r.frameWidth) frameWidth = r.frameWidth;
+            if (r.frameHeight) frameHeight = r.frameHeight;
+            if (r.framesPerSecond) fps = r.framesPerSecond;
           }
           if (r.type === 'inbound-rtp' && r.kind === 'audio') {
             packetsLost += r.packetsLost || 0;
@@ -653,6 +680,9 @@ class WebRTCManager {
           packetsLost,
           jitterMs: Math.round((jitter || 0) * 1000),
           rttMs: Math.round(rttMs),
+          frameWidth,
+          frameHeight,
+          fps,
           state: conn.connectionState,
           iceState: conn.iceConnectionState,
         });

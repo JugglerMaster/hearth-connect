@@ -81,6 +81,7 @@
   const monitorFullscreenBtn = document.getElementById('monitorFullscreenBtn');
   const monitorQuality = document.getElementById('monitorQuality');
   const ftDebug = document.getElementById('ftDebug');
+  const rxDebug = document.getElementById('rxDebug');
   const toast = document.getElementById('toast');
   const homeView = document.getElementById('homeView');
   const deviceList = document.getElementById('deviceList');
@@ -339,6 +340,16 @@
     if (viewingId && stats && (stats.state === 'connected' || stats.iceState === 'connected' || stats.iceState === 'completed')) {
       lastActivity[viewingId] = Date.now();
     }
+    // Mirror live stats into the incoming-stream debug readout.
+    if (viewingId && stats) {
+      if (stats.frameWidth && stats.frameHeight) {
+        rxDbgState.res = stats.frameWidth + 'x' + stats.frameHeight;
+      }
+      if (stats.fps) rxDbgState.fps = stats.fps + 'fps';
+      if (stats.bitrateKbps) rxDbgState.br = stats.bitrateKbps + 'kbps';
+      if (stats.rttMs) rxDbgState.rtt = stats.rttMs + 'ms';
+      renderRxDebug();
+    }
     if (!monitorQuality) return;
     if (!stats || stats.state !== 'connected') {
       monitorQuality.textContent = stats ? `(${stats.state})` : '';
@@ -350,6 +361,33 @@
     if (stats.packetsLost) parts.push(`lost ${stats.packetsLost}`);
     if (stats.jitterMs) parts.push(`jit ${stats.jitterMs} ms`);
     monitorQuality.textContent = parts.length ? `▮ ${parts.join(' · ')}` : '▮ connected';
+  }
+
+  // Debug readout for the INCOMING stream (a kiosk/Pi publishing to us). Shown
+  // at the top of the monitor video area, next to the FaceTalk (outgoing) debug.
+  // Tracks the monitor RTCPeerConnection + track state plus live getStats
+  // (resolution/framerate/bitrate/RTT) so on-device debugging of "no video"
+  // doesn't need Safari dev tools.
+  let rxDbgState = {
+    peer: null,       // peerId we are subscribed to
+    pc: '--',         // monitor PC connection state
+    ice: '--',        // monitor PC ICE state
+    tracks: '--',     // tracks received (e.g. '1v 1a' / '1v' / '1a')
+    res: '--',        // incoming video resolution (WxH)
+    fps: '--',        // incoming video framerate
+    br: '--',         // incoming bitrate (kbps)
+    rtt: '--',        // round-trip time (ms)
+  };
+  function renderRxDebug() {
+    if (!rxDebug) return;
+    const d = rxDbgState;
+    const who = d.peer ? d.peer.slice(-4) : '—';
+    rxDebug.textContent =
+      'rx:' + (d.peer ? 'ON→' + who : 'idle') +
+      '  pc:' + d.pc + '  ice:' + d.ice +
+      '  tracks:' + d.tracks +
+      '  ' + d.res + '@' + d.fps +
+      '  ' + d.br + '  rtt:' + d.rtt;
   }
 
   // ─── Incoming doorbell / call ─────────────────────────
@@ -460,13 +498,19 @@
     applyViewMode();
     ensureAudioGraph();
     connectAudioSource(stream);
-    // Video-element audio path (default): the element must be UNMUTED so its
-    // "playback" audio category plays through the silent switch. applyVolume
-    // sets element.volume. In GainNode mode the element stays muted so audio
-    // only flows through the Web Audio graph.
-    monitorVideo.muted = USE_GAIN_NODE;
+    // Browsers (Firefox, Safari) block autoplay of UNMUTED video, which leaves
+    // the element paused and the screen black even though frames are arriving.
+    // Start muted so play() is guaranteed, then unmute after playback begins so
+    // audio still flows through the element (non-GainNode path).
+    monitorVideo.muted = true;
     applyVolume(monitorVolume.value);
-    monitorVideo.play().catch(() => {});
+    const p = monitorVideo.play();
+    if (p && p.then) {
+      p.then(() => { if (!USE_GAIN_NODE) monitorVideo.muted = false; })
+       .catch(() => {});
+    } else if (!USE_GAIN_NODE) {
+      monitorVideo.muted = false;
+    }
   }
 
   function applyViewMode() {
@@ -915,6 +959,17 @@
     stopView();
     viewingId = peerId;
     viewMode = mode;
+    localStorage.setItem('hearth_baseViewingId', peerId);
+
+    rxDbgState.peer = peerId;
+    rxDbgState.pc = 'new';
+    rxDbgState.ice = 'new';
+    rxDbgState.tracks = '--';
+    rxDbgState.res = '--';
+    rxDbgState.fps = '--';
+    rxDbgState.br = '--';
+    rxDbgState.rtt = '--';
+    renderRxDebug();
 
     subscribed.add(peerId);
     console.log('[view] subscribing', peerId);
@@ -941,6 +996,7 @@
     }
     viewingId = null;
     viewMode = null;
+    localStorage.removeItem('hearth_baseViewingId');
     recovering = false;
     recoverAttempts = 0;
     if (recoverTimer) { clearTimeout(recoverTimer); recoverTimer = null; }
@@ -953,6 +1009,15 @@
     monitorError.classList.add('hidden');
     hideMonitorControls();
     showHome();
+    rxDbgState.peer = null;
+    rxDbgState.pc = '--';
+    rxDbgState.ice = '--';
+    rxDbgState.tracks = '--';
+    rxDbgState.res = '--';
+    rxDbgState.fps = '--';
+    rxDbgState.br = '--';
+    rxDbgState.rtt = '--';
+    renderRxDebug();
     renderDevices();
 
     // Tear down talkback + FaceTalk + quality polling tied to the closed view.
@@ -1166,6 +1231,12 @@
     const pc = rtc.peerConnections.get(viewingId);
     if (pc) pc._restarting = true; // prevent webrtc.js internal ICE-restart racing us
     rtc.closePeerConnection(viewingId);
+    // Tell the agent to tear down its stale monitor session FIRST — otherwise it
+    // ignores the re-subscribe (its sessions dict still holds the old id) and no
+    // new OFFER is produced, leaving the view stuck in a recover loop.
+    if (subscribed.has(viewingId)) {
+      sig.unsubscribeSource(viewingId);
+    }
     subscribed.delete(viewingId);
     sig.subscribeSource(viewingId);
 
@@ -1443,6 +1514,11 @@
         showMonitorStatus(null);
         monitorError.classList.add('hidden');
       }
+      // Reflect received tracks in the incoming debug readout.
+      const v = stream.getVideoTracks().length;
+      const a = stream.getAudioTracks().length;
+      rxDbgState.tracks = (v || a) ? (v + 'v ' + a + 'a') : '--';
+      renderRxDebug();
       attachMonitorStream();
     }
   };
@@ -1450,16 +1526,29 @@
   rtc.onConnectionStateChange = (peerId, state) => {
     console.log('[webrtc] peer', peerId, 'connection state:', state);
     if (peerId === 'broadcast-' + faceTalkingTo) { ftDbgState.pc = state; renderFtDebug(); }
-    if (peerId === viewingId && (state === 'failed' || state === 'disconnected' || state === 'closed')) {
-      recoverWatch();
+    if (peerId === viewingId) {
+      rxDbgState.pc = state;
+      renderRxDebug();
+      // Only recover on a genuine failure. `disconnected`/`closed` are transient
+      // (e.g. mid-renegotiation or a brief ICE candidate window) and recover on
+      // their own — tearing the PC down there nukes a feed that was about to
+      // connect, and the re-subscribe collides with the in-flight offer, leaving
+      // the view stuck at pc:new / ice:failed.
+      if (state === 'failed') {
+        recoverWatch();
+      }
     }
   };
 
   rtc.onIceConnectionStateChange = (peerId, state) => {
     console.log('[webrtc] peer', peerId, 'ice state:', state);
     if (peerId === 'broadcast-' + faceTalkingTo) { ftDbgState.ice = state; renderFtDebug(); }
-    if (peerId === viewingId && (state === 'failed' || state === 'disconnected' || state === 'closed')) {
-      recoverWatch();
+    if (peerId === viewingId) {
+      rxDbgState.ice = state;
+      renderRxDebug();
+      if (state === 'failed') {
+        recoverWatch();
+      }
     }
   };
 
@@ -1503,6 +1592,12 @@
       sources = data.sources || [];
       devices = data.recentlySeenDevices || [];
       renderDevices();
+      // Auto-resume the feed the user was watching before a reload (F5 / crash).
+      const lastViewing = localStorage.getItem('hearth_baseViewingId');
+      if (lastViewing && sources.some(s => s.publisherId === lastViewing)) {
+        console.log('[view] auto-resuming', lastViewing);
+        startView(lastViewing, 'video');
+      }
     });
 
     sig.on('close', () => {

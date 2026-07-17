@@ -335,6 +335,7 @@ class MonitorSession:
         self.last_level_ts = 0
         self.talkback_active = agent.talkback_active
         self.rxvol = None
+        self._making_offer = False
         self.build()
 
     def build(self):
@@ -422,6 +423,13 @@ class MonitorSession:
         self.rxvol.set_property('mute', not allowed)
 
     def on_negotiation_needed(self, element):
+        # set-local-description re-triggers on-negotiation-needed, which would
+        # otherwise create a fresh OFFER every time and loop forever (the base
+        # briefly connects then gets reset into pc:new). Guard so only one
+        # in-flight offer exists per session; cleared once the answer lands.
+        if self._making_offer:
+            return
+        self._making_offer = True
         promise = Gst.Promise.new_with_change_func(self.on_offer_created)
         element.emit('create-offer', None, promise)
 
@@ -472,14 +480,28 @@ class MonitorSession:
         answer = GstWebRTC.WebRTCSessionDescription.new(GstWebRTC.WebRTCSDPType.ANSWER, sdp)
         promise = Gst.Promise.new_with_change_func(self.on_remote_set)
         self.webrtc.emit('set-remote-description', answer, promise)
+        self._making_offer = False
 
     def add_ice(self, cand, mline, mid):
-        # GStreamer 1.26 requires a real guint mline index; browsers sometimes
-        # omit sdpMLineIndex (or send None), which made emit() throw and the
-        # candidate get dropped — leaving the connection stuck at ice:new.
+        # Browsers send the candidate as a JSON dict (RTCPeerConnection
+        # .toJSON()); GStreamer's add-ice-candidate expects the raw SDP
+        # candidate string ("candidate:..."). Extract it, and pull the mline
+        # from the dict when the top-level field is missing. Passing the dict
+        # straight through made the agent silently drop every inbound candidate
+        # and left ICE stuck at checking/connecting.
+        if isinstance(cand, dict):
+            cand_str = cand.get('candidate') or ''
+            if mline is None:
+                mline = cand.get('sdpMLineIndex')
+            if mid is None:
+                mid = cand.get('sdpMid')
+        else:
+            cand_str = cand
+        if not cand_str:
+            return
         if mline is None:
             mline = 0
-        self.webrtc.emit('add-ice-candidate', mline, cand)
+        self.webrtc.emit('add-ice-candidate', mline, cand_str)
 
     def on_remote_set(self, promise):
         promise.wait()
@@ -583,12 +605,25 @@ class BroadcastSession:
         self.webrtc.emit('set-remote-description', offer, promise)
 
     def add_ice(self, cand, mline, mid):
-        # GStreamer 1.26 requires a real guint mline index; browsers sometimes
-        # omit sdpMLineIndex (or send None), which made emit() throw and the
-        # candidate get dropped — leaving the connection stuck at ice:new.
+        # Browsers send the candidate as a JSON dict (RTCPeerConnection
+        # .toJSON()); GStreamer's add-ice-candidate expects the raw SDP
+        # candidate string ("candidate:..."). Extract it, and pull the mline
+        # from the dict when the top-level field is missing. Passing the dict
+        # straight through made the agent silently drop every inbound candidate
+        # and left ICE stuck at checking/connecting.
+        if isinstance(cand, dict):
+            cand_str = cand.get('candidate') or ''
+            if mline is None:
+                mline = cand.get('sdpMLineIndex')
+            if mid is None:
+                mid = cand.get('sdpMid')
+        else:
+            cand_str = cand
+        if not cand_str:
+            return
         if mline is None:
             mline = 0
-        self.webrtc.emit('add-ice-candidate', mline, cand)
+        self.webrtc.emit('add-ice-candidate', mline, cand_str)
 
     def on_remote_set(self, promise):
         promise.wait()
