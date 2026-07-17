@@ -171,3 +171,10 @@ without the native stack. Use the same zero-dep philosophy:
   `videotestsrc`/`audiotestsrc` so no camera/mic is required) against a live server and
   asserts it publishes a source + produces a WebRTC OFFER. Auto-skips when GStreamer /
   `websockets` / the server are absent, so it's safe in CI. Run on a Pi for the real check.
+
+### iOS Debug Bridge (USB-tethered Safari inspection)
+
+`tests/ios-debug-bridge/` drives a real iOS Safari tab via CDP over
+`usbmuxd` → `ios-webkit-debug-proxy` → `remotedebug-ios-webkit-adapter`.
+Use it for DOM/state inspection, console capture, and signaling-handshake
+checks on a real device. See `tests/ios-debug-bridge/README.md` for host setup.
