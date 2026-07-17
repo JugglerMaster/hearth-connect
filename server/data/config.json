@@ -151,7 +151,7 @@
       "label": "Base Station",
       "roomId": "pc",
       "createdAt": 1783518604146,
-      "lastSeenAt": 1784046913957,
+      "lastSeenAt": 1784242449229,
       "config": {
         "label": "",
         "visibleSources": [],
@@ -464,7 +464,7 @@
       "label": "Base Station",
       "roomId": "default",
       "createdAt": 1783567326633,
-      "lastSeenAt": 1784135377160,
+      "lastSeenAt": 1784252207142,
       "config": {
         "label": "",
         "visibleSources": [],
@@ -801,7 +801,7 @@
       "label": "Kiosk",
       "roomId": "default",
       "createdAt": 1783819347502,
-      "lastSeenAt": 1784072206903,
+      "lastSeenAt": 1784251755439,
       "config": {
         "label": "Kiosk",
         "camera": "front",
@@ -820,7 +820,7 @@
         "audioAlertEnabled": true,
         "audioAlertThresholdDb": -40,
         "displayMode": "blank",
-        "audioMode": "mute"
+        "audioMode": "base"
       }
     },
     "kiosk-1783955125295-cabw": {

@@ -218,7 +218,7 @@ class WebRTCManager {
 
   // ─── Broadcast Peer Connections (Base → Kiosk) ───────────────────────────────
 
-  createBroadcastPeerConnection(kioskId, isPolite = false, autoAddLocal = true) {
+  createBroadcastPeerConnection(kioskId, isPolite = false) {
     if (this.broadcastPcs.has(kioskId)) {
       console.log('[webrtc] reusing existing broadcast pc for', kioskId);
       return this.broadcastPcs.get(kioskId);
@@ -268,7 +268,7 @@ class WebRTCManager {
       }
     };
 
-    if (this.localStream && autoAddLocal) {
+    if (this.localStream) {
       this.addTracksToPeer(pc);
     }
 
