@@ -83,6 +83,11 @@ class PiAgentE2ETest(unittest.TestCase):
     def setUpClass(cls):
         env = dict(os.environ)
         env['TEST_SOURCE'] = '1'
+        # Use the software encoder for the smoke test: the Pi's hardware
+        # v4l2h264enc stalls on this board, whereas x264enc reliably
+        # prerolls and produces an OFFER. The real deployment can override
+        # VIDEO_ENCODER back to v4l2h264enc once the encoder is debugged.
+        env['VIDEO_ENCODER'] = 'x264enc'
         env['SERVER_URL'] = SERVER_URL
         env['ROOM_ID'] = ROOM_ID
         env['DEVICE_LABEL'] = DEVICE_LABEL
