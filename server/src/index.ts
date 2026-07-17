@@ -1,4 +1,5 @@
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import * as http from 'http';
 import * as https from 'https';
@@ -99,11 +100,23 @@ function ensureCerts(): void {
   if (!fs.existsSync(caPem) || !fs.existsSync(caKey)) {
     console.log('[TLS] generating CA…');
     execFileSync('openssl', ['genrsa', '-out', caKey, '2048'], { stdio: 'ignore' });
+    // CA extensions: mark it as a CA and grant the key-cert-sign usage. Without
+    // a KeyUsage extension, strict TLS stacks (Python's ssl, used by the Pi
+    // agent) reject the CA with "CA cert does not include key usage extension".
+    const caExt = path.join(CERT_DIR, 'ca.ext');
+    fs.writeFileSync(caExt,
+      'basicConstraints=critical,CA:TRUE\n' +
+      'keyUsage=critical,keyCertSign,cRLSign\n' +
+      'subjectKeyIdentifier=hash\n');
     execFileSync('openssl', [
       'req', '-x509', '-new', '-nodes',
       '-key', caKey, '-sha256', '-days', '3650',
       '-out', caPem, '-subj', '/CN=HearthConnect CA/O=HearthConnect',
+      '-addext', 'basicConstraints=critical,CA:TRUE',
+      '-addext', 'keyUsage=critical,keyCertSign,cRLSign',
+      '-addext', 'subjectKeyIdentifier=hash',
     ], { stdio: 'ignore' });
+    fs.rmSync(caExt, { force: true });
   } else {
     console.log('[TLS] reusing existing CA');
   }
@@ -117,11 +130,20 @@ function ensureCerts(): void {
   ], { stdio: 'ignore' });
 
   // 3. SAN extension: domain + localhost + 127.0.0.1 + any extra IPs.
+  // Auto-include the host's LAN IPv4 addresses so devices reaching
+  // https://<lan-ip>:<port> don't trip a name-mismatch warning (which would
+  // otherwise force a fresh camera/mic permission prompt on every reload, and
+  // breaks strict TLS clients like the Pi agent). EXTRA_IPS appends more.
   const ext = path.join(CERT_DIR, 'server.ext');
+  const lanIps = Object.values(os.networkInterfaces())
+    .flat()
+    .filter((n): n is os.NetworkInterfaceInfo => !!n && !n.internal && n.family === 'IPv4')
+    .map(n => n.address);
   const extraIps = (process.env.EXTRA_IPS || '')
     .split(',').map(s => s.trim()).filter(Boolean);
+  const allIps = [...new Set([...lanIps, ...extraIps])];
   let san = 'DNS.1=hearth.local\nDNS.2=localhost\nIP.1=127.0.0.1\n';
-  extraIps.forEach((ip, i) => { san += `IP.${i + 2}=${ip}\n`; });
+  allIps.forEach((ip, i) => { san += `IP.${i + 2}=${ip}\n`; });
   fs.writeFileSync(ext,
     'authorityKeyIdentifier=keyid,issuer\n' +
     'basicConstraints=CA:FALSE\n' +

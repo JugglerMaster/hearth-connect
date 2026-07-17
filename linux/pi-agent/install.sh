@@ -49,6 +49,30 @@ fi
 sudo mkdir -p "$INSTALL_DIR"
 sudo cp "$SCRIPT_DIR/pi-agent.py" "$INSTALL_DIR/"
 
+# ─── Install the server's CA so the agent trusts the self-signed TLS cert ───
+# The Pi agent verifies the server's WSS certificate. For a self-hosted LAN
+# server this means trusting its CA. Look for ca.pem next to this script
+# (e.g. copied alongside by deploy-pi.sh), in the server's certs dir, or in
+# /opt/hearth-pi-agent; install whichever is found into the system trust store.
+CA_CANDIDATES=(
+  "$SCRIPT_DIR/ca.pem"
+  "$SCRIPT_DIR/../server/certs/ca.pem"
+  "/opt/hearth-pi-agent/ca.pem"
+)
+CA_FOUND=""
+for c in "${CA_CANDIDATES[@]}"; do
+  if [[ -f "$c" ]]; then CA_FOUND="$c"; break; fi
+done
+if [[ -n "$CA_FOUND" ]]; then
+  echo "Installing CA from $CA_FOUND into system trust store..."
+  sudo cp "$CA_FOUND" /usr/local/share/ca-certificates/hearth-ca.crt
+  sudo update-ca-certificates
+else
+  echo "NOTE: no ca.pem found to trust — if the server uses a self-signed cert,"
+  echo "      copy its ca.pem to /opt/hearth-pi-agent/ca.pem and run:"
+  echo "      sudo cp /opt/hearth-pi-agent/ca.pem /usr/local/share/ca-certificates/hearth-ca.crt && sudo update-ca-certificates"
+fi
+
 # ─── Prompt for the server URL (used by the agent to connect) ───
 # Precedence: $SERVER_URL env/arg > existing config.env value > prompt.
 # If stdin is not a TTY (e.g. automated run) and nothing is provided, the

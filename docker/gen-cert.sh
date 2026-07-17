@@ -25,11 +25,23 @@ if [[ -f "$CERT_DIR/ca.pem" && -f "$CERT_DIR/ca.key" ]]; then
 else
   echo "Generating CA…"
   openssl genrsa -out "$CERT_DIR/ca.key" 2048
+  # CA extensions: mark as a CA and grant key-cert-sign usage. Without a
+  # KeyUsage extension, strict TLS stacks (e.g. Python's ssl, used by the Pi
+  # agent) reject the CA with "CA cert does not include key usage extension".
+  cat > "$CERT_DIR/ca.ext" << 'EOF'
+basicConstraints=critical,CA:TRUE
+keyUsage=critical,keyCertSign,cRLSign
+subjectKeyIdentifier=hash
+EOF
   openssl req -x509 -new -nodes \
     -key "$CERT_DIR/ca.key" \
     -sha256 -days 3650 \
     -out "$CERT_DIR/ca.pem" \
-    -subj "/CN=HearthConnect CA/O=HearthConnect"
+    -subj "/CN=HearthConnect CA/O=HearthConnect" \
+    -addext "basicConstraints=critical,CA:TRUE" \
+    -addext "keyUsage=critical,keyCertSign,cRLSign" \
+    -addext "subjectKeyIdentifier=hash"
+  rm -f "$CERT_DIR/ca.ext"
 fi
 
 # 2. Server key

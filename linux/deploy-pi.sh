@@ -37,8 +37,8 @@ ssh "$PI_USER@$PI_HOST" "mkdir -p ~/hearth-pi-agent"
 scp linux/pi-agent/install.sh linux/pi-agent/pi-agent.py linux/pi-agent/hearth-pi-agent.service linux/pi-agent/config.env "$PI_USER@$PI_HOST:~/hearth-pi-agent/"
 
 # Also copy CA cert if it exists
-if [[ -f docker/certs/ca.pem ]]; then
-    scp docker/certs/ca.pem "$PI_USER@$PI_HOST:~/hearth-pi-agent/ca.pem"
+if [[ -f server/certs/ca.pem ]]; then
+    scp server/certs/ca.pem "$PI_USER@$PI_HOST:~/hearth-pi-agent/ca.pem"
 fi
 
 # Run install on Pi
