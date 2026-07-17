@@ -45,8 +45,16 @@ ROOM_ID = os.environ.get('ROOM_ID', 'default')
 DEVICE_LABEL = os.environ.get('DEVICE_LABEL', 'Pi Agent')
 VIDEO_DEVICE = os.environ.get('VIDEO_DEVICE', '')
 AUDIO_DEVICE = os.environ.get('AUDIO_DEVICE', '')
-RESOLUTION = os.environ.get('RESOLUTION', '720p')
-FRAMERATE = int(os.environ.get('FRAMERATE', '24'))
+# Default resolution/framerate; overridable at runtime from the base station's
+# camera config (see Agent.apply_config). Kept as module defaults so the agent
+# still works when launched outside systemd (no config.env present).
+DEFAULT_RESOLUTION = os.environ.get('RESOLUTION', '720p')
+DEFAULT_FRAMERATE = int(os.environ.get('FRAMERATE', '24'))
+
+# Path to the env file the agent was launched from (set by the systemd unit /
+# install scripts). Used to persist base-station-driven config changes. If
+# unset or missing, the agent recreates it from defaults.
+CONFIG_FILE = os.environ.get('CONFIG_FILE', '/opt/hearth-pi-agent/config.env')
 
 # Test-source mode: substitute videotestsrc/audiotestsrc for v4l2src/alsasrc so
 # the agent runs on a headless box with no real camera/mic (used by the e2e
@@ -245,7 +253,7 @@ class MonitorSession:
         self.build()
 
     def build(self):
-        width, height = DIMS.get(RESOLUTION, DIMS['720p'])
+        width, height = DIMS.get(self.agent.resolution, DIMS['720p'])
         cfg_video = self.agent.config.get('videoDevice') or VIDEO_DEVICE
         cfg_audio = self.agent.config.get('audioDevice') or AUDIO_DEVICE
         enc = 'v4l2h264enc' if gst_element_exists('v4l2h264enc') else 'x264enc'
@@ -253,7 +261,7 @@ class MonitorSession:
             log.warning('hardware H.264 encoder (v4l2h264enc) not found — '
                         'falling back to software x264enc (higher RAM/CPU on Pi)')
         pipeline_str = monitor_pipeline_str(
-            self.has_video, self.has_audio, width, height, FRAMERATE,
+            self.has_video, self.has_audio, width, height, self.agent.framerate,
             cfg_video, cfg_audio, enc, STUN, TEST_SOURCE)
         log.info('monitor session %s pipeline: %s', self.subscriber_id, pipeline_str)
         self.pipeline_str = pipeline_str
@@ -479,9 +487,13 @@ class Agent:
         self.loop = None
         self.reconnect_delay = 1
         self.talkback_active = False
+        self.resolution = DEFAULT_RESOLUTION
+        self.framerate = DEFAULT_FRAMERATE
         self._last_published_type = None
         self._last_video_device = VIDEO_DEVICE
         self._last_audio_device = AUDIO_DEVICE
+        self._last_resolution = DEFAULT_RESOLUTION
+        self._last_framerate = DEFAULT_FRAMERATE
 
     def enqueue_ws(self, msg):
         if self.loop:
@@ -702,6 +714,54 @@ class Agent:
             self.sessions.clear()
             self._last_video_device = self.config.get('videoDevice', VIDEO_DEVICE)
             self._last_audio_device = self.config.get('audioDevice', AUDIO_DEVICE)
+
+        # Resolution / framerate: the base station can change these via the
+        # camera config. They're baked into the GStreamer pipeline caps, so a
+        # change requires rebuilding the monitor sessions.
+        new_resolution = self.config.get('resolution') or DEFAULT_RESOLUTION
+        new_framerate = int(self.config.get('framerate', DEFAULT_FRAMERATE))
+        res_changed = new_resolution != self._last_resolution
+        fr_changed = new_framerate != self._last_framerate
+        if res_changed or fr_changed:
+            log.info('resolution/framerate changed: %s@%d -> %s@%d',
+                     self._last_resolution, self._last_framerate,
+                     new_resolution, new_framerate)
+            self.resolution = new_resolution
+            self.framerate = new_framerate
+            for sess in self.sessions.values():
+                sess.close()
+            self.sessions.clear()
+            self._last_resolution = new_resolution
+            self._last_framerate = new_framerate
+            self.persist_env()
+
+    def persist_env(self):
+        """Write the current runtime config back to the env file so changes
+        driven by the base station survive a restart. Recreates the file from
+        defaults if it is missing."""
+        try:
+            lines = []
+            if os.path.exists(CONFIG_FILE):
+                with open(CONFIG_FILE) as f:
+                    lines = f.read().splitlines()
+            out = []
+            seen = set()
+            for line in lines:
+                key = line.split('=', 1)[0].strip() if '=' in line else ''
+                if key in ('RESOLUTION', 'FRAMERATE'):
+                    seen.add(key)
+                    continue  # drop old value; re-emit below
+                out.append(line)
+            # Append / update the runtime-driven values.
+            out.append('RESOLUTION=' + str(self.resolution))
+            out.append('FRAMERATE=' + str(self.framerate))
+            seen.update(('RESOLUTION', 'FRAMERATE'))
+            os.makedirs(os.path.dirname(CONFIG_FILE) or '.', exist_ok=True)
+            with open(CONFIG_FILE, 'w') as f:
+                f.write('\n'.join(out) + '\n')
+            log.info('persisted RESOLUTION/FRAMERATE to %s', CONFIG_FILE)
+        except Exception as e:
+            log.warning('failed to persist env file %s: %s', CONFIG_FILE, e)
 
     async def run(self):
         self.loop = asyncio.get_event_loop()

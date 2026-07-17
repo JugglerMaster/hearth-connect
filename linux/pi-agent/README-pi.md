@@ -70,8 +70,8 @@ Edit `/opt/hearth-pi-agent/config.env`:
 | `DEVICE_LABEL` | Name shown in the base station device list                   |
 | `VIDEO_DEVICE` | V4L2 path, e.g. `/dev/video0`; blank = first available      |
 | `AUDIO_DEVICE` | ALSA id, e.g. `hw:1,0`; blank = first available             |
-| `RESOLUTION` | `480p` / `720p` / `1080p`                                      |
-| `FRAMERATE`  | `15` / `24` / `30`                                             |
+| `RESOLUTION` | `480p` / `720p` / `1080p`. Also changeable live from the base station's camera config — the agent rewrites this file on change so it persists across restarts. |
+| `FRAMERATE`  | `15` / `24` / `30`. Same as `RESOLUTION`: live-editable from the base station. |
 | `SPEAKER_DEVICE` | ALSA speaker id (e.g. `hw:0,0`); blank = default. Used for talkback + announcements |
 | `AUDIO_SINK` | Full ALSA sink override (e.g. `alsasink device=hw:0,0`); takes precedence over `SPEAKER_DEVICE` |
 | `MAX_SUBSCRIBERS` | Max simultaneous viewer connections (1GB-Pi guard, default `4`) |

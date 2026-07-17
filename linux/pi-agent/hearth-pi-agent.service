@@ -8,6 +8,7 @@ Type=simple
 User=pi
 WorkingDirectory=/opt/hearth-pi-agent
 EnvironmentFile=/opt/hearth-pi-agent/config.env
+Environment=CONFIG_FILE=/opt/hearth-pi-agent/config.env
 ExecStart=/usr/bin/python3 /opt/hearth-pi-agent/pi-agent.py
 Restart=always
 RestartSec=5
