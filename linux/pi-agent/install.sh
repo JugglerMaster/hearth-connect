@@ -103,6 +103,12 @@ else
   sudo cp "$CONFIG_SRC" "$INSTALL_DIR/config.env"
 fi
 
+# The agent runs as a non-root user but the files were copied via sudo, so make
+# the install dir owned by that user. Otherwise the agent can't persist its
+# stable device_id (or rewrite config.env), and each restart shows as a new
+# "Pi Agent" device.
+sudo chown -R "$AGENT_USER" "$INSTALL_DIR"
+
 # (Re)generate the systemd unit with the correct User= so re-running this
 # script updates an existing install too. We substitute into the repo template
 # rather than copying it verbatim (the template keeps User=__AGENT_USER__ as a
