@@ -5,7 +5,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=pi
+# User is set at install time by install.sh to the account running it.
+User=__AGENT_USER__
 WorkingDirectory=/opt/hearth-pi-agent
 EnvironmentFile=/opt/hearth-pi-agent/config.env
 Environment=CONFIG_FILE=/opt/hearth-pi-agent/config.env

@@ -34,13 +34,33 @@ fi
 INSTALL_DIR=/opt/hearth-pi-agent
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Run the agent as the user who invoked the script (honors sudo: if installed
+# via `sudo bash install.sh`, use the original user, not root). systemd refuses
+# to start the unit if `User=` names a non-existent account (status 217/USER).
+if [[ -n "${SUDO_USER:-}" ]]; then
+  AGENT_USER="$SUDO_USER"
+elif [[ -n "${USER:-}" ]]; then
+  AGENT_USER="$USER"
+else
+  AGENT_USER="$(id -un)"
+fi
+
 sudo mkdir -p "$INSTALL_DIR"
 sudo cp "$SCRIPT_DIR/pi-agent.py" "$SCRIPT_DIR/config.env" "$INSTALL_DIR/"
-sudo cp "$SCRIPT_DIR/hearth-pi-agent.service" /etc/systemd/system/
 
+# (Re)generate the systemd unit with the correct User= so re-running this
+# script updates an existing install too. We substitute into the repo template
+# rather than copying it verbatim (the template keeps User=__AGENT_USER__ as a
+# placeholder so it is never hardcoded to a missing account).
+UNIT_SRC="$SCRIPT_DIR/hearth-pi-agent.service"
+if grep -q '__AGENT_USER__' "$UNIT_SRC"; then
+  sudo sed "s/__AGENT_USER__/$AGENT_USER/g" "$UNIT_SRC" > /etc/systemd/system/hearth-pi-agent.service
+else
+  sudo cp "$UNIT_SRC" /etc/systemd/system/hearth-pi-agent.service
+fi
 sudo systemctl daemon-reload
 sudo systemctl enable --now hearth-pi-agent
 
-echo "Done. The Pi Agent is installed at $INSTALL_DIR and running as a systemd service."
+echo "Done. The Pi Agent is installed at $INSTALL_DIR and running as user '$AGENT_USER'."
 echo "  status: sudo systemctl status hearth-pi-agent"
 echo "  logs:   sudo journalctl -u hearth-pi-agent -f"
