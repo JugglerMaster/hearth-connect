@@ -124,6 +124,10 @@ export interface ConnectedClient {
   roomId: string;
   label: string;
   sources: MediaSourceInfo[];
+  // Publisher deviceIds this client is currently subscribed to. Used to notify
+  // publishers (SUBSCRIBER_LEFT) when the subscriber disconnects, so a monitor
+  // publisher frees its capture device for the next viewer.
+  subscriptions: string[];
   connectedAt: number;
   lastHeartbeat: number;
   disconnectTimer?: NodeJS.Timeout;

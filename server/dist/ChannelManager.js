@@ -36,6 +36,7 @@ class ChannelManager {
             roomId,
             label,
             sources: [],
+            subscriptions: [],
             connectedAt: Date.now(),
             lastHeartbeat: Date.now(),
         };

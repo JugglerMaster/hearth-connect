@@ -89,6 +89,7 @@ export interface ConnectedClient {
     roomId: string;
     label: string;
     sources: MediaSourceInfo[];
+    subscriptions: string[];
     connectedAt: number;
     lastHeartbeat: number;
     disconnectTimer?: NodeJS.Timeout;

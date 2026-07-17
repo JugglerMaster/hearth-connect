@@ -49,9 +49,23 @@ export class SignalingHandler {
       return;
     }
 
-    const { deviceId, deviceType, sources } = client;
+    const { deviceId, deviceType, sources, subscriptions } = client;
 
     console.log(`Device disconnected: ${deviceId} (${deviceType})`);
+
+    // If this client was subscribed to any sources, tell each publisher it left
+    // IMMEDIATELY. A monitor publisher (e.g. a Pi with an exclusive camera
+    // device) must tear down its per-subscriber capture session right away so
+    // the device frees up for the next viewer — otherwise the red light stays
+    // on and a second device can't connect. (The 60s grace below is only about
+    // keeping the publisher's own source listed, not subscriber sessions.)
+    for (const publisherId of subscriptions) {
+      this.channels.sendTo(publisherId, {
+        type: 'SUBSCRIBER_LEFT',
+        payload: { subscriberId: deviceId },
+      });
+    }
+    client.subscriptions = [];
 
     // Start 60s grace period before removing sources
     this.channels.startDisconnectTimer(deviceId, () => {
@@ -421,6 +435,10 @@ export class SignalingHandler {
       payload: { subscriberId: client.deviceId },
     });
 
+    if (!client.subscriptions.includes(publisherId)) {
+      client.subscriptions.push(publisherId);
+    }
+
     console.log(`Subscriber ${client.deviceId} subscribed to ${publisherId}`);
   }
 
@@ -438,6 +456,9 @@ export class SignalingHandler {
       type: 'SUBSCRIBER_LEFT',
       payload: { subscriberId: client.deviceId },
     });
+
+    const idx = client.subscriptions.indexOf(publisherId);
+    if (idx !== -1) client.subscriptions.splice(idx, 1);
   }
 
   // ─── Broadcast Source Handlers ──────────────────────────────
