@@ -83,18 +83,6 @@ def gst_element_exists(name):
     return Gst.ElementFactory.find(name) is not None
 
 
-def gst_element_has_prop(name, prop):
-    """True if element `name` exists and exposes property `prop`."""
-    _load_gst()
-    factory = Gst.ElementFactory.find(name)
-    if factory is None:
-        return False
-    element = factory.create(name)
-    if element is None:
-        return False
-    return element.find_property(prop) is not None
-
-
 def _load_gst():
     """Lazily import GStreamer + WebRTC bindings and init GStreamer.
 
@@ -214,16 +202,14 @@ def monitor_pipeline_str(has_video, has_audio, width, height, framerate,
         else:
             src = 'v4l2src'
             dev = ('device=' + video_device) if video_device else ''
-        # Encoder-specific options:
-        #  - `tune=zerolatency` and `key-int-max` are x264enc (software) properties.
-        #  - `v4l2h264enc` (Pi hardware) rejects both; pass no extra options.
-        if enc == 'x264enc':
-            enc_opts = 'tune=zerolatency key-int-max=30'
-        else:
-            enc_opts = 'keyframe-period=30' if gst_element_has_prop(enc, 'keyframe-period') else ''
+        # Encoder-specific options. `tune=zerolatency` and `key-int-max` are
+        # x264enc (software) properties; `v4l2h264enc` (Pi hardware) rejects
+        # both and manages its own GOP, so it gets no extra options. Kept pure
+        # (no GStreamer introspection) so the string helper stays unit-testable.
+        enc_opts = 'tune=zerolatency key-int-max=30' if enc == 'x264enc' else ''
         parts.append(
             '{src} {dev} ! videoconvert ! video/x-raw,format=I420,width={w},height={h},framerate={fr}/1 '
-            '! {enc} {enc_opts} ! rtph264pay config-interval=-1 ! queue ! wb'.format(
+            '! {enc} {enc_opts} ! rtph264pay config-interval=-1 ! queue ! wb.'.format(
                 src=src, dev=dev, w=width, h=height, fr=framerate, enc=enc, enc_opts=enc_opts))
     if has_audio:
         if test_source:
@@ -233,7 +219,7 @@ def monitor_pipeline_str(has_video, has_audio, width, height, framerate,
             src = 'alsasrc'
             dev = ('device=' + audio_device) if audio_device else ''
         parts.append(
-            '{src} {dev} ! audioconvert ! audioresample ! level ! opusenc ! rtpopuspay ! queue ! wb'.format(
+            '{src} {dev} ! audioconvert ! audioresample ! level ! opusenc ! rtpopuspay ! queue ! wb.'.format(
                 src=src, dev=dev))
     return ' '.join(parts)
 

@@ -118,15 +118,19 @@ class TestMonitorPipelineStr(unittest.TestCase):
         self.assertIn('webrtcbin name=wb stun-server=' + pa.STUN, s)
         self.assertIn('v4l2src', s)
         self.assertIn('rtph264pay', s)
-        # v4l2h264enc (Pi hardware encoder) has no `tune` property; only x264enc
-        # gets tune=zerolatency.
-        self.assertIn('v4l2h264enc key-int-max=30', s)
+        # v4l2h264enc (Pi hardware encoder) has no `tune`/`key-int-max` property;
+        # only x264enc gets tune=zerolatency. The hardware encoder gets no opts.
+        self.assertNotIn('v4l2h264enc key-int-max', s)
         self.assertNotIn('v4l2h264enc tune', s)
         self.assertIn('width=1280,height=720,framerate=24/1', s)
         self.assertIn('alsasrc', s)
         self.assertIn('opusenc', s)
         self.assertIn('rtpopuspay', s)
         self.assertIn('level', s)  # audio-threshold element present
+        # webrtcbin only exposes request pads, so the launch string must link
+        # with `! wb.` (trailing dot) — bare `! wb` fails to parse.
+        self.assertIn('! wb.', s)
+        self.assertNotIn('! wb ', s)
 
     def test_x264enc_gets_tune_zerolatency(self):
         # The software encoder still uses tune=zerolatency for low latency.
