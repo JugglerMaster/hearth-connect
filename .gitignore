@@ -8,6 +8,7 @@ deploy/certs/
 
 # Runtime state (per-deployment device/room config) + scratch notes.
 data/
+server/data/config.json
 updates.txt
 
 # Python bytecode (pi-agent + tooling)
