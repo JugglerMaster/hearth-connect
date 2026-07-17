@@ -466,7 +466,8 @@ class MonitorSession:
         return True
 
     def set_remote_answer(self, sdp_text):
-        sdp = GstSdp.SDPMessage.new()
+        # GStreamer >= 1.20 returns (SDPResult, message) from SDPMessage.new().
+        _ret, sdp = GstSdp.SDPMessage.new()
         GstSdp.sdp_message_parse_buffer(sdp_text.encode(), sdp)
         answer = GstWebRTC.WebRTCSessionDescription.new(GstWebRTC.WebRTCSDPType.ANSWER, sdp)
         promise = Gst.Promise.new_with_change_func(self.on_remote_set)
@@ -569,7 +570,7 @@ class BroadcastSession:
         return True
 
     def set_remote_offer(self, sdp_text):
-        sdp = GstSdp.SDPMessage.new()
+        _ret, sdp = GstSdp.SDPMessage.new()
         GstSdp.sdp_message_parse_buffer(sdp_text.encode(), sdp)
         offer = GstWebRTC.WebRTCSessionDescription.new(GstWebRTC.WebRTCSDPType.OFFER, sdp)
         self._remote_set = True
@@ -792,9 +793,9 @@ class Agent:
             if is_broadcast:
                 sess = self.broadcast_sessions.get(frm)
                 if sess:
-                    sess.add_ice(p['candidate'], p['sdpMLineIndex'], p['sdpMid'])
+                    sess.add_ice(p.get('candidate'), p.get('sdpMLineIndex'), p.get('sdpMid'))
             elif frm in self.sessions:
-                self.sessions[frm].add_ice(p['candidate'], p['sdpMLineIndex'], p['sdpMid'])
+                self.sessions[frm].add_ice(p.get('candidate'), p.get('sdpMLineIndex'), p.get('sdpMid'))
         elif t == 'TALK_ENABLED':
             log.info('talkback ENABLED from %s', p.get('from'))
             self.talkback_active = True
