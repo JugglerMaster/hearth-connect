@@ -522,11 +522,30 @@ class Agent:
         else:
             asyncio.ensure_future(self.ws_queue.put(msg))
 
+    def _ws_connected(self):
+        ws = self.ws
+        if not ws:
+            return False
+        # Connection-state attribute varies across websockets versions:
+        #   >= 11: ws.state is an int enum (OPEN == 1); .open/.closed removed
+        #   < 11:  ws.open / ws.closed booleans
+        state = getattr(ws, 'state', None)
+        if state is not None:
+            return state == 1 or str(state).upper().endswith('OPEN')
+        if hasattr(ws, 'closed'):
+            return not ws.closed
+        if hasattr(ws, 'open'):
+            return bool(ws.open)
+        return True
+
     async def ws_pump(self):
         while True:
             msg = await self.ws_queue.get()
-            if self.ws and self.ws.open:
-                await self.ws.send(json.dumps(msg))
+            if self._ws_connected():
+                try:
+                    await self.ws.send(json.dumps(msg))
+                except Exception as e:
+                    log.warning('ws send failed: %s', e)
 
     def speaker_volume(self):
         v = self.config.get('speakerVolume')
