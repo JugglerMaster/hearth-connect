@@ -118,10 +118,11 @@ def parse_v4l2_devices(stdout):
 # A few V4L2 nodes exposed by the Pi's GPU are NOT capture devices and should
 # not be offered as selectable cameras in the base station:
 #   - bcm2835-codec: hardware encode/decode/transcode engine (never a camera)
+#   - bcm2835-isp:   ISP processing/scaler nodes (not a raw camera source)
 #   - v4l2-loopback: virtual devices
-# The onboard Pi Camera (bcm2835-unicam / bcm2835-isp) and USB webcams ARE real
-# capture sources and must be kept.
-_FAKE_VIDEO_PREFIXES = ('bcm2835-codec', 'v4l2-loopback')
+# The onboard Pi Camera (bcm2835-unicam) and USB webcams (UVC, e.g. PS3 Eye)
+# ARE real capture sources and must be kept.
+_FAKE_VIDEO_PREFIXES = ('bcm2835-codec', 'bcm2835-isp', 'v4l2-loopback')
 
 
 def filter_real_cameras(devices):
