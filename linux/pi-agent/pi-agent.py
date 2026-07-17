@@ -112,7 +112,26 @@ def parse_v4l2_devices(stdout):
         elif '/dev/video' in line:
             dev = line.strip()
             devices.append({'id': dev, 'label': (cur or dev)})
-    return devices
+    return filter_real_cameras(devices)
+
+
+# A few V4L2 nodes exposed by the Pi's GPU are NOT capture devices and should
+# not be offered as selectable cameras in the base station:
+#   - bcm2835-codec: hardware encode/decode/transcode engine (never a camera)
+#   - v4l2-loopback: virtual devices
+# The onboard Pi Camera (bcm2835-unicam / bcm2835-isp) and USB webcams ARE real
+# capture sources and must be kept.
+_FAKE_VIDEO_PREFIXES = ('bcm2835-codec', 'v4l2-loopback')
+
+
+def filter_real_cameras(devices):
+    out = []
+    for d in devices:
+        label = (d.get('label') or '').lower()
+        if any(p in label for p in _FAKE_VIDEO_PREFIXES):
+            continue
+        out.append(d)
+    return out
 
 
 def parse_arecord_devices(stdout):
@@ -543,6 +562,25 @@ class Agent:
         self.has_video = bool(self.video_devices)
         self.has_audio = bool(self.audio_devices)
 
+    def refresh_devices(self):
+        """Re-enumerate devices and, if the available set changed (e.g. a USB
+        camera was plugged in after boot, or udev was slow to create the node),
+        re-send CAPABILITIES so the base station sees the new input. Also
+        re-runs ensure_media so a late-arriving camera starts publishing.
+
+        Cameras on a Pi frequently aren't ready when the service starts, so the
+        one-shot enumeration at WELCOME can miss them; this catches that up."""
+        prev_v = self.video_devices
+        prev_a = self.audio_devices
+        self.enumerate_devices()
+        if self.video_devices != prev_v or self.audio_devices != prev_a:
+            log.info('device set changed (v=%d a=%d) — re-sending capabilities',
+                     len(self.video_devices), len(self.audio_devices))
+            self.pick_defaults()
+            self.send_capabilities()
+            if self.source_type() != 'none':
+                self.ensure_media()
+
     def pick_defaults(self):
         if not VIDEO_DEVICE and self.video_devices:
             self.config.setdefault('videoDevice', self.video_devices[0]['id'])
@@ -768,6 +806,15 @@ class Agent:
         except Exception as e:
             log.warning('failed to persist env file %s: %s', CONFIG_FILE, e)
 
+    async def _refresh_loop(self):
+        """Background task: re-scan devices periodically while connected."""
+        while True:
+            await asyncio.sleep(10)
+            try:
+                self.refresh_devices()
+            except Exception as e:
+                log.warning('device refresh failed: %s', e)
+
     async def run(self):
         self.loop = asyncio.get_event_loop()
         _load_gst()
@@ -785,12 +832,16 @@ class Agent:
                         'roomId': ROOM_ID, 'deviceId': self.device_id,
                         'deviceType': 'kiosk', 'label': DEVICE_LABEL}}))
                     pump = asyncio.ensure_future(self.ws_pump())
+                    # Periodically re-scan for devices so cameras plugged in
+                    # after boot (or slow to enumerate) get reported.
+                    refresh_task = asyncio.ensure_future(self._refresh_loop())
                     async for raw in ws:
                         try:
                             await self.handle_message(json.loads(raw))
                         except Exception as e:
                             log.error('handle error: %s', e)
                     pump.cancel()
+                    refresh_task.cancel()
             except Exception as e:
                 log.warning('connection lost: %s', e)
             await asyncio.sleep(self.reconnect_delay)
