@@ -54,7 +54,9 @@ sudo cp "$SCRIPT_DIR/pi-agent.py" "$SCRIPT_DIR/config.env" "$INSTALL_DIR/"
 # placeholder so it is never hardcoded to a missing account).
 UNIT_SRC="$SCRIPT_DIR/hearth-pi-agent.service"
 if grep -q '__AGENT_USER__' "$UNIT_SRC"; then
-  sudo sed "s/__AGENT_USER__/$AGENT_USER/g" "$UNIT_SRC" > /etc/systemd/system/hearth-pi-agent.service
+  # Write the substituted unit via sudo tee — the > redirect runs as the
+  # (non-root) caller, so it would be denied on /etc/systemd/system.
+  sed "s/__AGENT_USER__/$AGENT_USER/g" "$UNIT_SRC" | sudo tee /etc/systemd/system/hearth-pi-agent.service > /dev/null
 else
   sudo cp "$UNIT_SRC" /etc/systemd/system/hearth-pi-agent.service
 fi
