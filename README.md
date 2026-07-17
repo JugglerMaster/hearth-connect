@@ -92,7 +92,7 @@ HTML5 video intercom / baby monitor system. Runs on iPads/iPhones via Safari. Se
 
 ```bash
 # Generate self-signed CA + cert (run once)
-cd deploy && ./gen-cert.sh
+cd docker && ./gen-cert.sh
 
 # Build & run
 docker compose up --build
@@ -130,17 +130,17 @@ cd server && npm install && npm run build && sudo systemctl restart hearth-conne
 ```
 
 > The Raspberry Pi agent installs the same way via
-> `deploy/pi-agent/install-systemd.sh`.
+> `linux/pi-agent/install-systemd.sh`.
 
 ## Deployment
 
 ```bash
-cd deploy
+cd docker
 docker compose up -d
 ```
 
 - Ports: `8090` (HTTPS), `8091` (HTTP → HTTPS redirect)
-- Certs in `deploy/certs/` — install `ca.crt` profile on each iOS device (Settings → General → VPN & Device Management)
+- Certs in `docker/certs/` — install `ca.crt` profile on each iOS device (Settings → General → VPN & Device Management)
 
 ## Development
 
@@ -190,9 +190,11 @@ hearth-connect/
 │           ├── webrtc.js         # getUserMedia + RTCPeerConnection
 │           ├── camera.js         # Monitor page logic (served by monitor.html)
 │           └── base-station.js   # Base station page logic
-├── deploy/
+├── docker/
 │   ├── docker-compose.yml
 │   └── gen-cert.sh
+├── linux/
+│   └── pi-agent/
 ├── favicon.svg
 └── README.md
 ```

@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 # Deploy Hearth-Connect Pi Agent to a remote Raspberry Pi
-# Usage: ./deploy/deploy-pi.sh <pi-host> [pi-user] [config.env path]
+# Usage: ./linux/deploy-pi.sh <pi-host> [pi-user] [config.env path]
 
 set -euo pipefail
 
 PI_HOST="${1:-}"
 PI_USER="${2:-pi}"
-CONFIG_FILE="${3:-deploy/pi-agent/config.env}"
+CONFIG_FILE="${3:-linux/pi-agent/config.env}"
 
 if [[ -z "$PI_HOST" ]]; then
     echo "Usage: $0 <pi-host> [pi-user] [config.env]"
-    echo "Example: $0 192.168.1.50 pi ./deploy/pi-agent/config.env"
+    echo "Example: $0 192.168.1.50 pi ./linux/pi-agent/config.env"
     exit 1
 fi
 
@@ -34,11 +34,11 @@ echo "  DEVICE_LABEL: $DEVICE_LABEL"
 # Copy files
 echo "Copying files..."
 ssh "$PI_USER@$PI_HOST" "mkdir -p ~/hearth-pi-agent"
-scp deploy/pi-agent/install.sh deploy/pi-agent/pi-agent.py deploy/pi-agent/hearth-pi-agent.service deploy/pi-agent/config.env "$PI_USER@$PI_HOST:~/hearth-pi-agent/"
+scp linux/pi-agent/install.sh linux/pi-agent/pi-agent.py linux/pi-agent/hearth-pi-agent.service linux/pi-agent/config.env "$PI_USER@$PI_HOST:~/hearth-pi-agent/"
 
 # Also copy CA cert if it exists
-if [[ -f deploy/certs/ca.pem ]]; then
-    scp deploy/certs/ca.pem "$PI_USER@$PI_HOST:~/hearth-pi-agent/ca.pem"
+if [[ -f docker/certs/ca.pem ]]; then
+    scp docker/certs/ca.pem "$PI_USER@$PI_HOST:~/hearth-pi-agent/ca.pem"
 fi
 
 # Run install on Pi

@@ -53,7 +53,7 @@ connect to its URL and use the served HTML/JS unchanged.
 
 ## Build steps
 1. **Project scaffold** — Android Gradle (Kotlin DSL), `minSdk 24`, `targetSdk 34`, Kotlin + Coroutines.
-2. **Embedded server (Ktor CIO)** — port `SignalingHandler.ts` + `ChannelManager.ts` + `ConfigManager.ts` to Kotlin. HTTPS via self-signed cert (bundle or generate at first run; reuse `deploy/gen-cert.sh` logic).
+2. **Embedded server (Ktor CIO)** — port `SignalingHandler.ts` + `ChannelManager.ts` + `ConfigManager.ts` to Kotlin. HTTPS via self-signed cert (bundle or generate at first run; reuse `docker/gen-cert.sh` logic).
 3. **Static assets** — bundle `server/public/*` into `assets/`; Ktor serves them so iPads/browsers still work as peers.
 4. **Native WebRTC** — add `org.webrtc:google-webrtc`. Port the protocol from `webrtc.js`: `JOIN_ROOM / OFFER / ANSWER / ICE / SUBSCRIBER_JOINED` etc. Use `Camera2Capturer` + `SurfaceViewRenderer`.
 5. **Foreground service** — `startForeground` with persistent notification; `WakeLock`/`WifiLock`; handle Doze (API 23+) and `foregroundServiceType` (API 34).

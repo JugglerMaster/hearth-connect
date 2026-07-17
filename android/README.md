@@ -84,5 +84,5 @@ on the host to hit the embedded signaling server.
 - Port room/device logic from `server/src/SignalingHandler.ts` into `SignalingServer`.
 - Camera capture (`Camera2Capturer`) + `SurfaceViewRenderer` in `WebRTCManager`.
 - JSON config persistence (port `ConfigManager.ts`) in app-internal storage.
-- HTTPS self-signed cert for the Ktor server (reuse `deploy/gen-cert.sh`).
+- HTTPS self-signed cert for the Ktor server (reuse `docker/gen-cert.sh`).
 - Wall-mount: enable Samsung "Protect battery", kiosk/screen-pin, disable auto-revoke.

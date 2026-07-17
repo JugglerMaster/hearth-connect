@@ -14,3 +14,6 @@ updates.txt
 # Python bytecode (pi-agent + tooling)
 __pycache__/
 *.pyc
+
+# Pi agent bytecode
+linux/pi-agent/__pycache__/

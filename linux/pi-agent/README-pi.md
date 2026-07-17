@@ -33,7 +33,7 @@ This is a **kiosk client deployment** — the Pi acts as a camera/mic publisher 
 ```bash
 sudo apt-get install -y git
 git clone https://github.com/JugglerMaster/hearth-connect hearth-connect
-cd hearth-connect/deploy/pi-agent
+cd hearth-connect/linux/pi-agent
 chmod +x install.sh
 ./install.sh
 
@@ -67,7 +67,7 @@ blank for the default ALSA playback device).
 
 ## Install the self-signed CA (optional)
 
-If your server uses the self-signed TLS cert from `deploy/gen-cert.sh`, install the CA on the
+If your server uses the self-signed TLS cert from `docker/gen-cert.sh`, install the CA on the
 Pi so `wss://` is trusted:
 
 ```bash
@@ -102,7 +102,7 @@ the native stack is missing.
 
 **Local unit tests (runnable now, no deps):**
 ```bash
-cd deploy/pi-agent
+cd linux/pi-agent
 python3 -m unittest test_pi_agent.py -v
 ```
 Covers: `v4l2-ctl`/`arecord -l` parsing, `SourceType` decision, the audio
@@ -112,7 +112,7 @@ construction (including `TEST_SOURCE` substitution).
 **End-to-end smoke test (needs GStreamer + a running server):**
 ```bash
 # On a Pi, or any Linux box with GStreamer + `websockets` installed:
-cd deploy/pi-agent
+cd linux/pi-agent
 SERVER_URL=wss://host:8090 ROOM_ID=test python3 -m unittest e2e_smoke.py -v
 ```
 `e2e_smoke.py` launches the real agent with `TEST_SOURCE=1` (no real camera/mic needed),

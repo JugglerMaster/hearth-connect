@@ -67,7 +67,7 @@ Linux can't use to drive iOS anyway.
 - Default port `8090` (env `SERVER_PORT`), TLS via `server/certs` when
   `--tls` or `TLS_ENABLED=true`. Self-signed → Puppeteer must pass
   `ignoreHTTPSErrors: true` and the device must already trust the CA
-  (see deploy/gen-cert.sh; otherwise Safari blocks the page).
+  (see docker/gen-cert.sh; otherwise Safari blocks the page).
 - For a friction-free debug loop on LAN, run the server with TLS OFF on a
   plain HTTP port OR serve over `localhost`-style tunnel; camera/mic still
   needs HTTPS for real capture, but for DOM/signaling inspection plain HTTP
