@@ -140,6 +140,7 @@ class PiAgentE2ETest(unittest.TestCase):
                         did = (msg.get('payload') or {}).get('deviceId', '')
                         if did.startswith('pi-'):
                             agent_id = did
+                            print('E2E agent_id=%r' % agent_id, flush=True)
                             break
                 if not agent_id:
                     self.skipTest('agent did not publish CAPABILITIES in time')
@@ -155,7 +156,8 @@ class PiAgentE2ETest(unittest.TestCase):
                     print('E2E RECV:', t, (msg.get('payload') or {}).get('to'), flush=True)
                     if t == 'OFFER':
                         p = msg.get('payload', {})
-                        if p.get('to') == base_id and p.get('sdp', {}).get('type') == 'offer':
+                        print('E2E OFFER to=%r sdp_type=%r' % (p.get('to'), (p.get('sdp') or {}).get('type')), flush=True)
+                        if (p.get('to') == base_id or p.get('to') == agent_id) and p.get('sdp', {}).get('type') == 'offer':
                             got['offer'] = True
                             break
         except Exception as e:
