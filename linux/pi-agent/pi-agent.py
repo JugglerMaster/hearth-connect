@@ -278,7 +278,7 @@ def monitor_pipeline_str(has_video, has_audio, width, height, framerate,
             src = 'alsasrc'
             dev = ('device=' + audio_device) if audio_device else ''
         parts.append(
-            '{src} {dev} ! audioconvert ! audioresample ! level ! opusenc ! rtpopuspay ! queue ! wb.'.format(
+            '{src} {dev} ! audioconvert ! audioresample ! capsfilter caps=audio/x-raw,channels=1 ! level ! opusenc ! rtpopuspay ! queue ! wb.'.format(
                 src=src, dev=dev))
     return ' '.join(parts)
 
@@ -336,6 +336,7 @@ class MonitorSession:
         self.talkback_active = agent.talkback_active
         self.rxvol = None
         self._making_offer = False
+        self._mid_map = {}
         self.build()
 
     def build(self):
@@ -411,6 +412,23 @@ class MonitorSession:
         # Muted until talkback is enabled or the base sets audioMode='base'.
         return not (self.agent.talkback_active or self.agent.config.get('audioMode') == 'base')
 
+    def _parse_mids(self, sdp_text):
+        """Build mline_index→sdpMid mapping from an SDP string.
+
+        GStreamer webrtcbin uses mids like ``video0``/``audio1`` (not bare
+        ``"0"``/``"1"``).  Firefox 127+ enforces strict transceiver mid
+        matching on addIceCandidate, so each candidate *must* carry the exact
+        mid string from the SDP it belongs to.
+        """
+        mid_map = {}
+        mline_idx = -1
+        for line in sdp_text.splitlines():
+            if line.startswith('m='):
+                mline_idx += 1
+            elif line.startswith('a=mid:') and mline_idx >= 0:
+                mid_map[mline_idx] = line[6:]
+        return mid_map
+
     def set_talkback(self, active):
         self.talkback_active = active
         self.apply_rx_volume()
@@ -440,6 +458,7 @@ class MonitorSession:
         promise2 = Gst.Promise.new_with_change_func(self.on_local_description_set)
         self.webrtc.emit('set-local-description', offer, promise2)
         text = offer.sdp.as_text()
+        self._mid_map = self._parse_mids(text)
         self.agent.enqueue_ws({'type': 'OFFER', 'payload': {
             'to': self.subscriber_id, 'sdp': {'type': 'offer', 'sdp': text}}})
 
@@ -449,9 +468,11 @@ class MonitorSession:
     def on_ice_candidate(self, element, mline_index, candidate):
         # GStreamer >= 1.20 emits (element, mline_index:int, candidate:str).
         # Older bindings passed a WebRTCICECandidate object instead; handle both.
+        # Firefox requires sdpMid to match the SDP's a=mid (e.g. "video0",
+        # "audio1") or addIceCandidate fails; Chrome/iOS tolerate null/mismatch.
         if isinstance(candidate, str):
             cand_str = candidate
-            mid = None
+            mid = self._mid_map.get(mline_index)
         else:
             cand_str = candidate.candidate
             mline_index = candidate.sdpMLineIndex

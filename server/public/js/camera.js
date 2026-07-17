@@ -810,31 +810,22 @@
       renderFtDebug();
     });
 
-    // Handle broadcast subscriber joined (kiosk receiving base's broadcast)
+    // Handle broadcast subscriber joined (kiosk receiving base's broadcast).
+    // NOTE: a single SUBSCRIBER_JOINED message triggers BOTH subscriberJoined
+    // listeners. The non-broadcast case is handled by the listener above; this
+    // one must ONLY act on the broadcast branch, otherwise the subscriber count
+    // double-increments (and never comes back down).
     sig.on('subscriberJoined', (data) => {
-      if (data.isBroadcast) {
-        // Base station is sending its broadcast to us
-        console.log('[kiosk] broadcast subscriberJoined from', data.subscriberId);
-        broadcastPeerId = data.subscriberId;
-        // Create a recv broadcast peer connection to receive base's broadcast.
-        // (handleOffer will reuse this same PC when the offer arrives.)
-        rtc.createBroadcastPeerConnection(broadcastPeerId, true);
-        ftDbgState.base = broadcastPeerId;
-        ftDbgState.pc = 'new';
-        renderFtDebug();
-      } else {
-        subscriberCount++;
-        debugSubs.textContent = 'subs:' + subscriberCount;
-        logEvent('subJoined:' + data.subscriberId.slice(-4));
-        const peerId = data.subscriberId;
-        subscribers.add(peerId);
-        if (!rtc.localStream) {
-          logEvent('NO-LOCALSTREAM');
-          console.log('[kiosk] WARN: no localStream for', peerId, '- will offer once media starts');
-          return;
-        }
-        offerToSubscriber(peerId);
-      }
+      if (!data.isBroadcast) return;
+      // Base station is sending its broadcast to us
+      console.log('[kiosk] broadcast subscriberJoined from', data.subscriberId);
+      broadcastPeerId = data.subscriberId;
+      // Create a recv broadcast peer connection to receive base's broadcast.
+      // (handleOffer will reuse this same PC when the offer arrives.)
+      rtc.createBroadcastPeerConnection(broadcastPeerId, true);
+      ftDbgState.base = broadcastPeerId;
+      ftDbgState.pc = 'new';
+      renderFtDebug();
     });
 
     // Handle source added - auto-subscribe to broadcasts, unless this kiosk
