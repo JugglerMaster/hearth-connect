@@ -202,10 +202,13 @@ def monitor_pipeline_str(has_video, has_audio, width, height, framerate,
         else:
             src = 'v4l2src'
             dev = ('device=' + video_device) if video_device else ''
+        # `tune=zerolatency` is an x264enc property; the Pi's hardware encoder
+        # (v4l2h264enc) rejects it. Only apply it for the software encoder.
+        enc_opts = 'tune=zerolatency key-int-max=30' if enc == 'x264enc' else 'key-int-max=30'
         parts.append(
             '{src} {dev} ! videoconvert ! video/x-raw,format=I420,width={w},height={h},framerate={fr}/1 '
-            '! {enc} tune=zerolatency key-int-max=30 ! rtph264pay config-interval=-1 ! queue ! wb'.format(
-                src=src, dev=dev, w=width, h=height, fr=framerate, enc=enc))
+            '! {enc} {enc_opts} ! rtph264pay config-interval=-1 ! queue ! wb'.format(
+                src=src, dev=dev, w=width, h=height, fr=framerate, enc=enc, enc_opts=enc_opts))
     if has_audio:
         if test_source:
             src = 'audiotestsrc'
@@ -494,7 +497,13 @@ class BroadcastSession:
 
 class Agent:
     def __init__(self):
-        self.device_id = 'pi-' + rand_id()
+        # Stable device id: persist across restarts so the base station doesn't
+        # accumulate duplicate "Pi Agent" entries (a fresh random id every launch
+        # would show as a new device on each restart / page refresh).
+        import os as _os
+        id_dir = _os.path.dirname(CONFIG_FILE) or '.'
+        self.device_id_file = _os.path.join(id_dir, 'device_id')
+        self.device_id = self._load_device_id()
         self.ws = None
         self.has_video = False
         self.has_audio = False
@@ -506,6 +515,26 @@ class Agent:
         self.broadcast_sources = {}   # publisherId -> source dict from SOURCE_ADDED
         self.ws_queue = asyncio.Queue()
         self.loop = None
+
+    def _load_device_id(self):
+        """Return a stable device id, generating and persisting one on first run."""
+        import os as _os
+        try:
+            if _os.path.exists(self.device_id_file):
+                with open(self.device_id_file) as f:
+                    existing = f.read().strip()
+                if existing:
+                    return existing
+        except Exception:
+            pass
+        new_id = 'pi-' + rand_id()
+        try:
+            _os.makedirs(_os.path.dirname(self.device_id_file) or '.', exist_ok=True)
+            with open(self.device_id_file, 'w') as f:
+                f.write(new_id)
+        except Exception as e:
+            log.warning('could not persist device id: %s', e)
+        return new_id
         self.reconnect_delay = 1
         self.talkback_active = False
         self.resolution = DEFAULT_RESOLUTION

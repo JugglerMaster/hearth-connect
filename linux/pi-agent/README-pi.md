@@ -4,6 +4,24 @@
 > runnable anywhere). The GStreamer media path still needs validation on real Pi hardware
 > (or a Linux box with GStreamer) via `e2e_smoke.py`. Use at your own risk until then.
 
+> **🚧 Status: not fully working yet.** As of the last update the agent connects to the
+> server over a verified TLS link, correctly reports its capabilities (camera + mic) to the
+> base station, and the GStreamer pipeline now builds. Fixed so far: device enumeration
+> (periodic re-scan so cameras plugged in after boot are seen), a `websockets` API trap
+> (`ws_pump` checked the removed `.open` attribute, so it never sent any queued message),
+> and an invalid `v4l2h264enc tune=zerolatency` in the pipeline (the Pi's hardware encoder
+> rejects `tune`; only `x264enc` uses it). **What is still unverified:**
+> - The actual WebRTC media flow end-to-end (does the base station receive a live
+>   video/audio feed from the Pi?). The pipeline builds without error, but a live feed
+>   hasn't been confirmed on real hardware.
+> - **Onboard Pi Camera** (CSI): on modern Pi OS it is exposed via `bcm2835-unicam` /
+>   `libcamera`, NOT a plain `v4l2src` device. `MonitorSession.build()` currently always uses
+>   `v4l2src`, so the Pi Cam will likely fail to capture — it needs `libcamerasrc` detection
+>   and a separate pipeline branch. USB UVC cameras (e.g. PS3 Eye) work via `v4l2src`.
+> - Talkback / broadcast audio playback on the Pi's speaker.
+> A temporary `log.info` in `send_capabilities()` is left in for debugging; remove once the
+> media path is confirmed working.
+
 A headless Raspberry Pi client for Hearth-Connect. Runs on **Pi OS Lite** (no desktop, no
 screen) as a native Python + GStreamer WebRTC publisher. It streams the camera and/or
 microphone to a Hearth-Connect room, and the base station can monitor, talk back to, and
