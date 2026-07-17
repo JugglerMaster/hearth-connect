@@ -296,6 +296,15 @@ class MonitorSession:
         self.webrtc.connect('on-negotiation-needed', self.on_negotiation_needed)
         self.webrtc.connect('on-ice-candidate', self.on_ice_candidate)
         self.webrtc.connect('pad-added', self.on_pad_added)
+        # webrtcbin does not auto-create transceivers from linked request pads;
+        # explicitly declare one per media (SENDRECV so talkback audio can be
+        # received). Must happen before the pipeline goes to PLAYING or
+        # on-negotiation-needed never fires.
+        direction = GstWebRTC.WebRTCRTPTransceiverDirection.SENDRECV
+        if self.has_video:
+            self.webrtc.emit('add-transceiver', direction, None)
+        if self.has_audio:
+            self.webrtc.emit('add-transceiver', direction, None)
         bus = self.pipeline.get_bus()
         bus.add_signal_watch()
         bus.connect('message', self.on_bus_message)
