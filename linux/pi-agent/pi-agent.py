@@ -83,6 +83,18 @@ def gst_element_exists(name):
     return Gst.ElementFactory.find(name) is not None
 
 
+def gst_element_has_prop(name, prop):
+    """True if element `name` exists and exposes property `prop`."""
+    _load_gst()
+    factory = Gst.ElementFactory.find(name)
+    if factory is None:
+        return False
+    element = factory.create(name)
+    if element is None:
+        return False
+    return element.find_property(prop) is not None
+
+
 def _load_gst():
     """Lazily import GStreamer + WebRTC bindings and init GStreamer.
 
@@ -202,9 +214,13 @@ def monitor_pipeline_str(has_video, has_audio, width, height, framerate,
         else:
             src = 'v4l2src'
             dev = ('device=' + video_device) if video_device else ''
-        # `tune=zerolatency` is an x264enc property; the Pi's hardware encoder
-        # (v4l2h264enc) rejects it. Only apply it for the software encoder.
-        enc_opts = 'tune=zerolatency key-int-max=30' if enc == 'x264enc' else 'key-int-max=30'
+        # Encoder-specific options:
+        #  - `tune=zerolatency` and `key-int-max` are x264enc (software) properties.
+        #  - `v4l2h264enc` (Pi hardware) rejects both; pass no extra options.
+        if enc == 'x264enc':
+            enc_opts = 'tune=zerolatency key-int-max=30'
+        else:
+            enc_opts = 'keyframe-period=30' if gst_element_has_prop(enc, 'keyframe-period') else ''
         parts.append(
             '{src} {dev} ! videoconvert ! video/x-raw,format=I420,width={w},height={h},framerate={fr}/1 '
             '! {enc} {enc_opts} ! rtph264pay config-interval=-1 ! queue ! wb'.format(
