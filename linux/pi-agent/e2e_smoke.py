@@ -88,12 +88,15 @@ class PiAgentE2ETest(unittest.TestCase):
         # prerolls and produces an OFFER. The real deployment can override
         # VIDEO_ENCODER back to v4l2h264enc once the encoder is debugged.
         env['VIDEO_ENCODER'] = 'x264enc'
+        env['RESOLUTION'] = '480p'
+        env['FRAMERATE'] = '30'
         env['SERVER_URL'] = SERVER_URL
         env['ROOM_ID'] = ROOM_ID
         env['DEVICE_LABEL'] = DEVICE_LABEL
+        cls._agent_log = os.path.join(_HERE, 'e2e_agent_out.log')
         cls.agent = subprocess.Popen(
             [sys.executable, os.path.join(_HERE, 'pi-agent.py')],
-            env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            env=env, stdout=open(cls._agent_log, 'w'), stderr=subprocess.STDOUT, text=True)
         cls.loop = asyncio.new_event_loop()
 
     @classmethod
@@ -149,6 +152,7 @@ class PiAgentE2ETest(unittest.TestCase):
                         continue  # keep waiting for the OFFER to be relayed
                     msg = json.loads(raw)
                     t = msg.get('type')
+                    print('E2E RECV:', t, (msg.get('payload') or {}).get('to'), flush=True)
                     if t == 'OFFER':
                         p = msg.get('payload', {})
                         if p.get('to') == base_id and p.get('sdp', {}).get('type') == 'offer':
