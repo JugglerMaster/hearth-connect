@@ -18,10 +18,15 @@ sudo apt-get install -y \
   gir1.2-gstreamer-1.0 \
   libssl-dev \
   v4l-utils \
-  alsa-utils
+  alsa-utils \
+  python3-pip
 
-python3 -m pip install --upgrade pip
-python3 -m pip install websockets
+if python3 -m pip --version >/dev/null 2>&1; then
+  python3 -m pip install --upgrade pip
+  python3 -m pip install websockets
+else
+  echo "WARNING: pip is unavailable; install manually: python3 -m pip install websockets"
+fi
 
 echo "Done. Copy config.env and enable the service:"
 echo "  sudo cp hearth-pi-agent.service /etc/systemd/system/"
