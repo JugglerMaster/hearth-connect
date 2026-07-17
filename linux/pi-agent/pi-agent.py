@@ -714,6 +714,7 @@ class Agent:
             self.sessions.clear()
             self._last_video_device = self.config.get('videoDevice', VIDEO_DEVICE)
             self._last_audio_device = self.config.get('audioDevice', AUDIO_DEVICE)
+            self.persist_env()
 
         # Resolution / framerate: the base station can change these via the
         # camera config. They're baked into the GStreamer pipeline caps, so a
@@ -736,30 +737,33 @@ class Agent:
             self.persist_env()
 
     def persist_env(self):
-        """Write the current runtime config back to the env file so changes
-        driven by the base station survive a restart. Recreates the file from
-        defaults if it is missing."""
+        """Write base-station-driven settings back to the env file so they
+        survive a restart. The values persisted are exactly the ones the base
+        station can change live: VIDEO_DEVICE, AUDIO_DEVICE, RESOLUTION,
+        FRAMERATE. Any other env vars (SERVER_URL, ROOM_ID, SPEAKER_DEVICE,
+        AUDIO_SINK, MAX_SUBSCRIBERS, TEST_SOURCE, …) are left untouched.
+        Recreates the file from defaults if it is missing."""
         try:
             lines = []
             if os.path.exists(CONFIG_FILE):
                 with open(CONFIG_FILE) as f:
                     lines = f.read().splitlines()
             out = []
-            seen = set()
+            dropped = set()
             for line in lines:
                 key = line.split('=', 1)[0].strip() if '=' in line else ''
-                if key in ('RESOLUTION', 'FRAMERATE'):
-                    seen.add(key)
+                if key in ('VIDEO_DEVICE', 'AUDIO_DEVICE', 'RESOLUTION', 'FRAMERATE'):
+                    dropped.add(key)
                     continue  # drop old value; re-emit below
                 out.append(line)
-            # Append / update the runtime-driven values.
+            out.append('VIDEO_DEVICE=' + str(self._last_video_device))
+            out.append('AUDIO_DEVICE=' + str(self._last_audio_device))
             out.append('RESOLUTION=' + str(self.resolution))
             out.append('FRAMERATE=' + str(self.framerate))
-            seen.update(('RESOLUTION', 'FRAMERATE'))
             os.makedirs(os.path.dirname(CONFIG_FILE) or '.', exist_ok=True)
             with open(CONFIG_FILE, 'w') as f:
                 f.write('\n'.join(out) + '\n')
-            log.info('persisted RESOLUTION/FRAMERATE to %s', CONFIG_FILE)
+            log.info('persisted device/resolution/framerate to %s', CONFIG_FILE)
         except Exception as e:
             log.warning('failed to persist env file %s: %s', CONFIG_FILE, e)
 

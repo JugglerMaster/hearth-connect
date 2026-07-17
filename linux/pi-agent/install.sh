@@ -30,7 +30,17 @@ else
   echo "WARNING: could not install websockets; install manually: apt install python3-websockets"
 fi
 
-echo "Done. Copy config.env and enable the service:"
-echo "  sudo cp hearth-pi-agent.service /etc/systemd/system/"
-echo "  sudo systemctl daemon-reload"
-echo "  sudo systemctl enable --now hearth-pi-agent"
+# ─── Install agent + enable systemd service (no manual steps needed) ───
+INSTALL_DIR=/opt/hearth-pi-agent
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+sudo mkdir -p "$INSTALL_DIR"
+sudo cp "$SCRIPT_DIR/pi-agent.py" "$SCRIPT_DIR/config.env" "$INSTALL_DIR/"
+sudo cp "$SCRIPT_DIR/hearth-pi-agent.service" /etc/systemd/system/
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now hearth-pi-agent
+
+echo "Done. The Pi Agent is installed at $INSTALL_DIR and running as a systemd service."
+echo "  status: sudo systemctl status hearth-pi-agent"
+echo "  logs:   sudo journalctl -u hearth-pi-agent -f"
