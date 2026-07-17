@@ -133,7 +133,10 @@ class PiAgentE2ETest(unittest.TestCase):
                     'roomId': ROOM_ID, 'deviceId': base_id,
                     'deviceType': 'base', 'label': 'E2E Base'}}))
                 # Discover the agent's device id from its CAPABILITIES, then
-                # subscribe to it the same way the real base station does.
+                # wait for its SOURCE_ADDED (the agent publishes its source only
+                # AFTER sending capabilities, so subscribing on CAPABILITIES
+                # alone races the server and silently no-ops). The real base
+                # station subscribes to a published source, so mirror that.
                 agent_id = None
                 for _ in range(20):
                     try:
@@ -150,6 +153,11 @@ class PiAgentE2ETest(unittest.TestCase):
                         if did.startswith('pi-'):
                             agent_id = did
                             print('E2E agent_id=%r' % agent_id, flush=True)
+                    elif t == 'SOURCE_ADDED':
+                        # Confirm it's the agent's source before subscribing.
+                        src = msg.get('payload') or {}
+                        if src.get('publisherId') == agent_id:
+                            print('E2E source_added for %r' % agent_id, flush=True)
                             break
                 if not agent_id:
                     self.skipTest('agent did not publish CAPABILITIES in time')

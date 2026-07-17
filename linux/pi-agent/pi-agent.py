@@ -135,6 +135,65 @@ def filter_real_cameras(devices):
     return out
 
 
+def parse_v4l2_formats(stdout):
+    """Parse `v4l2-ctl --list-formats-ext` into a list of
+    {width, height, framerates:[float,...]} (plan 06 §A / PS3Eye fix).
+
+    Cameras like the PS3 Eye only expose discrete framerates (e.g. 15/30/60,
+    never 24). Pinning an unsupported framerate in the pipeline caps makes
+    v4l2src fail to preroll and the WebRTC session never produces an OFFER,
+    so callers use this to clamp to a real mode.
+    """
+    modes = []
+    cur = None  # dict with width/height; collects framerates until next Size
+    for line in (stdout or '').splitlines():
+        s = line.strip()
+        if s.startswith('Size: Discrete'):
+            try:
+                w, h = s.split('Size: Discrete')[1].strip().split('x')
+                cur = {'width': int(w), 'height': int(h), 'framerates': []}
+                modes.append(cur)
+            except Exception:
+                cur = None
+        elif s.startswith('Interval: Discrete') and cur is not None:
+            # e.g. 'Interval: Discrete 0.033s (30.000 fps)'
+            if '(' in s and 'fps' in s:
+                try:
+                    fps = float(s.split('(')[1].split('fps')[0].strip())
+                    cur['framerates'].append(fps)
+                except Exception:
+                    pass
+    return modes
+
+
+def supported_framerate(video_device, width, height, desired):
+    """Return a framerate the camera actually supports for (width,height), or
+    None to leave the pipeline framerate unconstrained.
+
+    PS3 Eye / many UVC cams only support discrete framerates; pinning a
+    non-existent one (e.g. the 24fps default) makes v4l2src fail to preroll.
+    Picks the nearest supported rate <= desired, else the highest available.
+    """
+    if not video_device:
+        return None
+    try:
+        out = subprocess.run(
+            ['v4l2-ctl', '--device=' + video_device, '--list-formats-ext'],
+            capture_output=True, text=True, timeout=10)
+        modes = parse_v4l2_formats(out.stdout)
+    except Exception:
+        return None
+    for m in modes:
+        if m['width'] == width and m['height'] == height and m['framerates']:
+            fr = m['framerates']
+            # nearest <= desired
+            lower = [f for f in fr if f <= float(desired)]
+            if lower:
+                return int(max(lower)) if max(lower).is_integer() else max(lower)
+            return int(min(fr)) if min(fr).is_integer() else min(fr)
+    return None
+
+
 def parse_arecord_devices(stdout):
     """Parse `arecord -l` output into [{id,label}] (plan 06 §A)."""
     devices = []
@@ -288,8 +347,20 @@ class MonitorSession:
             'v4l2h264enc' if gst_element_exists('v4l2h264enc') else 'x264enc')
         if enc == 'x264enc':
             log.warning('using software x264enc (higher RAM/CPU on Pi)')
+        # Clamp the framerate to one the camera actually supports for this
+        # resolution. Many UVC cams (e.g. PS3 Eye) only expose discrete rates
+        # like 15/30/60 — pinning a non-existent rate (the 24fps default) makes
+        # v4l2src fail to preroll and the session never produces an OFFER.
+        safe_fr = supported_framerate(cfg_video, width, height, self.agent.framerate)
+        if safe_fr is not None and safe_fr != self.agent.framerate:
+            log.warning('camera %s does not support %s@%dfps — using %dfps',
+                        cfg_video or 'default', self.agent.resolution,
+                        self.agent.framerate, safe_fr)
+            framerate = safe_fr
+        else:
+            framerate = self.agent.framerate
         pipeline_str = monitor_pipeline_str(
-            self.has_video, self.has_audio, width, height, self.agent.framerate,
+            self.has_video, self.has_audio, width, height, framerate,
             cfg_video, cfg_audio, enc, STUN, TEST_SOURCE)
         log.info('monitor session %s pipeline: %s', self.subscriber_id, pipeline_str)
         self.pipeline_str = pipeline_str

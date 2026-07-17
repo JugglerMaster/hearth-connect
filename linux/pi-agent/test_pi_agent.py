@@ -62,6 +62,60 @@ card 2: U0x46d0x81b [USB Device], device 0: USB Audio [USB Audio]
         self.assertEqual(pa.parse_arecord_devices(''), [])
 
 
+_PS3_FMT = """ioctl: VIDIOC_ENUM_FMT
+	Type: Video Capture
+
+	[1]: 'YUYV' (YUYV 4:2:2)
+		Size: Discrete 320x240
+			Interval: Discrete 0.033s (30.000 fps)
+		Size: Discrete 640x480
+			Interval: Discrete 0.067s (15.000 fps)
+			Interval: Discrete 0.033s (30.000 fps)
+"""
+
+
+class TestParseV4L2Formats(unittest.TestCase):
+    def test_ps3eye_modes(self):
+        modes = pa.parse_v4l2_formats(_PS3_FMT)
+        self.assertEqual(
+            [(m['width'], m['height'], m['framerates']) for m in modes],
+            [(320, 240, [30.0]), (640, 480, [15.0, 30.0])])
+
+    def test_empty(self):
+        self.assertEqual(pa.parse_v4l2_formats(''), [])
+        self.assertEqual(pa.parse_v4l2_formats(None), [])
+
+
+class TestSupportedFramerate(unittest.TestCase):
+    def _patch_v4l2(self, out=_PS3_FMT):
+        import unittest.mock as mock
+        class _R:
+            stdout = out
+        return mock.patch.object(pa.subprocess, 'run', lambda *a, **k: _R())
+
+    def test_clamps_to_nearest_lower(self):
+        with self._patch_v4l2():
+            # PS3 Eye 640x480 supports 15/30; 24 -> nearest <= is 15.
+            self.assertEqual(pa.supported_framerate('/dev/video0', 640, 480, 24), 15)
+
+    def test_picks_exact_match(self):
+        with self._patch_v4l2():
+            self.assertEqual(pa.supported_framerate('/dev/video0', 640, 480, 30), 30)
+
+    def test_highest_when_all_above(self):
+        with self._patch_v4l2():
+            # desired 10 < 15 -> returns lowest available (15).
+            self.assertEqual(pa.supported_framerate('/dev/video0', 640, 480, 10), 15)
+
+    def test_unsupported_resolution_returns_none(self):
+        with self._patch_v4l2():
+            self.assertIsNone(pa.supported_framerate('/dev/video0', 1280, 720, 30))
+
+    def test_no_device_returns_none(self):
+        with self._patch_v4l2():
+            self.assertIsNone(pa.supported_framerate('', 640, 480, 30))
+
+
 class TestSourceType(unittest.TestCase):
     def test_combos(self):
         self.assertEqual(pa.source_type(True, True), 'video+audio')
