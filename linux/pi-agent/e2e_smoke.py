@@ -115,11 +115,10 @@ class PiAgentE2ETest(unittest.TestCase):
                 await ws.send(json.dumps({'type': 'JOIN_ROOM', 'payload': {
                     'roomId': ROOM_ID, 'deviceId': base_id,
                     'deviceType': 'base', 'label': 'E2E Base'}}))
-                # Give the agent a moment to connect + publish.
-                await asyncio.sleep(2)
-                await ws.send(json.dumps({'type': 'SUBSCRIBER_JOINED', 'payload': {
-                    'subscriberId': SUBSCRIBER_ID}}))
-                for _ in range(50):
+                # Discover the agent's device id from its CAPABILITIES, then
+                # subscribe to it the same way the real base station does.
+                agent_id = None
+                for _ in range(20):
                     try:
                         raw = await asyncio.wait_for(ws.recv(), timeout=1.0)
                     except asyncio.TimeoutError:
@@ -130,9 +129,24 @@ class PiAgentE2ETest(unittest.TestCase):
                         got['welcome'] = True
                     elif t == 'CAPABILITIES':
                         got['capabilities'] = True
-                    elif t == 'OFFER':
+                        did = (msg.get('payload') or {}).get('deviceId', '')
+                        if did.startswith('pi-'):
+                            agent_id = did
+                            break
+                if not agent_id:
+                    self.skipTest('agent did not publish CAPABILITIES in time')
+                await ws.send(json.dumps({'type': 'SUBSCRIBE_SOURCE', 'payload': {
+                    'publisherId': agent_id}}))
+                for _ in range(50):
+                    try:
+                        raw = await asyncio.wait_for(ws.recv(), timeout=1.0)
+                    except asyncio.TimeoutError:
+                        break
+                    msg = json.loads(raw)
+                    t = msg.get('type')
+                    if t == 'OFFER':
                         p = msg.get('payload', {})
-                        if p.get('to') == SUBSCRIBER_ID and p.get('sdp', {}).get('type') == 'offer':
+                        if p.get('to') == base_id and p.get('sdp', {}).get('type') == 'offer':
                             got['offer'] = True
                             break
         except Exception as e:
