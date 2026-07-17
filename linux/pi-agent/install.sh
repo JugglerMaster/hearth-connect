@@ -47,7 +47,37 @@ else
 fi
 
 sudo mkdir -p "$INSTALL_DIR"
-sudo cp "$SCRIPT_DIR/pi-agent.py" "$SCRIPT_DIR/config.env" "$INSTALL_DIR/"
+sudo cp "$SCRIPT_DIR/pi-agent.py" "$INSTALL_DIR/"
+
+# ─── Prompt for the server URL (used by the agent to connect) ───
+# Precedence: $SERVER_URL env/arg > existing config.env value > prompt.
+# If stdin is not a TTY (e.g. automated run) and nothing is provided, the
+# placeholder in config.env is left untouched for the user to edit later.
+CONFIG_SRC="$SCRIPT_DIR/config.env"
+if [[ -f "$CONFIG_SRC" ]]; then
+  EXISTING_URL="$(grep -E '^SERVER_URL=' "$CONFIG_SRC" | head -1 | cut -d= -f2-)"
+fi
+EXISTING_URL="${EXISTING_URL:-wss://your-server-host:8090}"
+
+if [[ -n "${SERVER_URL:-}" ]]; then
+  : # already set via environment
+elif [[ -t 0 ]]; then
+  read -r -p "Server URL for the Hearth-Connect server [${EXISTING_URL}]: " SERVER_URL
+  SERVER_URL="${SERVER_URL:-$EXISTING_URL}"
+fi
+# Write the resolved URL into the copied config.env (only if we have one).
+if [[ -n "${SERVER_URL:-}" ]]; then
+  TMP_CFG="$(mktemp)"
+  if [[ -f "$CONFIG_SRC" ]]; then
+    sed "s|^SERVER_URL=.*|SERVER_URL=$SERVER_URL|" "$CONFIG_SRC" > "$TMP_CFG"
+  else
+    printf 'SERVER_URL=%s\n' "$SERVER_URL" > "$TMP_CFG"
+  fi
+  sudo cp "$TMP_CFG" "$INSTALL_DIR/config.env"
+  rm -f "$TMP_CFG"
+else
+  sudo cp "$CONFIG_SRC" "$INSTALL_DIR/config.env"
+fi
 
 # (Re)generate the systemd unit with the correct User= so re-running this
 # script updates an existing install too. We substitute into the repo template
@@ -65,5 +95,6 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now hearth-pi-agent
 
 echo "Done. The Pi Agent is installed at $INSTALL_DIR and running as user '$AGENT_USER'."
+echo "  server: ${SERVER_URL:-<not set — edit $INSTALL_DIR/config.env>}"
 echo "  status: sudo systemctl status hearth-pi-agent"
 echo "  logs:   sudo journalctl -u hearth-pi-agent -f"
