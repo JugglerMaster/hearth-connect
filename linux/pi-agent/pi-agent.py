@@ -351,12 +351,10 @@ class MonitorSession:
         self.rxvol.set_property('mute', not allowed)
 
     def on_negotiation_needed(self, element):
-        log.info('monitor %s: on_negotiation_needed fired', self.subscriber_id)
         promise = Gst.Promise.new_with_change_func(self.on_offer_created)
         element.emit('create-offer', None, promise)
 
     def on_offer_created(self, promise):
-        log.info('monitor %s: on_offer_created', self.subscriber_id)
         promise.wait()
         reply = promise.get_reply()
         offer = reply.get_value('offer')
@@ -369,12 +367,21 @@ class MonitorSession:
     def on_local_description_set(self, promise):
         promise.wait()
 
-    def on_ice_candidate(self, element, cand):
+    def on_ice_candidate(self, element, mline_index, candidate):
+        # GStreamer >= 1.20 emits (element, mline_index:int, candidate:str).
+        # Older bindings passed a WebRTCICECandidate object instead; handle both.
+        if isinstance(candidate, str):
+            cand_str = candidate
+            mid = None
+        else:
+            cand_str = candidate.candidate
+            mline_index = candidate.sdpMLineIndex
+            mid = candidate.sdpMid
         self.agent.enqueue_ws({'type': 'ICE_CANDIDATE', 'payload': {
             'to': self.subscriber_id,
-            'candidate': cand.candidate,
-            'sdpMLineIndex': cand.sdpMLineIndex,
-            'sdpMid': cand.sdpMid,
+            'candidate': cand_str,
+            'sdpMLineIndex': mline_index,
+            'sdpMid': mid,
         }})
 
     def on_bus_message(self, bus, message):
