@@ -474,6 +474,11 @@ class MonitorSession:
         self.webrtc.emit('set-remote-description', answer, promise)
 
     def add_ice(self, cand, mline, mid):
+        # GStreamer 1.26 requires a real guint mline index; browsers sometimes
+        # omit sdpMLineIndex (or send None), which made emit() throw and the
+        # candidate get dropped — leaving the connection stuck at ice:new.
+        if mline is None:
+            mline = 0
         self.webrtc.emit('add-ice-candidate', mline, cand)
 
     def on_remote_set(self, promise):
@@ -578,6 +583,11 @@ class BroadcastSession:
         self.webrtc.emit('set-remote-description', offer, promise)
 
     def add_ice(self, cand, mline, mid):
+        # GStreamer 1.26 requires a real guint mline index; browsers sometimes
+        # omit sdpMLineIndex (or send None), which made emit() throw and the
+        # candidate get dropped — leaving the connection stuck at ice:new.
+        if mline is None:
+            mline = 0
         self.webrtc.emit('add-ice-candidate', mline, cand)
 
     def on_remote_set(self, promise):
