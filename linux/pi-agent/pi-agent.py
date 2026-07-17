@@ -515,6 +515,15 @@ class Agent:
         self.broadcast_sources = {}   # publisherId -> source dict from SOURCE_ADDED
         self.ws_queue = asyncio.Queue()
         self.loop = None
+        self.reconnect_delay = 1
+        self.talkback_active = False
+        self.resolution = DEFAULT_RESOLUTION
+        self.framerate = DEFAULT_FRAMERATE
+        self._last_published_type = None
+        self._last_video_device = VIDEO_DEVICE
+        self._last_audio_device = AUDIO_DEVICE
+        self._last_resolution = DEFAULT_RESOLUTION
+        self._last_framerate = DEFAULT_FRAMERATE
 
     def _load_device_id(self):
         """Return a stable device id, generating and persisting one on first run."""
@@ -535,15 +544,6 @@ class Agent:
         except Exception as e:
             log.warning('could not persist device id: %s', e)
         return new_id
-        self.reconnect_delay = 1
-        self.talkback_active = False
-        self.resolution = DEFAULT_RESOLUTION
-        self.framerate = DEFAULT_FRAMERATE
-        self._last_published_type = None
-        self._last_video_device = VIDEO_DEVICE
-        self._last_audio_device = AUDIO_DEVICE
-        self._last_resolution = DEFAULT_RESOLUTION
-        self._last_framerate = DEFAULT_FRAMERATE
 
     def enqueue_ws(self, msg):
         if self.loop:
