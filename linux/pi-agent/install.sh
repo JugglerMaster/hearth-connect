@@ -74,11 +74,15 @@ else
 fi
 
 # ─── Prompt for the server URL (used by the agent to connect) ───
-# Precedence: $SERVER_URL env/arg > existing config.env value > prompt.
-# If stdin is not a TTY (e.g. automated run) and nothing is provided, the
-# placeholder in config.env is left untouched for the user to edit later.
+# Precedence: $SERVER_URL env/arg > currently-installed config.env value >
+# repo template default. We preserve an already-working installed config.env
+# (re-running install.sh must NOT clobber a real SERVER_URL with the placeholder).
 CONFIG_SRC="$SCRIPT_DIR/config.env"
-if [[ -f "$CONFIG_SRC" ]]; then
+INSTALLED_CFG="$INSTALL_DIR/config.env"
+if [[ -f "$INSTALLED_CFG" ]]; then
+  EXISTING_URL="$(grep -E '^SERVER_URL=' "$INSTALLED_CFG" | head -1 | cut -d= -f2-)"
+fi
+if [[ -z "${EXISTING_URL:-}" && -f "$CONFIG_SRC" ]]; then
   EXISTING_URL="$(grep -E '^SERVER_URL=' "$CONFIG_SRC" | head -1 | cut -d= -f2-)"
 fi
 EXISTING_URL="${EXISTING_URL:-wss://your-server-host:8090}"
@@ -89,16 +93,17 @@ elif [[ -t 0 ]]; then
   read -r -p "Server URL for the Hearth-Connect server [${EXISTING_URL}]: " SERVER_URL
   SERVER_URL="${SERVER_URL:-$EXISTING_URL}"
 fi
-# Write the resolved URL into the copied config.env (only if we have one).
+
+# Build the installed config.env: start from the repo template, but if a config
+# is already installed, preserve its SERVER_URL (unless a new one was given) so
+# re-running the installer never resets a working setup.
 if [[ -n "${SERVER_URL:-}" ]]; then
   TMP_CFG="$(mktemp)"
-  if [[ -f "$CONFIG_SRC" ]]; then
-    sed "s|^SERVER_URL=.*|SERVER_URL=$SERVER_URL|" "$CONFIG_SRC" > "$TMP_CFG"
-  else
-    printf 'SERVER_URL=%s\n' "$SERVER_URL" > "$TMP_CFG"
-  fi
+  sed "s|^SERVER_URL=.*|SERVER_URL=$SERVER_URL|" "$CONFIG_SRC" > "$TMP_CFG"
   sudo cp "$TMP_CFG" "$INSTALL_DIR/config.env"
   rm -f "$TMP_CFG"
+elif [[ -f "$INSTALLED_CFG" ]]; then
+  : # keep the existing installed config.env untouched
 else
   sudo cp "$CONFIG_SRC" "$INSTALL_DIR/config.env"
 fi
