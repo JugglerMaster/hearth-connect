@@ -282,10 +282,12 @@ class MonitorSession:
         width, height = DIMS.get(self.agent.resolution, DIMS['720p'])
         cfg_video = self.agent.config.get('videoDevice') or VIDEO_DEVICE
         cfg_audio = self.agent.config.get('audioDevice') or AUDIO_DEVICE
-        enc = 'v4l2h264enc' if gst_element_exists('v4l2h264enc') else 'x264enc'
+        # VIDEO_ENCODER lets you force the H.264 encoder (e.g. x264enc on Pis
+        # whose hardware v4l2h264enc misbehaves, or for headless test sources).
+        enc = os.environ.get('VIDEO_ENCODER') or (
+            'v4l2h264enc' if gst_element_exists('v4l2h264enc') else 'x264enc')
         if enc == 'x264enc':
-            log.warning('hardware H.264 encoder (v4l2h264enc) not found — '
-                        'falling back to software x264enc (higher RAM/CPU on Pi)')
+            log.warning('using software x264enc (higher RAM/CPU on Pi)')
         pipeline_str = monitor_pipeline_str(
             self.has_video, self.has_audio, width, height, self.agent.framerate,
             cfg_video, cfg_audio, enc, STUN, TEST_SOURCE)
