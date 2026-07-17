@@ -340,10 +340,12 @@ class MonitorSession:
         self.rxvol.set_property('mute', not allowed)
 
     def on_negotiation_needed(self, element):
+        log.info('monitor %s: on_negotiation_needed fired', self.subscriber_id)
         promise = Gst.Promise.new_with_change_func(self.on_offer_created)
         element.emit('create-offer', None, promise)
 
     def on_offer_created(self, promise):
+        log.info('monitor %s: on_offer_created', self.subscriber_id)
         promise.wait()
         reply = promise.get_reply()
         offer = reply.get_value('offer')
