@@ -34,13 +34,30 @@ This is a **kiosk client deployment** — the Pi acts as a camera/mic publisher 
 sudo apt-get install -y git
 git clone https://github.com/JugglerMaster/hearth-connect hearth-connect
 cd hearth-connect/linux/pi-agent
-chmod +x install.sh
-./install.sh
+bash install.sh
 
 sudo mkdir -p /opt/hearth-pi-agent
 sudo cp pi-agent.py config.env /opt/hearth-pi-agent/
 sudo cp hearth-pi-agent.service /etc/systemd/system/
 ```
+
+> **Note:** run the scripts with `bash` (e.g. `bash install.sh`) rather than `./install.sh`
+> so you never need to `chmod +x` them. Git tracks the executable bit, so if you `chmod +x`
+> a script that was committed without the bit, Git sees a mode change and a later `git pull`
+> will refuse to overwrite it ("would be overwritten by merge").
+>
+> **Pulling updates when you hit that error:**
+> ```bash
+> # temp fix: discard the local mode change, then pull
+> git checkout -- linux/pi-agent/install.sh linux/deploy-pi.sh
+> git pull
+> ```
+> Or, to stop Git from ever flagging mode changes in this clone:
+> ```bash
+> git config core.fileMode false
+> ```
+> (`core.fileMode` is a per-clone setting and cannot be enforced from the repo, so each
+> user sets it locally if they want it.)
 
 ## Configure
 
