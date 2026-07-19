@@ -66,62 +66,134 @@ app.post('/api/server-url', (_req, res) => {
 
 // ─── Server Creation ───────────────────────────────────────
 
-// Generate the self-signed TLS certs in CERT_DIR if they're missing. Mirrors
-// deploy/gen-cert.sh: the CA is created once and reused on later launches (so
-// iOS devices that already trust it don't need to re-install the profile), and
-// the server cert's SAN covers localhost + 127.0.0.1 + the LAN IP(s) so devices
-// reaching https://<lan-ip>:<port> don't trip a name-mismatch warning (which
-// would otherwise force a fresh camera/mic permission prompt on every reload).
-// Certs are per-deployment and never committed (see .gitignore).
+// Generate / refresh the self-signed TLS certs in CERT_DIR.
+//
+// The CA is created once and reused on every launch (so iOS devices that
+// already trust it never need to re-install the profile). The *server* cert's
+// SAN covers localhost + 127.0.0.1 + the host's current LAN IPv4(s) + EXTRA_IPS
+// so devices reaching https://<lan-ip>:<port> don't trip a name-mismatch
+// warning (which would otherwise force a fresh camera/mic permission prompt on
+// every reload, and breaks strict TLS clients like the Pi agent).
+//
+// Because the LAN IP — and even the whole subnet — can change (the box moves
+// between Wi-Fi networks, or picks up a new DHCP lease while traveling), the
+// server cert is re-issued on launch whenever the current IP set isn't already
+// covered by the existing cert. The CA is left untouched, so the iPhone's trust
+// of the profile survives the refresh. Certs are per-deployment and never
+// committed (see .gitignore).
 function ensureCerts(): void {
   const caKey = path.join(CERT_DIR, 'ca.key');
   const caPem = path.join(CERT_DIR, 'ca.pem');
   const serverKey = path.join(CERT_DIR, 'server.key');
   const serverCrt = path.join(CERT_DIR, 'server.crt');
 
-  if (fs.existsSync(serverCrt) && fs.existsSync(serverKey)) {
-    return; // already have a server cert — no need to regenerate
+  // 1. IPs the server cert must cover right now (Wi-Fi + Ethernet + EXTRA_IPS).
+  const desiredIps = computeLanIps();
+
+  // 2. Keep the existing server cert if it's present and already covers every
+  //    current IP. This avoids daily churn while auto-healing after an IP /
+  //    subnet change. (certCoversIps is lenient if openssl can't be probed, so
+  //    an existing cert is never needlessly invalidated.)
+  const serverCertCurrent =
+    fs.existsSync(serverCrt) && fs.existsSync(serverKey) &&
+    certCoversIps(serverCrt, desiredIps);
+
+  if (serverCertCurrent) {
+    console.log(`[TLS] server cert current — covers ${listIps(desiredIps)}`);
+    return;
   }
 
-  // Make sure openssl is available before we try anything.
+  // 3. We need to (re)generate → openssl is now required.
   try {
     execFileSync('openssl', ['version'], { stdio: 'ignore' });
   } catch {
     console.error(
-      `[TLS] cert/key missing in ${CERT_DIR} and openssl is not available ` +
-      'to generate them. Install openssl or run deploy/gen-cert.sh manually.'
+      `[TLS] a cert covering ${listIps(desiredIps)} is required but openssl ` +
+      'is not available to generate it. Install openssl or run docker/gen-cert.sh manually.'
     );
     process.exit(1);
   }
 
   fs.mkdirSync(CERT_DIR, { recursive: true });
 
-  // 1. CA — reuse if present, else create it.
-  if (!fs.existsSync(caPem) || !fs.existsSync(caKey)) {
-    console.log('[TLS] generating CA…');
-    execFileSync('openssl', ['genrsa', '-out', caKey, '2048'], { stdio: 'ignore' });
-    // CA extensions: mark it as a CA and grant the key-cert-sign usage. Without
-    // a KeyUsage extension, strict TLS stacks (Python's ssl, used by the Pi
-    // agent) reject the CA with "CA cert does not include key usage extension".
-    const caExt = path.join(CERT_DIR, 'ca.ext');
-    fs.writeFileSync(caExt,
-      'basicConstraints=critical,CA:TRUE\n' +
-      'keyUsage=critical,keyCertSign,cRLSign\n' +
-      'subjectKeyIdentifier=hash\n');
-    execFileSync('openssl', [
-      'req', '-x509', '-new', '-nodes',
-      '-key', caKey, '-sha256', '-days', '3650',
-      '-out', caPem, '-subj', '/CN=HearthConnect CA/O=HearthConnect',
-      '-addext', 'basicConstraints=critical,CA:TRUE',
-      '-addext', 'keyUsage=critical,keyCertSign,cRLSign',
-      '-addext', 'subjectKeyIdentifier=hash',
-    ], { stdio: 'ignore' });
-    fs.rmSync(caExt, { force: true });
-  } else {
-    console.log('[TLS] reusing existing CA');
-  }
+  // 4. CA — create once, then reuse forever (stable iOS trust).
+  ensureCa(caPem, caKey);
 
-  // 2. Server key + CSR.
+  // 5. Fresh server key + cert signed by the CA, covering the current IPs.
+  generateServerCert(caPem, caKey, serverKey, serverCrt, desiredIps);
+}
+
+// The host's non-internal IPv4 addresses (Wi-Fi, Ethernet, …) plus any
+// operator-supplied EXTRA_IPS, de-duplicated.
+function computeLanIps(): string[] {
+  const lanIps = Object.values(os.networkInterfaces())
+    .flat()
+    .filter((n): n is os.NetworkInterfaceInfo => !!n && !n.internal && n.family === 'IPv4')
+    .map(n => n.address);
+  const extraIps = (process.env.EXTRA_IPS || '')
+    .split(',').map(s => s.trim()).filter(Boolean);
+  return [...new Set([...lanIps, ...extraIps])];
+}
+
+function listIps(ips: string[]): string {
+  return ips.length ? ips.join(', ') : '(no LAN IPs)';
+}
+
+// True if every IP in `desired` is already present in the cert's SAN. Extra
+// SAN entries the cert happens to carry are fine — we only require coverage.
+// Returns true if `desired` is empty, or if openssl can't be probed (lenient:
+// never invalidate an existing cert we can't re-create anyway).
+function certCoversIps(crtPath: string, desired: string[]): boolean {
+  if (desired.length === 0) return true;
+  let san: string;
+  try {
+    san = execFileSync('openssl', ['x509', '-in', crtPath, '-noout', '-ext', 'subjectAltName'],
+      { encoding: 'utf8' });
+  } catch {
+    return true;
+  }
+  const certIps = new Set(
+    san.split('\n')
+      .flatMap(line => line.split(','))
+      .map(s => s.trim())
+      .filter(s => s.startsWith('IP Address:'))
+      .map(s => s.slice('IP Address:'.length).trim())
+  );
+  return desired.every(ip => certIps.has(ip));
+}
+
+// Create the CA once. Idempotent — no-ops if both files already exist.
+function ensureCa(caPem: string, caKey: string): void {
+  if (fs.existsSync(caPem) && fs.existsSync(caKey)) {
+    console.log('[TLS] reusing existing CA');
+    return;
+  }
+  console.log('[TLS] generating CA…');
+  execFileSync('openssl', ['genrsa', '-out', caKey, '2048'], { stdio: 'ignore' });
+  // CA extensions: mark it as a CA and grant the key-cert-sign usage. Without
+  // a KeyUsage extension, strict TLS stacks (Python's ssl, used by the Pi
+  // agent) reject the CA with "CA cert does not include key usage extension".
+  const caExt = path.join(CERT_DIR, 'ca.ext');
+  fs.writeFileSync(caExt,
+    'basicConstraints=critical,CA:TRUE\n' +
+    'keyUsage=critical,keyCertSign,cRLSign\n' +
+    'subjectKeyIdentifier=hash\n');
+  execFileSync('openssl', [
+    'req', '-x509', '-new', '-nodes',
+    '-key', caKey, '-sha256', '-days', '3650',
+    '-out', caPem, '-subj', '/CN=HearthConnect CA/O=HearthConnect',
+    '-addext', 'basicConstraints=critical,CA:TRUE',
+    '-addext', 'keyUsage=critical,keyCertSign,cRLSign',
+    '-addext', 'subjectKeyIdentifier=hash',
+  ], { stdio: 'ignore' });
+  fs.rmSync(caExt, { force: true });
+}
+
+// Generate a fresh server key + cert signed by the CA, covering `ips`.
+function generateServerCert(
+  caPem: string, caKey: string, serverKey: string, serverCrt: string, ips: string[],
+): void {
+  // Fresh server key each time (cheap — the cert is what clients validate).
   execFileSync('openssl', ['genrsa', '-out', serverKey, '2048'], { stdio: 'ignore' });
   const csr = path.join(CERT_DIR, 'server.csr');
   execFileSync('openssl', [
@@ -129,28 +201,17 @@ function ensureCerts(): void {
     '-subj', '/CN=hearth.local/O=HearthConnect',
   ], { stdio: 'ignore' });
 
-  // 3. SAN extension: domain + localhost + 127.0.0.1 + any extra IPs.
-  // Auto-include the host's LAN IPv4 addresses so devices reaching
-  // https://<lan-ip>:<port> don't trip a name-mismatch warning (which would
-  // otherwise force a fresh camera/mic permission prompt on every reload, and
-  // breaks strict TLS clients like the Pi agent). EXTRA_IPS appends more.
+  // SAN: domain + localhost + 127.0.0.1 + the current LAN IP(s).
   const ext = path.join(CERT_DIR, 'server.ext');
-  const lanIps = Object.values(os.networkInterfaces())
-    .flat()
-    .filter((n): n is os.NetworkInterfaceInfo => !!n && !n.internal && n.family === 'IPv4')
-    .map(n => n.address);
-  const extraIps = (process.env.EXTRA_IPS || '')
-    .split(',').map(s => s.trim()).filter(Boolean);
-  const allIps = [...new Set([...lanIps, ...extraIps])];
   let san = 'DNS.1=hearth.local\nDNS.2=localhost\nIP.1=127.0.0.1\n';
-  allIps.forEach((ip, i) => { san += `IP.${i + 2}=${ip}\n`; });
+  ips.forEach((ip, i) => { san += `IP.${i + 2}=${ip}\n`; });
   fs.writeFileSync(ext,
     'authorityKeyIdentifier=keyid,issuer\n' +
     'basicConstraints=CA:FALSE\n' +
     'keyUsage=digitalSignature,nonRepudiation,keyEncipherment,dataEncipherment\n' +
     'subjectAltName=@alt_names\n\n[alt_names]\n' + san);
 
-  // 4. Sign with the CA.
+  // Sign with the CA.
   execFileSync('openssl', [
     'x509', '-req', '-in', csr, '-CA', caPem, '-CAkey', caKey,
     '-CAcreateserial', '-out', serverCrt, '-days', '365',
@@ -159,7 +220,7 @@ function ensureCerts(): void {
 
   fs.rmSync(csr, { force: true });
   fs.rmSync(ext, { force: true });
-  console.log(`[TLS] generated server cert in ${CERT_DIR}`);
+  console.log(`[TLS] (re)generated server cert covering ${listIps(ips)} in ${CERT_DIR}`);
 }
 
 function createServer(): http.Server | https.Server {
