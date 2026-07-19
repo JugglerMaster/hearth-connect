@@ -12,6 +12,7 @@ sudo apt-get install -y \
   gstreamer1.0-plugins-bad \
   gstreamer1.0-plugins-ugly \
   gstreamer1.0-nice \
+  gstreamer1.0-libcamera \
   libnice10 \
   python3-gi \
   python3-gi-cairo \

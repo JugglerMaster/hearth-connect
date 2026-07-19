@@ -116,12 +116,113 @@ class TestSupportedFramerate(unittest.TestCase):
             self.assertIsNone(pa.supported_framerate('', 640, 480, 30))
 
 
+_USB_FMT = """ioctl: VIDIOC_ENUM_FMT
+	Type: Video Capture
+
+	[0]: 'YUYV' (YUYV 4:2:2)
+		Size: Discrete 320x240
+			Interval: Discrete 0.033s (30.000 fps)
+		Size: Discrete 640x480
+			Interval: Discrete 0.033s (30.000 fps)
+"""
+
+
+class TestBestSupportedMode(unittest.TestCase):
+    def _patch_v4l2(self, out=_USB_FMT):
+        import unittest.mock as mock
+        class _R:
+            stdout = out
+        return mock.patch.object(pa.subprocess, 'run', lambda *a, **k: _R())
+
+    def test_exact_resolution_match(self):
+        with self._patch_v4l2():
+            self.assertEqual(pa.best_supported_mode('/dev/video1', 640, 480, 30),
+                             (640, 480, 30))
+
+    def test_downscale_to_largest_supported(self):
+        with self._patch_v4l2():
+            # Requested 1280x720 not available; falls back to 640x480.
+            self.assertEqual(pa.best_supported_mode('/dev/video1', 1280, 720, 30),
+                             (640, 480, 30))
+
+    def test_clamps_framerate(self):
+        with self._patch_v4l2():
+            # 640x480 only does 30fps; requesting 60 -> clamps to 30.
+            self.assertEqual(pa.best_supported_mode('/dev/video1', 640, 480, 60),
+                             (640, 480, 30))
+
+    def test_empty_device_returns_none(self):
+        with self._patch_v4l2():
+            self.assertIsNone(pa.best_supported_mode('', 640, 480, 30))
+            self.assertIsNone(pa.best_supported_mode(None, 640, 480, 30))
+
+    def test_no_matching_resolution_picks_largest(self):
+        # Only 320x240 available; requesting 640x480 -> falls back to 320x240.
+        only_small = """ioctl: VIDIOC_ENUM_FMT
+	Type: Video Capture
+
+	[0]: 'YUYV' (YUYV 4:2:2)
+		Size: Discrete 320x240
+			Interval: Discrete 0.033s (30.000 fps)
+"""
+        with self._patch_v4l2(only_small):
+            self.assertEqual(pa.best_supported_mode('/dev/video1', 640, 480, 30),
+                             (320, 240, 30))
+
+
 class TestSourceType(unittest.TestCase):
     def test_combos(self):
         self.assertEqual(pa.source_type(True, True), 'video+audio')
         self.assertEqual(pa.source_type(True, False), 'video-only')
         self.assertEqual(pa.source_type(False, True), 'audio-only')
         self.assertEqual(pa.source_type(False, False), 'none')
+
+
+class TestIsLibcameraDevice(unittest.TestCase):
+    def test_unicam_device(self):
+        import unittest.mock as mock
+        with mock.patch('builtins.open', mock.mock_open(read_data='unicam-image\n')):
+            self.assertTrue(pa.is_libcamera_device('/dev/video0'))
+
+    def test_usb_device(self):
+        import unittest.mock as mock
+        with mock.patch('builtins.open', mock.mock_open(read_data='USB Camera\n')):
+            self.assertFalse(pa.is_libcamera_device('/dev/video2'))
+
+    def test_empty_device(self):
+        self.assertFalse(pa.is_libcamera_device(''))
+        self.assertFalse(pa.is_libcamera_device(None))
+
+    def test_missing_sysfs(self):
+        import unittest.mock as mock
+        with mock.patch('builtins.open', side_effect=FileNotFoundError):
+            self.assertFalse(pa.is_libcamera_device('/dev/video0'))
+
+
+class TestShouldUseLibcamera(unittest.TestCase):
+    def _patch_env(self, val='auto'):
+        import unittest.mock as mock
+        return mock.patch.object(pa, 'VIDEO_SOURCE', val)
+
+    def _patch_detect(self, val=True):
+        import unittest.mock as mock
+        return mock.patch.object(pa, 'is_libcamera_device', lambda d: val)
+
+    def test_auto_detects_unicam(self):
+        with self._patch_env('auto'), self._patch_detect(True):
+            self.assertTrue(pa.should_use_libcamera('/dev/video0'))
+
+    def test_auto_detects_usb(self):
+        with self._patch_env('auto'), self._patch_detect(False):
+            self.assertFalse(pa.should_use_libcamera('/dev/video2'))
+
+    def test_force_libcamera(self):
+        with self._patch_env('libcamera'), self._patch_detect(False):
+            self.assertTrue(pa.should_use_libcamera('/dev/video2'))
+
+    def test_force_v4l2(self):
+        with self._patch_env('v4l2'), self._patch_detect(True):
+            self.assertFalse(pa.should_use_libcamera('/dev/video0'))
 
 
 class TestAudioPeakDecision(unittest.TestCase):
@@ -218,6 +319,45 @@ class TestMonitorPipelineStr(unittest.TestCase):
         self.assertIn('audiotestsrc', s)
         self.assertNotIn('v4l2src', s)
         self.assertNotIn('alsasrc', s)
+
+    def test_libcamerasrc_video_pipeline(self):
+        s = pa.monitor_pipeline_str(True, True, 1280, 720, 30, '', '',
+                                    'x264enc', pa.STUN, use_libcamerasrc=True)
+        self.assertIn('libcamerasrc', s)
+        self.assertNotIn('v4l2src', s)
+        self.assertNotIn('device=', s)
+        # libcamerasrc outputs NV21; caps set resolution before videoconvert.
+        self.assertIn('video/x-raw,width=1280,height=720,framerate=30/1', s)
+        self.assertIn('videoconvert', s)
+        self.assertIn('video/x-raw,format=I420', s)
+        self.assertIn('x264enc tune=zerolatency key-int-max=30', s)
+        self.assertIn('! wb.', s)
+
+    def test_libcamerasrc_video_only(self):
+        s = pa.monitor_pipeline_str(True, False, 640, 480, 30, '', '',
+                                    'v4l2h264enc', pa.STUN, use_libcamerasrc=True)
+        self.assertIn('libcamerasrc', s)
+        self.assertNotIn('alsasrc', s)
+        self.assertNotIn('v4l2src', s)
+        self.assertIn('video/x-raw,width=640,height=480,framerate=30/1', s)
+
+    def test_libcamerasrc_hardware_encoder_no_opts(self):
+        s = pa.monitor_pipeline_str(True, False, 1280, 720, 30, '', '',
+                                    'v4l2h264enc', pa.STUN, use_libcamerasrc=True)
+        self.assertIn('libcamerasrc', s)
+        self.assertIn('v4l2h264enc', s)
+        self.assertNotIn('v4l2h264enc tune', s)
+        self.assertNotIn('v4l2h264enc key-int-max', s)
+
+    def test_test_source_overrides_libcamerasrc(self):
+        # test_source=True should use fakesrc even if use_libcamerasrc is set.
+        s = pa.monitor_pipeline_str(True, True, 1280, 720, 24, '', '',
+                                    'v4l2h264enc', pa.STUN,
+                                    test_source=True, use_libcamerasrc=True)
+        self.assertIn('videotestsrc', s)
+        self.assertIn('audiotestsrc', s)
+        self.assertNotIn('libcamerasrc', s)
+        self.assertNotIn('v4l2src', s)
 
 
 class TestBroadcastPipelineStr(unittest.TestCase):

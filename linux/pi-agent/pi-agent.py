@@ -62,6 +62,10 @@ CONFIG_FILE = os.environ.get('CONFIG_FILE', '/opt/hearth-pi-agent/config.env')
 # smoke test, plan 11). Set TEST_SOURCE=1 to enable.
 TEST_SOURCE = os.environ.get('TEST_SOURCE') == '1'
 
+# Video source: 'auto' detects Pi camera (unicam → libcamerasrc) vs USB (v4l2src).
+# Force 'libcamera' or 'v4l2' to override detection.
+VIDEO_SOURCE = os.environ.get('VIDEO_SOURCE', 'auto')  # 'auto', 'libcamera', 'v4l2'
+
 # Talkback / broadcast receive sink configuration.
 SPEAKER_DEVICE = os.environ.get('SPEAKER_DEVICE', '')
 AUDIO_SINK = os.environ.get('AUDIO_SINK', '')  # e.g. 'alsasink device=hw:0,0' overrides SPEAKER_DEVICE
@@ -135,6 +139,39 @@ def filter_real_cameras(devices):
     return out
 
 
+def is_libcamera_device(video_device):
+    """Check if a V4L2 device is managed by libcamera (Pi camera via unicam).
+
+    Returns True for Pi CSI cameras that need libcamerasrc, False for USB/webcam
+    devices that use v4l2src.  Checks the sysfs device name for 'unicam' which
+    is the Pi's camera interface driver.
+    """
+    if not video_device:
+        return False
+    try:
+        idx = video_device.replace('/dev/video', '')
+        name_path = '/sys/class/video4linux/video' + idx + '/name'
+        with open(name_path) as f:
+            name = f.read().strip()
+        return 'unicam' in name.lower()
+    except Exception:
+        return False
+
+
+def should_use_libcamera(video_device):
+    """Determine whether to use libcamerasrc for the given device.
+
+    Honours the VIDEO_SOURCE env override; otherwise auto-detects via
+    is_libcamera_device().  Also checks that libcamerasrc is available in
+    GStreamer (required at pipeline-build time, not at detection time).
+    """
+    if VIDEO_SOURCE == 'libcamera':
+        return True
+    if VIDEO_SOURCE == 'v4l2':
+        return False
+    return is_libcamera_device(video_device)
+
+
 def parse_v4l2_formats(stdout):
     """Parse `v4l2-ctl --list-formats-ext` into a list of
     {width, height, framerates:[float,...]} (plan 06 §A / PS3Eye fix).
@@ -194,6 +231,47 @@ def supported_framerate(video_device, width, height, desired):
     return None
 
 
+def best_supported_mode(video_device, width, height, desired_fps):
+    """Return (width, height, fps) the camera actually supports, or None.
+
+    Finds the best resolution+framerate combo for the requested dimensions.
+    If the exact resolution isn't available, picks the largest resolution
+    that is <= the requested one (to avoid upscaling).  If nothing fits,
+    returns the largest available mode.  Framerate is clamped to the nearest
+    supported rate <= desired_fps, or the highest available.
+    """
+    if not video_device:
+        return None
+    try:
+        out = subprocess.run(
+            ['v4l2-ctl', '--device=' + video_device, '--list-formats-ext'],
+            capture_output=True, text=True, timeout=10)
+        modes = parse_v4l2_formats(out.stdout)
+    except Exception:
+        return None
+    if not modes:
+        return None
+    # Filter to modes with at least one framerate.
+    usable = [m for m in modes if m['framerates']]
+    if not usable:
+        return None
+    # Exact resolution match?
+    exact = [m for m in usable
+             if m['width'] == width and m['height'] == height]
+    candidates = exact or usable
+    # Pick largest resolution <= requested, or just the largest.
+    within = [m for m in candidates
+              if m['width'] <= width and m['height'] <= height]
+    best_res = (max(within, key=lambda m: m['width'] * m['height'])
+                if within else max(candidates,
+                                   key=lambda m: m['width'] * m['height']))
+    fr = best_res['framerates']
+    lower = [f for f in fr if f <= float(desired_fps)]
+    best_fps = (max(lower) if lower else max(fr))
+    best_fps = int(best_fps) if best_fps.is_integer() else best_fps
+    return best_res['width'], best_res['height'], best_fps
+
+
 def parse_arecord_devices(stdout):
     """Parse `arecord -l` output into [{id,label}] (plan 06 §A)."""
     devices = []
@@ -246,7 +324,7 @@ def audio_peak_decision(db, state, cfg, now):
 
 def monitor_pipeline_str(has_video, has_audio, width, height, framerate,
                          video_device='', audio_device='', enc='x264enc',
-                         stun=STUN, test_source=False):
+                         stun=STUN, test_source=False, use_libcamerasrc=False):
     """Build the monitor (sendrecv) GStreamer launch string WITHOUT parsing it.
 
     Kept pure so it can be unit-tested without GStreamer. test_source swaps in
@@ -258,6 +336,10 @@ def monitor_pipeline_str(has_video, has_audio, width, height, framerate,
         if test_source:
             src = 'videotestsrc'
             dev = ''
+            use_libcamerasrc = False
+        elif use_libcamerasrc:
+            src = 'libcamerasrc'
+            dev = ''
         else:
             src = 'v4l2src'
             dev = ('device=' + video_device) if video_device else ''
@@ -266,10 +348,18 @@ def monitor_pipeline_str(has_video, has_audio, width, height, framerate,
         # both and manages its own GOP, so it gets no extra options. Kept pure
         # (no GStreamer introspection) so the string helper stays unit-testable.
         enc_opts = 'tune=zerolatency key-int-max=30' if enc == 'x264enc' else ''
-        parts.append(
-            '{src} {dev} ! videoconvert ! video/x-raw,format=I420,width={w},height={h},framerate={fr}/1 '
-            '! {enc} {enc_opts} ! rtph264pay config-interval=-1 ! queue ! wb.'.format(
-                src=src, dev=dev, w=width, h=height, fr=framerate, enc=enc, enc_opts=enc_opts))
+        if use_libcamerasrc:
+            # libcamerasrc outputs NV21; caps set resolution, then convert to I420.
+            parts.append(
+                '{src} ! video/x-raw,width={w},height={h},framerate={fr}/1 '
+                '! videoconvert ! video/x-raw,format=I420 '
+                '! {enc} {enc_opts} ! rtph264pay config-interval=-1 ! queue ! wb.'.format(
+                    src=src, w=width, h=height, fr=framerate, enc=enc, enc_opts=enc_opts))
+        else:
+            parts.append(
+                '{src} {dev} ! videoconvert ! video/x-raw,format=I420,width={w},height={h},framerate={fr}/1 '
+                '! {enc} {enc_opts} ! rtph264pay config-interval=-1 ! queue ! wb.'.format(
+                    src=src, dev=dev, w=width, h=height, fr=framerate, enc=enc, enc_opts=enc_opts))
     if has_audio:
         if test_source:
             src = 'audiotestsrc'
@@ -349,21 +439,31 @@ class MonitorSession:
             'v4l2h264enc' if gst_element_exists('v4l2h264enc') else 'x264enc')
         if enc == 'x264enc':
             log.warning('using software x264enc (higher RAM/CPU on Pi)')
+        # Determine video source: libcamerasrc for Pi cameras, v4l2src for USB.
+        use_libcamera = not TEST_SOURCE and should_use_libcamera(cfg_video)
+        if use_libcamera:
+            log.info('using libcamerasrc for Pi camera')
         # Clamp the framerate to one the camera actually supports for this
-        # resolution. Many UVC cams (e.g. PS3 Eye) only expose discrete rates
-        # like 15/30/60 — pinning a non-existent rate (the 24fps default) makes
-        # v4l2src fail to preroll and the session never produces an OFFER.
-        safe_fr = supported_framerate(cfg_video, width, height, self.agent.framerate)
-        if safe_fr is not None and safe_fr != self.agent.framerate:
-            log.warning('camera %s does not support %s@%dfps — using %dfps',
-                        cfg_video or 'default', self.agent.resolution,
-                        self.agent.framerate, safe_fr)
-            framerate = safe_fr
-        else:
+        # resolution.  Skip for libcamerasrc which handles negotiation internally.
+        if use_libcamera:
             framerate = self.agent.framerate
+        else:
+            mode = best_supported_mode(cfg_video, width, height, self.agent.framerate)
+            if mode is not None:
+                w, h, fr = mode
+                if w != width or h != height:
+                    log.warning('camera %s does not support %s — using %dx%d',
+                                cfg_video or 'default', self.agent.resolution, w, h)
+                    width, height = w, h
+                if fr != self.agent.framerate:
+                    log.warning('camera %s does not support %dfps — using %dfps',
+                                cfg_video or 'default', self.agent.framerate, fr)
+                framerate = fr
+            else:
+                framerate = self.agent.framerate
         pipeline_str = monitor_pipeline_str(
             self.has_video, self.has_audio, width, height, framerate,
-            cfg_video, cfg_audio, enc, STUN, TEST_SOURCE)
+            cfg_video, cfg_audio, enc, STUN, TEST_SOURCE, use_libcamera)
         log.info('monitor session %s pipeline: %s', self.subscriber_id, pipeline_str)
         self.pipeline_str = pipeline_str
         self.pipeline = Gst.parse_launch(pipeline_str)
