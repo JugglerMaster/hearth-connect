@@ -15,5 +15,8 @@ updates.txt
 __pycache__/
 *.pyc
 
+# Android runtime-generated TLS keystore (created by SignalingServer on first launch)
+android/app/src/main/assets/keystore/
+
 # Pi agent bytecode
 linux/pi-agent/__pycache__/

@@ -1,13 +1,47 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <title>Hearth-Connect Hub</title>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <title>Hearth-Connect</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <link rel="stylesheet" href="/css/style.css">
 </head>
 <body>
-  <h1>Hearth-Connect Hub</h1>
-  <p>Signaling server is running. This is a placeholder static page.</p>
-  <p>Copy the real client from <code>server/public/</code> into
-     <code>app/src/main/assets/public/</code> to serve the full web client to browser/iOS peers.</p>
+  <div class="page">
+    <header>
+      <h1>Hearth-Connect</h1>
+      <p class="subtitle">Video Intercom / Baby Monitor</p>
+    </header>
+
+    <main class="card-grid">
+      <a href="/monitor.html" class="card">
+        <div class="card-icon">📷</div>
+        <h2>Monitor</h2>
+        <p>Connect as a monitor device<span class="badge">publisher</span></p>
+      </a>
+
+      <a href="/base-station.html" class="card card-primary">
+        <div class="card-icon">🖥️</div>
+        <h2>Base Station</h2>
+        <p>Full control &amp; monitoring<span class="badge">admin</span></p>
+      </a>
+    </main>
+
+    <footer>
+      <span class="status-dot" id="serverStatus"></span>
+      <span id="serverLabel">Disconnected</span>
+    </footer>
+  </div>
+  <script src="/js/signaling.js"></script>
+  <script>
+    const dot = document.getElementById('serverStatus');
+    const label = document.getElementById('serverLabel');
+    const sig = new SignalingClient();
+    sig.onOpen = () => { dot.className = 'status-dot online'; label.textContent = 'Connected'; };
+    sig.onClose = () => { dot.className = 'status-dot offline'; label.textContent = 'Disconnected'; };
+    sig.connect();
+  </script>
 </body>
 </html>

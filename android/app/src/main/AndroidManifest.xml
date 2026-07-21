@@ -18,7 +18,8 @@
         android:label="Hearth-Connect"
         android:theme="@style/Theme.HearthConnect"
         android:hardwareAccelerated="true"
-        android:usesCleartextTraffic="true">
+        android:usesCleartextTraffic="true"
+        android:networkSecurityConfig="@xml/network_security_config">
 
         <activity
             android:name=".MainActivity"

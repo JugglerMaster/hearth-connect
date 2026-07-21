@@ -32,6 +32,20 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
+    packaging {
+        resources {
+            excludes += "META-INF/versions/9/OSGI-INF/MANIFEST.MF"
+            excludes += "META-INF/LICENSE.md"
+            excludes += "META-INF/LICENSE"
+            excludes += "META-INF/NOTICE"
+            excludes += "META-INF/NOTICE.md"
+            excludes += "META-INF/*.DSA"
+            excludes += "META-INF/*.EC"
+            excludes += "META-INF/*.RSA"
+            excludes += "META-INF/INDEX.LIST"
+            excludes += "META-INF/io.netty.versions.properties"
+        }
+    }
     buildFeatures {
         viewBinding = true
     }
@@ -43,13 +57,15 @@ dependencies {
     implementation("com.google.android.material:material:1.12.0")
     implementation("androidx.constraintlayout:constraintlayout:2.1.4")
 
-    // Native WebRTC (modern Chromium, arm64-v8a). Bump version as needed.
-    implementation("org.webrtc:google-webrtc:1.0.32017")
+    // Native WebRTC (actively maintained fork, Maven Central)
+    implementation("io.github.webrtc-sdk:android:125.6422.07")
 
-    // Ktor embedded signaling server (CIO engine, pure Kotlin, Android-friendly)
-    implementation("io.ktor:ktor-server-cio:2.3.12")
+    // Ktor embedded signaling server (Netty engine — CIO doesn't support HTTPS)
+    implementation("io.ktor:ktor-server-netty:2.3.12")
     implementation("io.ktor:ktor-server-websockets:2.3.12")
     implementation("io.ktor:ktor-server-content-negotiation:2.3.12")
     implementation("io.ktor:ktor-serialization-kotlinx-json:2.3.12")
+    implementation("io.ktor:ktor-network-tls:2.3.12")
+    implementation("io.ktor:ktor-network-tls-certificates:2.3.12")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
 }

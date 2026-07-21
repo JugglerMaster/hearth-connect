@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1.0, user-scalable=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>Monitor — Hearth-Connect</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body class="monitor-page">
+  <video id="cameraFeed" class="fullscreen-video" autoplay playsinline muted></video>
+  <!-- Remote (talkback / announcement / facetalk) audio+video from the base station -->
+  <audio id="remoteAudio" autoplay playsinline></audio>
+  <!-- Keep-awake fallback for iOS < 16.4 (no Wake Lock API): a tiny *silent*
+       looping audio element. iOS only suppresses auto-lock while media is
+       actually playing — a muted/inline video does NOT count, so we use an
+       audible (but inaudible) audio track instead. The clip is generated at
+       runtime in camera.js and assigned to this element's src. -->
+  <audio id="noSleepAudio" loop playsinline></audio>
+
+  <!-- Debug: base station → monitor audio/video (FaceTalk/broadcast) connection -->
+  <div id="ftDebug" class="ft-debug">ft:idle</div>
+
+  <div class="kiosk-overlay">
+    <div class="status-row">
+      <span id="connectionDot" class="status-dot offline"></span>
+      <span id="deviceLabel" class="device-label">Monitor</span>
+    </div>
+    <div class="debug-bar">
+      <span id="debugMethod">method:--</span>
+      <span id="debugCamStatus">cam:--</span>
+      <span id="debugTracks">tracks:--</span>
+      <span id="debugSubs">subs:0</span>
+      <span id="debugDbLevel">audio:--</span>
+    </div>
+    <div id="debugEvent" class="debug-event">ev:--</div>
+  </div>
+
+  <!-- The doorbell button was removed from this page. The DOORBELL signaling
+       message is still relayed by the server and is kept as a reusable building
+       block for a future chime/announce feature. -->
+
+  <div id="enableCamOverlay" class="enable-cam-overlay hidden">
+    <button id="enableCamBtn" class="btn btn-primary btn-large">📷 Tap to enable camera</button>
+    <p class="enable-cam-note">iOS requires a tap before the camera can be accessed. Tap to start the monitor.</p>
+  </div>
+
+  <div id="kioskToast" class="toast hidden"></div>
+
+  <div id="cameraError" class="camera-error hidden">
+    <div class="camera-error-box">
+      <p class="camera-error-title">Camera unavailable</p>
+      <p id="cameraErrorMsg" class="camera-error-msg"></p>
+      <button id="retryCameraBtn" class="btn btn-primary">Retry Camera</button>
+    </div>
+  </div>
+
+  <script src="/js/signaling.js"></script>
+  <script src="/js/webrtc.js"></script>
+  <script src="/js/camera.js"></script>
+</body>
+</html>

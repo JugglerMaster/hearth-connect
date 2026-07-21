@@ -1,0 +1,1309 @@
+/* ─── Reset & Base ─────────────────────────────────────── */
+
+*, *::before, *::after {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+:root {
+  --bg: #0a0a0f;
+  --bg-card: #14141f;
+  --bg-input: #1a1a2a;
+  --bg-hover: #1e1e30;
+  --fg: #e0e0f0;
+  --fg-dim: #8888a0;
+  --fg-muted: #606080;
+  --primary: #4a7cf7;
+  --primary-dim: #2a4ca7;
+  --danger: #f74a4a;
+  --danger-dim: #a72a2a;
+  --success: #4af77a;
+  --warning: #f7c84a;
+  --radius: 12px;
+  --radius-sm: 8px;
+  --shadow: 0 2px 8px rgba(0,0,0,0.4);
+  --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+html, body {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+}
+
+body {
+  font-family: var(--font);
+  background: var(--bg);
+  color: var(--fg);
+  -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+}
+
+/* ─── Layout ───────────────────────────────────────────── */
+
+.page {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.screen {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  padding: 24px;
+  gap: 16px;
+}
+
+.screen.hidden {
+  display: none;
+}
+
+h1 {
+  font-size: 24px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+h2 {
+  font-size: 18px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.subtitle {
+  color: var(--fg-dim);
+  font-size: 14px;
+  margin-top: 4px;
+}
+
+.hint {
+  color: var(--fg-muted);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+/* ─── Cards ────────────────────────────────────────────── */
+
+.card-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 0;
+}
+
+.card {
+  display: block;
+  background: var(--bg-card);
+  border-radius: var(--radius);
+  padding: 20px;
+  text-decoration: none;
+  color: var(--fg);
+  border: 1px solid transparent;
+  transition: border-color 0.2s, background 0.2s;
+}
+
+.card:active {
+  background: var(--bg-hover);
+  border-color: var(--primary);
+}
+
+.card-primary {
+  border-color: var(--primary-dim);
+}
+
+.card-icon {
+  font-size: 32px;
+  margin-bottom: 8px;
+}
+
+.card h2 {
+  font-size: 18px;
+  margin-bottom: 4px;
+}
+
+.card p {
+  font-size: 13px;
+  color: var(--fg-dim);
+}
+
+.badge {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  background: var(--primary-dim);
+  color: var(--primary);
+  padding: 2px 6px;
+  border-radius: 4px;
+  margin-left: 8px;
+  vertical-align: middle;
+}
+
+/* ─── Buttons ──────────────────────────────────────────── */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-family: var(--font);
+  font-size: 15px;
+  font-weight: 600;
+  padding: 12px 24px;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: opacity 0.2s, transform 0.1s;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.btn:active {
+  transform: scale(0.97);
+}
+
+.btn:disabled {
+  opacity: 0.4;
+  pointer-events: none;
+}
+
+.btn-primary {
+  background: var(--primary);
+  color: #fff;
+}
+
+.btn-danger {
+  background: var(--danger);
+  color: #fff;
+}
+
+.btn-outline {
+  background: transparent;
+  border: 1px solid var(--fg-muted);
+  color: var(--fg);
+}
+
+.btn-large {
+  padding: 16px 32px;
+  font-size: 17px;
+  width: 100%;
+}
+
+.btn-small {
+  padding: 8px 16px;
+  font-size: 13px;
+}
+
+.btn-round {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  padding: 0;
+  font-size: 22px;
+  background: var(--bg-card);
+  border: 1px solid var(--fg-muted);
+  color: var(--fg);
+}
+
+/* ─── Forms ────────────────────────────────────────────── */
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.form-group label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+input[type="text"] {
+  font-family: var(--font);
+  font-size: 16px;
+  padding: 12px 16px;
+  background: var(--bg-input);
+  border: 1px solid var(--fg-muted);
+  border-radius: var(--radius-sm);
+  color: var(--fg);
+  outline: none;
+  transition: border-color 0.2s;
+  width: 100%;
+}
+
+input[type="text"]:focus {
+  border-color: var(--primary);
+}
+
+/* ─── Kiosk Page ───────────────────────────────────────── */
+
+.kiosk-page {
+  background: #000;
+  margin: 0;
+  overflow: hidden;
+}
+
+.fullscreen-video {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
+  z-index: 1;
+}
+
+.kiosk-overlay {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 2;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: center;
+  background: linear-gradient(transparent, rgba(0,0,0,0.6));
+}
+
+.status-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--fg-dim);
+}
+
+.device-label {
+  font-weight: 600;
+  color: var(--fg);
+  font-size: 14px;
+}
+
+.debug-bar {
+  display: flex;
+  gap: 8px;
+  font-size: 10px;
+  color: #8888a0;
+  font-family: monospace;
+}
+
+.debug-event {
+  font-size: 10px;
+  color: #f7c84a;
+  font-family: monospace;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Base→monitor A/V (FaceTalk/broadcast) connection debug — pinned to the top
+   of the video area on both the base station and the monitor pages. */
+.ft-debug {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  right: 6px;
+  z-index: 11;
+  font-family: monospace;
+  font-size: 10px;
+  line-height: 1.3;
+  color: #7fe3a1;
+  background: rgba(0, 0, 0, 0.55);
+  padding: 3px 6px;
+  border-radius: 4px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  pointer-events: none;
+}
+.monitor-page .ft-debug {
+  position: fixed;
+}
+
+.rx-debug {
+  position: absolute;
+  top: 34px;
+  left: 6px;
+  right: 6px;
+  z-index: 11;
+  font-family: monospace;
+  font-size: 10px;
+  line-height: 1.3;
+  color: #6fd0ff;
+  background: rgba(0, 0, 0, 0.55);
+  padding: 3px 6px;
+  border-radius: 4px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  pointer-events: none;
+}
+.monitor-page .rx-debug {
+  position: fixed;
+}
+
+.camera-error {
+  position: fixed;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.82);
+  padding: 24px;
+}
+
+.enable-cam-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  background: rgba(0, 0, 0, 0.92);
+  padding: 24px;
+  text-align: center;
+}
+
+.enable-cam-note {
+  font-size: 13px;
+  color: var(--fg-dim);
+  line-height: 1.4;
+  max-width: 280px;
+}
+
+.btn-large {
+  font-size: 18px;
+  padding: 16px 28px;
+}
+
+.camera-error-box {
+  background: var(--bg-card);
+  border: 1px solid var(--danger-dim);
+  border-radius: var(--radius);
+  padding: 24px;
+  max-width: 360px;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.camera-error-title {
+  font-weight: 700;
+  font-size: 16px;
+  color: var(--danger);
+}
+
+.camera-error-msg {
+  font-size: 13px;
+  color: var(--fg-dim);
+  line-height: 1.4;
+}
+
+.pairing-container,
+.status-container {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 20px;
+  max-width: 400px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+.pairing-method label {
+  display: block;
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 8px;
+  color: var(--fg-dim);
+}
+
+.code-input-group {
+  display: flex;
+  gap: 8px;
+}
+
+.code-input-group input {
+  flex: 1;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  font-family: monospace;
+  font-size: 16px;
+}
+
+.status-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.video-container {
+  position: relative;
+  background: #000;
+  border-radius: var(--radius);
+  overflow: hidden;
+  aspect-ratio: 16/9;
+}
+
+.video-container video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.stream-controls {
+  display: flex;
+  gap: 8px;
+}
+
+.status-info {
+  background: var(--bg-card);
+  border-radius: var(--radius-sm);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.info-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 13px;
+}
+
+.info-row span:first-child {
+  color: var(--fg-dim);
+}
+
+.device-actions {
+  display: flex;
+  justify-content: center;
+}
+
+/* ─── Base Station Page ────────────────────────────────── */
+
+.control-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 24px;
+  background: var(--bg-card);
+  border-bottom: 1px solid var(--bg-input);
+}
+
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.header-left h1 {
+  font-size: 20px;
+}
+
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pairing-code {
+  font-family: monospace;
+  font-size: 12px;
+  color: var(--primary);
+  background: var(--primary-dim);
+  padding: 4px 8px;
+  border-radius: 4px;
+}
+
+.video-grid {
+  position: relative;
+  background: #000;
+  min-height: 200px;
+  border-radius: var(--radius);
+  margin: 12px;
+  overflow: hidden;
+  aspect-ratio: 16/9;
+}
+
+.empty-state {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--fg-muted);
+  font-size: 14px;
+}
+
+.panel {
+  background: var(--bg-card);
+  border-radius: var(--radius);
+  padding: 16px;
+  margin: 0 12px;
+}
+
+.device-list, .preset-list, .viewer-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.device-item, .preset-item, .viewer-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px;
+  background: var(--bg-input);
+  border-radius: var(--radius-sm);
+}
+
+.device-item .device-name {
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.device-item .device-type-badge {
+  font-size: 10px;
+  color: var(--primary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-weight: 600;
+  margin-top: 2px;
+}
+
+.device-item .device-last-seen {
+  font-size: 11px;
+  color: var(--fg-muted);
+  margin-top: 2px;
+}
+
+.device-item .device-last-seen.online {
+  color: var(--success);
+}
+
+.device-item .device-last-seen.offline {
+  color: var(--danger);
+}
+
+.device-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.btn-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.qr-code-img {
+  width: 180px;
+  height: 180px;
+  border-radius: 4px;
+  background: #fff;
+  padding: 8px;
+}
+
+.monitor-feed {
+  position: relative;
+  background: #000;
+  min-height: 200px;
+  border-radius: var(--radius);
+  margin: 12px;
+  overflow: hidden;
+  aspect-ratio: 16/9;
+}
+
+.monitor-feed video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.monitor-resume {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  font-size: 32px;
+  line-height: 72px;
+  text-align: center;
+  padding: 0 0 0 4px;
+  cursor: pointer;
+  z-index: 20;
+}
+.monitor-resume:active { background: rgba(0, 0, 0, 0.8); }
+
+.monitor-overlay {
+  position: absolute;
+  bottom: 8px;
+  left: 8px;
+  right: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  align-items: center;
+  gap: 6px;
+  z-index: 10;
+  /* Hidden until the user taps the video; fades in and auto-hides after 5s. */
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.3s ease;
+}
+.monitor-overlay.visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* FaceTalk button scales with the viewport so it never gets clipped on small
+   iOS screens. Uses clamp() for fluid sizing and is allowed to grow/shrink,
+   but stays inline with the other buttons (never full width). */
+.monitor-ft-btn {
+  flex: 0 1 auto;
+  min-width: 0;
+  padding: 8px 12px;
+  font-size: clamp(11px, 2.6vw, 14px);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+@media (max-width: 480px) {
+  .monitor-overlay .btn-small {
+    padding: 7px 10px;
+    font-size: 12px;
+  }
+}
+
+.monitor-overlay > span {
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+/* ─── Icon buttons (monitor overlay) ───────────────────
+   Icon-only controls. Active state = solid fill + white glyph, driven by a
+   single renderControlButtons() in JS so the visual always matches the real
+   toggle state (talking / facetalking / muted / fullscreen). */
+.icon-btn {
+  width: 42px;
+  height: 42px;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border-radius: 10px;
+  border: 1px solid var(--fg-muted);
+  background: rgba(0, 0, 0, 0.45);
+  color: var(--fg);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease, transform 0.1s ease;
+  -webkit-tap-highlight-color: transparent;
+}
+.icon-btn:active { transform: scale(0.92); }
+.icon-btn svg { width: 20px; height: 20px; display: block; pointer-events: none; }
+/* Glyphs are purely decorative — never let them steal the tap target from the
+   button. Without this, a tap on the icon lands on the <svg>/<path>, so the
+   delegated handler's e.target.id check misses and you have to mash the button
+   edge to register a click. */
+.icon-btn svg * { pointer-events: none; }
+
+/* Mute carries two glyphs; show the right one for the current state. */
+.icon-btn .ic-muted { display: none; }
+.icon-btn.active .ic-unmuted { display: none; }
+.icon-btn.active .ic-muted { display: block; }
+
+/* Active = live / sending / destructive → danger fill. */
+.icon-btn.active {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #fff;
+  box-shadow: 0 0 0 2px rgba(247, 74, 74, 0.35);
+}
+/* Fullscreen active uses the primary (non-destructive) accent. */
+.icon-btn.fs.active {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #fff;
+  box-shadow: 0 0 0 2px rgba(74, 124, 247, 0.35);
+}
+/* Stop is a one-shot destructive action, not a toggle. */
+.icon-btn.stop {
+  border-color: var(--danger-dim);
+  color: var(--danger);
+}
+
+.monitor-overlay .monitor-mode {
+  flex: 1;
+}
+
+.monitor-placeholder {
+  position: absolute;
+  inset: 0;
+  z-index: 9;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #000;
+  color: var(--fg);
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.monitor-error {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  right: 8px;
+  z-index: 11;
+  background: rgba(247, 74, 74, 0.92);
+  color: #fff;
+  padding: 10px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+  text-align: center;
+}
+
+.monitor-status {
+  background: rgba(247, 200, 74, 0.92);
+  color: #1a1a1a;
+  font-weight: 600;
+}
+
+/* Volume widget: a round button pinned to the lower-right of the monitor
+   feed that expands a vertical slider upward when tapped. */
+.volume-widget {
+  position: absolute;
+  bottom: 8px;
+  right: 8px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  z-index: 15;
+}
+
+.volume-toggle {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  font-size: 18px;
+  line-height: 40px;
+  text-align: center;
+  padding: 0;
+  cursor: pointer;
+}
+.volume-toggle:active { background: rgba(0, 0, 0, 0.8); }
+
+.volume-slider-wrap {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  height: 140px;
+  padding: 12px 8px;
+  background: rgba(0, 0, 0, 0.6);
+  border-radius: 20px;
+}
+
+.volume-slider-wrap input[type="range"] {
+  --vol-pct: 50%;
+  -webkit-appearance: slider-vertical;
+  writing-mode: vertical-lr;
+  direction: rtl;
+  width: 16px;
+  height: 120px;
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  border: none;
+  accent-color: #fff;
+  cursor: pointer;
+}
+
+.volume-slider-wrap input[type="range"]::-webkit-slider-runnable-track {
+  width: 3px;
+  background: linear-gradient(to top, #fff 0%, #fff var(--vol-pct), rgba(255,255,255,0.35) var(--vol-pct));
+  border-radius: 2px;
+}
+
+.volume-slider-wrap input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #fff;
+  margin-left: -5.5px;
+}
+
+.volume-slider-wrap input[type="range"]::-moz-range-track {
+  width: 3px;
+  background: rgba(255, 255, 255, 0.35);
+  border-radius: 2px;
+  border: none;
+}
+
+.volume-slider-wrap input[type="range"]::-moz-range-progress {
+  width: 3px;
+  background: #fff;
+  border-radius: 2px;
+}
+
+.volume-slider-wrap input[type="range"]::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #fff;
+  border: none;
+}
+
+/* Audio threshold alert — red box around the device list item */
+.device-item.audio-alert {
+  outline: 2px solid var(--danger);
+  box-shadow: 0 0 0 2px var(--danger);
+  border-color: var(--danger);
+}
+
+.device-item .db-readout {
+  margin-left: 8px;
+  font-size: 11px;
+  color: var(--fg-dim);
+  font-weight: 400;
+}
+
+/* "System broadcasts disabled" indicator (💤) next to a kiosk's name. */
+.device-name .broadcast-off {
+  margin-left: 4px;
+  font-size: 13px;
+  filter: grayscale(0.2);
+  opacity: 0.8;
+}
+
+/* Disabled (greyed-out) buttons, e.g. Video when no video stream */
+.btn-disabled {
+  opacity: 0.4;
+  pointer-events: none;
+  cursor: default;
+}
+
+/* ─── Config Form ──────────────────────────────────────── */
+
+.config-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.config-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--bg-input);
+}
+
+.config-row label {
+  font-size: 14px;
+}
+
+.config-row select,
+.config-row input[type="range"] {
+  font-family: var(--font);
+  font-size: 14px;
+  background: var(--bg-input);
+  border: 1px solid var(--fg-muted);
+  border-radius: 4px;
+  color: var(--fg);
+  padding: 4px 8px;
+}
+
+.toggle-switch {
+  position: relative;
+  width: 44px;
+  height: 24px;
+  background: var(--fg-muted);
+  border-radius: 12px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.toggle-switch.active {
+  background: var(--primary);
+}
+
+.toggle-switch::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 20px;
+  height: 20px;
+  background: #fff;
+  border-radius: 50%;
+  transition: transform 0.2s;
+}
+
+.toggle-switch.active::after {
+  transform: translateX(20px);
+}
+
+/* ─── Video Tile ───────────────────────────────────────── */
+
+.video-tile {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
+.video-tile video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.video-tile-label {
+  position: absolute;
+  bottom: 8px;
+  left: 8px;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+/* ─── Status Dots ──────────────────────────────────────── */
+
+.status-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--fg-muted);
+  transition: background 0.3s;
+}
+
+.status-dot.online {
+  background: var(--success);
+  box-shadow: 0 0 6px var(--success);
+}
+
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  z-index: 50;
+  background: var(--bg-card);
+  border: 1px solid var(--accent-dim, #3a86ff);
+  color: var(--fg);
+  padding: 12px 18px;
+  border-radius: var(--radius, 10px);
+  font-size: 14px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+  max-width: 90vw;
+  text-align: center;
+}
+
+.status-dot.offline {
+  background: var(--danger);
+}
+
+.status-dot.reconnecting {
+  background: var(--warning);
+  animation: pulse 1.5s infinite;
+}
+
+/* ─── Incoming call modal ─────────────────────────────── */
+.call-modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 80;
+}
+.call-box {
+  background: var(--bg-card);
+  border: 1px solid var(--accent-dim, #3a86ff);
+  border-radius: var(--radius, 12px);
+  padding: 24px 28px;
+  text-align: center;
+  min-width: 260px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+}
+.call-title {
+  font-size: 20px;
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+.call-from {
+  color: var(--fg-dim, #aaa);
+  margin-bottom: 18px;
+}
+.call-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+}
+
+/* ─── Connection quality readout ─────────────────────── */
+.monitor-quality {
+  font-size: 11px;
+  color: var(--fg-dim, #aaa);
+  margin-left: 6px;
+  white-space: nowrap;
+}
+
+/* ─── Kiosk actions / doorbell ────────────────────────── */
+.kiosk-actions {
+  position: fixed;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  z-index: 40;
+}
+#remoteAudio {
+  display: none;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+/* ─── Utility ──────────────────────────────────────────── */
+
+.hidden {
+  display: none !important;
+}
+
+/* Hide video visually without stopping camera frame pipeline (iOS requirement) */
+.video-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+  opacity: 0;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.error-message {
+  color: var(--danger);
+  font-size: 13px;
+  padding: 8px 12px;
+  background: var(--danger-dim);
+  border-radius: var(--radius-sm);
+}
+
+/* ─── Landscape tweaks ─────────────────────────────────── */
+
+@media (orientation: landscape) and (max-height: 500px) {
+  .screen {
+    padding: 12px;
+    gap: 8px;
+  }
+  .pairing-container,
+  .status-container {
+    gap: 10px;
+  }
+}
+
+/* ─── iPad / Larger screens ────────────────────────────── */
+
+@media (min-width: 768px) {
+  .card-grid {
+    flex-direction: row;
+    max-width: 600px;
+    margin: 0 auto;
+  }
+  .card {
+    flex: 1;
+  }
+  .video-grid {
+    aspect-ratio: 16/7;
+  }
+}
+
+/* ─── Grid View ──────────────────────────────────────────── */
+
+.video-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+  margin: 12px;
+}
+
+.grid-cell {
+  position: relative;
+  background: #1a1a1a;
+  border-radius: 8px;
+  overflow: hidden;
+  aspect-ratio: 16/9;
+  min-height: 120px;
+}
+
+.grid-cell.empty {
+  border: 2px dashed #444;
+}
+
+.grid-video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  background: #000;
+}
+
+.grid-overlay {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: linear-gradient(transparent, rgba(0,0,0,0.8));
+  padding: 8px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.grid-label {
+  color: #fff;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.grid-controls {
+  margin-bottom: 12px;
+}
+
+.grid-controls h3 {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.grid-available {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+
+/* ─── Broadcast Panel ─────────────────────────────────────── */
+
+.broadcast-panel {
+  margin-bottom: 16px;
+}
+
+/* "Send to" target selector in the broadcast panel */
+.broadcast-target-label {
+  display: block;
+  font-size: 12px;
+  color: var(--fg-dim);
+  margin-bottom: 4px;
+}
+
+.broadcast-target-select {
+  padding: 8px 10px;
+  font-size: 14px;
+  border-radius: 8px;
+  border: 1px solid var(--border, #3a3a3a);
+  background: var(--input-bg, #1e1e1e);
+  color: var(--fg, #fff);
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.broadcast-preview video {
+  width: 100%;
+  max-height: 200px;
+  background: #1a1a1a;
+  border-radius: 8px;
+  margin-bottom: 12px;
+}
+
+.broadcast-controls .config-row {
+  margin-bottom: 8px;
+}
+
+.broadcast-controls select {
+  width: 100%;
+}
+
+/* ─── Display/Audio Mode Dropdowns ─────────────────────────── */
+
+.control-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+
+.control-row .config-row {
+  flex: 1;
+  min-width: 120px;
+  border: none;
+  padding: 0;
+}
+
+.control-row label {
+  font-size: 11px;
+  color: #888;
+  display: block;
+  margin-bottom: 2px;
+}
+
+.control-row select {
+  font-size: 12px;
+  padding: 4px 8px;
+  width: 100%;
+}
+
+/* ─── Device Item with controls ────────────────────────────── */
+
+.device-item .control-row {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid #2a2a2a;
+}

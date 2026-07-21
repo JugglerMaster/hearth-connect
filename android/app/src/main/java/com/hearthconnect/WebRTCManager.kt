@@ -4,7 +4,6 @@ import android.content.Context
 import org.webrtc.DefaultVideoDecoderFactory
 import org.webrtc.DefaultVideoEncoderFactory
 import org.webrtc.EglBase
-import org.webrtc.JavaAudioDeviceModule
 import org.webrtc.PeerConnection
 import org.webrtc.PeerConnectionFactory
 
@@ -26,10 +25,8 @@ class WebRTCManager(context: Context) {
             .createInitializationOptions()
         PeerConnectionFactory.initialize(initOptions)
 
-        val adm = JavaAudioDeviceModule.builder(context).createAudioDeviceModule()
         factory = PeerConnectionFactory.builder()
             .setOptions(PeerConnectionFactory.Options())
-            .setAudioDeviceModule(adm)
             .setVideoEncoderFactory(
                 DefaultVideoEncoderFactory(eglBase.eglBaseContext, true, true)
             )
