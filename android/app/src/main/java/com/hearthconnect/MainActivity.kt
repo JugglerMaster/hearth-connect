@@ -3,6 +3,7 @@ package com.hearthconnect
 import android.Manifest
 import android.annotation.SuppressLint
 import android.net.http.SslError
+import android.util.Log
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
@@ -22,6 +23,10 @@ import com.hearthconnect.databinding.ActivityMainBinding
 
 class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
+    companion object {
+        private const val TAG = "HearthMain"
+    }
+
     private val handler = Handler(Looper.getMainLooper())
 
     private val requiredPermissions = arrayOf(
@@ -78,12 +83,9 @@ class MainActivity : AppCompatActivity() {
             }
 
             override fun onReceivedSslError(view: WebView?, handler: android.webkit.SslErrorHandler?, error: SslError?) {
-                val url = view?.url ?: ""
-                if (url.contains("127.0.0.1") || url.contains("localhost")) {
-                    handler?.proceed()
-                } else {
-                    handler?.cancel()
-                }
+                val url = view?.url ?: "null"
+                Log.w(TAG, "onReceivedSslError: url=$url error=${error?.primaryError}")
+                handler?.proceed()
             }
         }
 

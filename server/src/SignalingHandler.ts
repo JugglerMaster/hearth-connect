@@ -222,6 +222,23 @@ export class SignalingHandler {
       device = this.config.createDevice(deviceId, deviceType, label, roomId, undefined, legacyIOS);
     }
 
+    // Merge any config the client sends on join (kiosk reports its localStorage state).
+    // Device-side preferences (displayMode, broadcastDisabled) are always overwritten
+    // from the client because the kiosk knows what it's actually displaying — the
+    // server may have stale defaults from device creation.
+    const clientConfig = payload.config as Record<string, unknown> | undefined;
+    if (clientConfig && Object.keys(clientConfig).length > 0) {
+      const existing = this.config.getDeviceConfig(deviceId) || {};
+      const deviceSideKeys = new Set(['displayMode', 'broadcastDisabled']);
+      const patch: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(clientConfig)) {
+        if (deviceSideKeys.has(k) || !(k in existing) && v !== undefined) patch[k] = v;
+      }
+      if (Object.keys(patch).length > 0) {
+        this.config.updateDeviceConfig(deviceId, patch);
+      }
+    }
+
     // Use config label if set (overrides the join-time label)
     const effectiveLabel = (device.config?.label && device.config.label.trim()) ? device.config.label : label;
 
@@ -624,10 +641,9 @@ export class SignalingHandler {
 
     const targetDeviceId = payload.targetDeviceId as string;
     const displayMode = payload.displayMode as DisplayMode;
-    const audioMode = payload.audioMode as AudioMode;
 
-    if (!targetDeviceId || !displayMode || !audioMode) {
-      this.sendError(transport, 'INVALID_PARAMS', 'targetDeviceId, displayMode, audioMode required');
+    if (!targetDeviceId || !displayMode) {
+      this.sendError(transport, 'INVALID_PARAMS', 'targetDeviceId and displayMode required');
       return;
     }
 
@@ -643,7 +659,7 @@ export class SignalingHandler {
     }
 
     // Persist config
-    this.config.updateDeviceConfig(targetDeviceId, { displayMode, audioMode });
+    this.config.updateDeviceConfig(targetDeviceId, { displayMode });
 
     const fullConfig = this.config.getDeviceConfig(targetDeviceId);
 
@@ -652,7 +668,7 @@ export class SignalingHandler {
     if (targetClient) {
       this.channels.sendTo(targetDeviceId, {
         type: 'SET_DISPLAY_CONFIG',
-        payload: { displayMode, audioMode },
+        payload: { displayMode },
       });
     }
 
@@ -661,10 +677,10 @@ export class SignalingHandler {
     // with the SET_CONFIG reply.
     this.send(transport, {
       type: 'CONFIG_RESULT',
-      payload: { targetDeviceId, ok: true, config: fullConfig || { displayMode, audioMode } },
+      payload: { targetDeviceId, ok: true, config: fullConfig || { displayMode } },
     });
 
-    console.log(`Display config set for ${targetDeviceId}: display=${displayMode}, audio=${audioMode}`);
+    console.log(`Display config set for ${targetDeviceId}: display=${displayMode}`);
   }
 
   private handleCapabilities(

@@ -20,3 +20,7 @@ android/app/src/main/assets/keystore/
 
 # Pi agent bytecode
 linux/pi-agent/__pycache__/
+
+# Android build artifacts
+android/.gradle/
+android/app/build/

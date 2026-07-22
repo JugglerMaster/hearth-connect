@@ -224,8 +224,7 @@
     try {
       const dev = devices.find(d => d.id === peerId);
       faceTalkRestore = {
-        displayMode: dev?.config?.displayMode || 'self',
-        audioMode: dev?.config?.audioMode || 'mute',
+        displayMode: dev?.config?.displayMode || 'blank',
       };
 
       if (!localBroadcastStream) {
@@ -247,7 +246,7 @@
       sig.broadcastSource(faceTalkSourceId, 'Base Station FaceTalk', 'video+audio', broadcastTarget);
 
       // Switch the target kiosk to show/hear the base's broadcast.
-      sig.setDisplayConfig(peerId, 'base', 'base');
+      sig.setDisplayConfig(peerId, 'base');
 
       faceTalkingTo = peerId;
       ftDbgState.target = peerId;
@@ -289,7 +288,7 @@
     }
 
     if (faceTalkRestore) {
-      sig.setDisplayConfig(faceTalkingTo, faceTalkRestore.displayMode, faceTalkRestore.audioMode);
+      sig.setDisplayConfig(faceTalkingTo, faceTalkRestore.displayMode);
       faceTalkRestore = null;
     }
 
@@ -1359,8 +1358,7 @@
   function renderConfigForm(device) {
     const caps = capabilitiesByDevice[device.id];
     const cfg = device.config || {};
-    const displayMode = cfg.displayMode || 'self';
-    const audioMode = cfg.audioMode || 'mute';
+    const displayMode = cfg.displayMode || 'blank';
     const broadcastsDisabled = cfg.broadcastDisabled === true;
 
     let cameraRow;
@@ -1424,21 +1422,9 @@
           <option value="30" ${cfg.frameRate === 30 ? 'selected' : ''}>30 fps</option>
         </select>
       </div>
-      <div class="config-row">
-        <label>Display Mode</label>
-        <select id="cfg-displayMode">
-          <option value="self" ${displayMode === 'self' ? 'selected' : ''}>Self</option>
-          <option value="blank" ${displayMode === 'blank' ? 'selected' : ''}>Blank</option>
-          <option value="base" ${displayMode === 'base' ? 'selected' : ''}>Base</option>
-        </select>
-      </div>
-      <div class="config-row">
-        <label>Audio Mode</label>
-        <select id="cfg-audioMode">
-          <option value="self" ${audioMode === 'self' ? 'selected' : ''}>Self</option>
-          <option value="mute" ${audioMode === 'mute' ? 'selected' : ''}>Mute</option>
-          <option value="base" ${audioMode === 'base' ? 'selected' : ''}>Base</option>
-        </select>
+        <div class="config-row">
+        <label>View Self</label>
+        <div class="toggle-switch ${displayMode === 'self' ? 'active' : ''}" id="cfg-displayMode"></div>
       </div>
       <div class="config-row">
         <label>Keep Awake</label>
@@ -1488,9 +1474,8 @@
       }
       sig.setConfig(device.id, payload);
       // Persist + apply the display/audio mode live (kiosk applies via SET_DISPLAY_CONFIG)
-      const newDisplay = document.getElementById('cfg-displayMode').value;
-      const newAudio = document.getElementById('cfg-audioMode').value;
-      sig.setDisplayConfig(device.id, newDisplay, newAudio);
+      const newDisplay = document.getElementById('cfg-displayMode').classList.contains('active') ? 'self' : 'blank';
+      sig.setDisplayConfig(device.id, newDisplay);
       configPanel.classList.add('hidden');
     });
     document.getElementById('removeDeviceBtn').addEventListener('click', () => {

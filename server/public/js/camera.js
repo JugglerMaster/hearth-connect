@@ -50,7 +50,6 @@
       showFeed: false,
       keepAwake: true,
       displayMode: 'blank',
-      audioMode: 'mute',
       broadcastDisabled: false,
       audioAlertEnabled: true,
       audioAlertThresholdDb: -40,
@@ -264,7 +263,7 @@
       broadcastAudioActive = false;
       broadcastPeerId = null;
       if (wasShowingBaseVideo) {
-        applyDisplayConfig(currentConfig.displayMode || 'self', currentConfig.audioMode || 'mute');
+        applyDisplayConfig(currentConfig.displayMode || 'blank');
       }
       ftDbgState.base = null;
       ftDbgState.pc = '--';
@@ -274,8 +273,8 @@
     }
   }
 
-  function applyDisplayConfig(displayMode, audioMode) {
-    console.log('[kiosk] applyDisplayConfig:', displayMode, audioMode);
+  function applyDisplayConfig(displayMode) {
+    console.log('[kiosk] applyDisplayConfig:', displayMode);
     
     const video = document.getElementById('cameraFeed');
     if (!video) return;
@@ -323,16 +322,6 @@
           video.play().catch(() => {});
         }
         break;
-    }
-
-    // Handle audio mode
-    // Note: Audio is handled via the video element's audio tracks
-    // 'self' = no audio (muted), 'mute' = no audio, 'base' = base audio
-    if (audioMode === 'base' && broadcastStream) {
-      // Audio will play through video element
-      video.muted = false;
-    } else {
-      video.muted = true;
     }
   }
 
@@ -506,7 +495,7 @@
       // always shows the local camera after every (re)start, so the
       // self/blank toggle never sticks. FaceTalk overrides are still honoured
       // because applyDisplayConfig checks baseVideoActive first.
-      applyDisplayConfig(currentConfig.displayMode || 'self', currentConfig.audioMode || 'mute');
+      applyDisplayConfig(currentConfig.displayMode || 'blank');
 
       publishCurrentSource();
       setupAudioAnalyser();
@@ -624,7 +613,7 @@
       connectionDot.className = 'status-dot reconnecting';
       if (debugMethod) debugMethod.textContent = 'method:' + (sig.useSSE ? 'SSE' : 'WS');
       logEvent(sig.useSSE ? 'sse:open' : 'ws:open');
-      sig.joinRoom('default', deviceId);
+      sig.joinRoom('default', deviceId, currentConfig);
       ftDbgState.wsMethod = sig.useSSE ? 'SSE' : 'WS';
       ftDbgState.wsUp = true;
       renderFtDebug();
@@ -682,16 +671,10 @@
       // Speaker volume from config (0..1). Applied live to the element.
       const vol = (currentConfig.speakerVolume != null) ? currentConfig.speakerVolume : 0.5;
       remoteAudio.volume = Math.max(0, Math.min(1, vol));
-      // Play base audio only when it is allowed by the display/audio mode and
-      // we are either in a call or the base has enabled talkback, OR the base
-      // is broadcasting a "Broadcast Message" announcement (which overrides
-      // the kiosk's mute so the announcement is always heard).
-      const audioMode = currentConfig.audioMode || 'mute';
-      const allowed = audioMode === 'base' || talkbackActive || callActive || broadcastAudioActive;
-      remoteAudio.muted = !allowed;
-      if (allowed) {
-        remoteAudio.play().catch(() => {});
-      }
+      // Play base audio — the base station audio is always allowed since
+      // talkback, calls, and announcements are all gated at the source.
+      remoteAudio.muted = false;
+      remoteAudio.play().catch(() => {});
     }
 
     rtc.onRemoteTrack = (peerId, stream, track) => {
@@ -802,11 +785,8 @@
     // Handle display/audio config from base station
     sig.on('setDisplayConfig', (data) => {
       console.log('[kiosk] setDisplayConfig:', data);
-      applyDisplayConfig(data.displayMode, data.audioMode);
-      // Re-apply speaker volume / audio-mode gating to any live remote audio.
-      if (typeof applyRemoteAudio === 'function') applyRemoteAudio();
+      applyDisplayConfig(data.displayMode);
       ftDbgState.display = data.displayMode;
-      ftDbgState.audio = data.audioMode;
       renderFtDebug();
     });
 
@@ -905,7 +885,7 @@
     // dedicated SET_DISPLAY_CONFIG message), re-apply it so the on-device
     // preview respects self/blank/base even if the targeted message was missed.
     if ((defined.displayMode !== undefined || defined.audioMode !== undefined) && rtc.localStream) {
-      applyDisplayConfig(currentConfig.displayMode || 'self', currentConfig.audioMode || 'mute');
+      applyDisplayConfig(currentConfig.displayMode || 'blank');
     }
 
     if (changed && rtc.localStream) {

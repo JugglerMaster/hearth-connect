@@ -20,7 +20,6 @@ import androidx.core.app.NotificationCompat
  */
 class HubService : Service() {
     private lateinit var server: SignalingServer
-    private lateinit var webrtc: WebRTCManager
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
 
@@ -29,7 +28,6 @@ class HubService : Service() {
         startForeground(NOTIF_ID, buildNotification())
         acquireLocks()
 
-        webrtc = WebRTCManager(this)
         server = SignalingServer(this)
         server.start(PORT)
     }
@@ -78,7 +76,6 @@ class HubService : Service() {
 
     override fun onDestroy() {
         server.stop()
-        webrtc.dispose()
         wakeLock?.release()
         wifiLock?.release()
         super.onDestroy()

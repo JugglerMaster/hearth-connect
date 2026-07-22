@@ -301,9 +301,11 @@ class SignalingClient {
 
   // ─── API Methods ─────────────────────────────────────
 
-  joinRoom(roomId, deviceId) {
+  joinRoom(roomId, deviceId, config) {
     this.roomId = roomId;
-    this.send('JOIN_ROOM', { roomId, deviceId, deviceType: this.deviceType, label: this.deviceLabel, legacyIOS: isLegacyIOS() });
+    const payload = { roomId, deviceId, deviceType: this.deviceType, label: this.deviceLabel, legacyIOS: isLegacyIOS() };
+    if (config) payload.config = config;
+    this.send('JOIN_ROOM', payload);
   }
 
   leaveRoom() {
@@ -403,8 +405,8 @@ class SignalingClient {
     this.send('UNSUBSCRIBE_BROADCAST', { publisherId });
   }
 
-  setDisplayConfig(targetDeviceId, displayMode, audioMode) {
-    this.send('SET_DISPLAY_CONFIG', { targetDeviceId, displayMode, audioMode });
+  setDisplayConfig(targetDeviceId, displayMode) {
+    this.send('SET_DISPLAY_CONFIG', { targetDeviceId, displayMode });
   }
 
   // ─── Event System ────────────────────────────────────

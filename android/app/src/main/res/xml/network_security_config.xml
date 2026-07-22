@@ -5,7 +5,7 @@
         <domain includeSubdomains="false">localhost</domain>
         <trust-anchors>
             <certificates src="system" />
-            <certificates src="user" />
+            <certificates src="@raw/hearthconnect" />
         </trust-anchors>
     </domain-config>
 </network-security-config>
