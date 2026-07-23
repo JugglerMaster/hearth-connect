@@ -33,7 +33,7 @@ import java.net.NetworkInterface
 import java.security.KeyStore
 import java.util.concurrent.ConcurrentHashMap
 
-class SignalingServer(private val context: Context) {
+class SignalingServer(private val context: Context, private val listener: ServerEventListener? = null) {
     private val assets: AssetManager = context.assets
     private var engine: ApplicationEngine? = null
 
@@ -744,15 +744,21 @@ class SignalingServer(private val context: Context) {
 
     private fun handleAudioPeak(connId: String, payload: JSONObject) {
         val client = getClient(connId) ?: return
+        val levelDb = payload.opt("levelDb")
         broadcastAll(JSONObject().apply {
             put("type", "AUDIO_PEAK")
             put("payload", JSONObject().apply {
                 put("deviceId", client.deviceId)
-                put("levelDb", payload.opt("levelDb"))
+                put("levelDb", levelDb)
                 put("peak", payload.opt("peak"))
                 put("ts", payload.opt("ts") ?: System.currentTimeMillis())
             })
         }, excludeDeviceId = client.deviceId)
+
+        // Forward to native listener for screen wake (when screen is off).
+        if (levelDb is Number) {
+            listener?.onAudioPeak(client.deviceId, levelDb.toDouble())
+        }
     }
 
     private fun handleRemoveDevice(connId: String, payload: JSONObject) {
@@ -794,6 +800,7 @@ class SignalingServer(private val context: Context) {
         }, excludeDeviceId = client.deviceId)
 
         Log.i(TAG, "Doorbell rung by ${client.deviceId} ($label)")
+        listener?.onDoorbell(client.deviceId, label)
     }
 
     private fun handleCallState(connId: String, payload: JSONObject) {
@@ -1041,6 +1048,12 @@ class SignalingServer(private val context: Context) {
                 else -> JSONObject()
             }
         }
+    }
+
+    /** Callback interface for SignalingServer → HubService event forwarding. */
+    interface ServerEventListener {
+        fun onDoorbell(fromDeviceId: String, label: String)
+        fun onAudioPeak(fromDeviceId: String, levelDb: Double)
     }
 }
 

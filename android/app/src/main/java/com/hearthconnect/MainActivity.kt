@@ -3,6 +3,7 @@ package com.hearthconnect
 import android.Manifest
 import android.annotation.SuppressLint
 import android.net.http.SslError
+import android.os.Build
 import android.util.Log
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -10,6 +11,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.view.View
+import android.view.WindowManager
 import android.webkit.PermissionRequest
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
@@ -25,6 +27,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
     companion object {
         private const val TAG = "HearthMain"
+        const val ACTION_WAKE_ON_EVENT = "com.hearthconnect.WAKE_ON_EVENT"
+        const val EXTRA_WAKE_REASON = "wake_reason"
         init {
             WebView.setWebContentsDebuggingEnabled(true)
         }
@@ -52,6 +56,17 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
+
+        // Allow this activity to show over the lock screen (no password set)
+        // so HubService can bring us to front on audio/motion events.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            setShowWhenLocked(true)
+            setTurnScreenOn(true)
+        } else {
+            @Suppress("DEPRECATION")
+            window.addFlags(WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                    WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON)
+        }
 
         val intent = Intent(this, HubService::class.java)
         ContextCompat.startForegroundService(this, intent)
@@ -114,6 +129,13 @@ class MainActivity : AppCompatActivity() {
 
     private fun hasAllPermissions(): Boolean = requiredPermissions.all {
         ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
+    }
+
+    override fun onNewIntent(intent: Intent?) {
+        super.onNewIntent(intent)
+        if (intent?.action == ACTION_WAKE_ON_EVENT) {
+            Log.i(TAG, "Woken by event: ${intent.getStringExtra(EXTRA_WAKE_REASON) ?: "unknown"}")
+        }
     }
 
     @Suppress("DEPRECATION")
