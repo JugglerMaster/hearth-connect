@@ -86,38 +86,45 @@ else
 fi
 
 # ─── Prompt for the server URL (used by the agent to connect) ───
-# Precedence: $SERVER_URL env/arg > currently-installed config.env value >
-# repo template default. We preserve an already-working installed config.env
-# (re-running install.sh must NOT clobber a real SERVER_URL with the placeholder).
+# Precedence: $SERVER_URL env/arg > user prompt > blank (auto-discover via mDNS).
+# We never read the installed config.env as a prompt default — a stale IP or
+# placeholder from a previous install would prevent the blank autodiscovery
+# default from taking effect.
 CONFIG_SRC="$SCRIPT_DIR/config.env"
 INSTALLED_CFG="$INSTALL_DIR/config.env"
-if [[ -f "$INSTALLED_CFG" ]]; then
-  EXISTING_URL="$(grep -E '^SERVER_URL=' "$INSTALLED_CFG" | head -1 | cut -d= -f2-)"
-fi
-if [[ -z "${EXISTING_URL:-}" && -f "$CONFIG_SRC" ]]; then
-  EXISTING_URL="$(grep -E '^SERVER_URL=' "$CONFIG_SRC" | head -1 | cut -d= -f2-)"
-fi
-EXISTING_URL="${EXISTING_URL:-}"
 
 if [[ -n "${SERVER_URL:-}" ]]; then
-  : # already set via environment
+  : # already set via environment or CLI arg
 elif [[ -t 0 ]]; then
-  echo "Enter the server URL (leave blank to auto-discover via mDNS):"
+  echo "Enter the server URL (leave blank to auto-discover the server via mDNS):"
   read -r -p "Server URL [blank = auto-discover]: " SERVER_URL
 fi
 
-# Build the installed config.env: start from the repo template, but if a config
-# is already installed, preserve its SERVER_URL (unless a new one was given) so
-# re-running the installer never resets a working setup.
+# Build the installed config.env.  If the user gave a URL (or left it blank for
+# autodiscovery), write a fresh config from the template with that value.  Only
+# preserve the existing installed config when re-running non-interactively with
+# no env var — that means "don't touch my setup."
 if [[ -n "${SERVER_URL:-}" ]]; then
   TMP_CFG="$(mktemp)"
   sed "s|^SERVER_URL=.*|SERVER_URL=$SERVER_URL|" "$CONFIG_SRC" > "$TMP_CFG"
-  sudo cp "$TMP_CFG" "$INSTALL_DIR/config.env"
+  sudo cp "$TMP_CFG" "$INSTALLED_CFG"
   rm -f "$TMP_CFG"
-elif [[ -f "$INSTALLED_CFG" ]]; then
-  : # keep the existing installed config.env untouched
-else
-  sudo cp "$CONFIG_SRC" "$INSTALL_DIR/config.env"
+elif [[ -t 0 ]]; then
+  # User was prompted and hit Enter with no input → blank = autodiscover.
+  if [[ -f "$INSTALLED_CFG" ]]; then
+    # Ensure the installed config has a blank SERVER_URL.
+    if grep -qE '^SERVER_URL=.+' "$INSTALLED_CFG"; then
+      TMP_CFG="$(mktemp)"
+      sed 's|^SERVER_URL=.*|SERVER_URL=|' "$INSTALLED_CFG" > "$TMP_CFG"
+      sudo cp "$TMP_CFG" "$INSTALLED_CFG"
+      rm -f "$TMP_CFG"
+    fi
+  else
+    sudo cp "$CONFIG_SRC" "$INSTALLED_CFG"
+  fi
+elif [[ ! -f "$INSTALLED_CFG" ]]; then
+  # Non-interactive, no env var, no existing config — copy template as-is.
+  sudo cp "$CONFIG_SRC" "$INSTALLED_CFG"
 fi
 
 # The agent runs as a non-root user but the files were copied via sudo, so make
