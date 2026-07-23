@@ -102,8 +102,8 @@ EXISTING_URL="${EXISTING_URL:-}"
 if [[ -n "${SERVER_URL:-}" ]]; then
   : # already set via environment
 elif [[ -t 0 ]]; then
-  echo "Enter the server URL (leave blank for auto-discovery via mDNS):"
-  read -r -p "Server URL [${EXISTING_URL:-auto-discover}]: " SERVER_URL
+  echo "Enter the server URL (leave blank to auto-discover via mDNS):"
+  read -r -p "Server URL [blank = auto-discover]: " SERVER_URL
 fi
 
 # Build the installed config.env: start from the repo template, but if a config
@@ -142,6 +142,6 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now hearth-pi-agent
 
 echo "Done. The Pi Agent is installed at $INSTALL_DIR and running as user '$AGENT_USER'."
-echo "  server: ${SERVER_URL:-<auto-discover via mDNS>}"
+echo "  server: ${SERVER_URL:-<blank — will auto-discover via mDNS>}"
 echo "  status: sudo systemctl status hearth-pi-agent"
 echo "  logs:   sudo journalctl -u hearth-pi-agent -f"
