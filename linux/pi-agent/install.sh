@@ -59,6 +59,7 @@ fi
 
 sudo mkdir -p "$INSTALL_DIR"
 sudo cp "$SCRIPT_DIR/pi-agent.py" "$INSTALL_DIR/"
+sudo cp "$SCRIPT_DIR/mdns_discover.py" "$INSTALL_DIR/"
 
 # ─── Install the server's CA so the agent trusts the self-signed TLS cert ───
 # The Pi agent verifies the server's WSS certificate. For a self-hosted LAN

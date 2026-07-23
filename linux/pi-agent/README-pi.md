@@ -81,7 +81,7 @@ Edit `/opt/hearth-pi-agent/config.env`:
 
 | Variable     | Meaning                                                        |
 |--------------|----------------------------------------------------------------|
-| `SERVER_URL` | `wss://host:8090` of your Hearth-Connect server                |
+| `SERVER_URL` | `wss://host:8090` of your Hearth-Connect server. **Leave blank to auto-discover the server via mDNS** on the local network. |
 | `ROOM_ID`    | Room to join (default `default`)                               |
 | `DEVICE_LABEL` | Name shown in the base station device list                   |
 | `VIDEO_DEVICE` | V4L2 path, e.g. `/dev/video0`; blank = first available      |
@@ -98,6 +98,20 @@ For the camera, enable it once: `sudo raspi-config` → Interface → Camera (or
 Set a USB mic as the default capture device if needed (`~/.asoundrc` / `alsactl`).
 To hear talkback/broadcasts, attach a speaker/headphones and set `SPEAKER_DEVICE` (or leave
 blank for the default ALSA playback device).
+
+### Auto-Discovery (mDNS)
+
+If `SERVER_URL` is left blank in `config.env`, the agent will automatically search for a
+Hearth-Connect server on the local network using mDNS/Bonjour (`_hearth-connect._tcp.local.`).
+When found, the discovered URL is persisted to `config.env` so subsequent restarts connect
+directly without re-discovery.
+
+The agent will also re-attempt mDNS discovery after 3 consecutive connection failures,
+handling the case where the server moves to a new IP address.
+
+To disable auto-discovery on the server side, set `MDNS_DISABLED=true` in the server's
+environment. To use a manual URL instead, set `SERVER_URL` explicitly (e.g.
+`wss://192.168.1.50:8090`).
 
 ## Install the self-signed CA (optional)
 

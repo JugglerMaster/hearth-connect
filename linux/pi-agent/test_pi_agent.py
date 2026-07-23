@@ -366,5 +366,119 @@ class TestBroadcastPipelineStr(unittest.TestCase):
                          'webrtcbin name=wb stun-server=' + pa.STUN)
 
 
+# ─── mDNS discovery tests ──────────────────────────────────
+# These import mdns_discover directly (no GStreamer/websockets needed).
+# We mock zeroconf so the tests run on any machine.
+
+
+class TestMdnsDiscover(unittest.TestCase):
+    """Tests for mdns_discover.py — the mDNS/Bonjour service discovery module."""
+
+    def _load_module(self):
+        """Import mdns_discover fresh."""
+        spec = importlib.util.spec_from_file_location(
+            'mdns_discover', os.path.join(_HERE, 'mdns_discover.py'))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    def test_returns_none_when_zeroconf_missing(self):
+        """discover_server should return None gracefully when zeroconf is not installed."""
+        mod = self._load_module()
+        import unittest.mock as mock
+        # Patch the import to raise ImportError
+        import builtins
+        orig_import = builtins.__import__
+        def _no_zeroconf(name, *args, **kwargs):
+            if name == 'zeroconf' or name.startswith('zeroconf'):
+                raise ImportError('no zeroconf')
+            return orig_import(name, *args, **kwargs)
+        with mock.patch('builtins.__import__', side_effect=_no_zeroconf):
+            result = mod.discover_server_sync(timeout=0.1)
+        self.assertIsNone(result)
+
+    def test_returns_none_on_timeout(self):
+        """discover_server should return None when no service responds."""
+        mod = self._load_module()
+        import unittest.mock as mock
+
+        # Mock zeroconf modules so the real ones aren't needed
+        mock_zc = mock.AsyncMock()
+        mock_browser = mock.AsyncMock()
+        mock_zc.async_get_service_info = mock.AsyncMock(return_value=None)
+
+        mock_zeroconf_mod = mock.MagicMock()
+        mock_zeroconf_mod.AsyncZeroconf = mock.MagicMock(return_value=mock_zc)
+        mock_zeroconf_mod.AsyncServiceBrowser = mock.MagicMock(return_value=mock_browser)
+        mock_zeroconf_mod.ServiceStateChange = mock.MagicMock()
+        mock_zeroconf_mod.ServiceStateChange.Added = 'Added'
+
+        # Make import work
+        import builtins
+        orig_import = builtins.__import__
+        def _mock_import(name, *args, **kwargs):
+            if name == 'zeroconf':
+                return mock_zeroconf_mod
+            if name == 'zeroconf.asyncio':
+                return mock_zeroconf_mod
+            return orig_import(name, *args, **kwargs)
+
+        with mock.patch('builtins.__import__', side_effect=_mock_import):
+            # Use a very short timeout so it times out quickly
+            result = mod.discover_server_sync(timeout=0.01)
+        self.assertIsNone(result)
+
+    def test_returns_url_when_service_found(self):
+        """discover_server should return the serverUrl from the TXT record."""
+        mod = self._load_module()
+        import unittest.mock as mock
+        import asyncio
+
+        # Mock the ServiceInfo that has a serverUrl in its properties
+        mock_info = mock.MagicMock()
+        mock_info.properties = {b'serverUrl': b'wss://192.168.1.50:8090'}
+
+        mock_zc = mock.AsyncMock()
+        mock_zc.async_get_service_info = mock.AsyncMock(return_value=mock_info)
+
+        # Use a sentinel so the comparison `state_change == ServiceStateChange.Added`
+        # passes — mdns_discover imports ServiceStateChange.Added and compares it.
+        ADDED_SENTINEL = 'Added'
+
+        mock_browser_instance = mock.AsyncMock()
+
+        def _create_browser(zc, stype, handlers=None):
+            handler = handlers[0] if handlers else None
+            if handler:
+                handler(mock_zc, stype,
+                        'Hearth-Connect._hearth-connect._tcp.local.',
+                        ADDED_SENTINEL)
+            return mock_browser_instance
+
+        mock_zeroconf_mod = mock.MagicMock()
+        mock_zeroconf_mod.AsyncZeroconf = mock.MagicMock(return_value=mock_zc)
+        mock_zeroconf_mod.AsyncServiceBrowser = mock.MagicMock(side_effect=_create_browser)
+        # Override ServiceStateChange.Added so the string comparison in mdns_discover passes
+        mock_ssc = mock.MagicMock()
+        mock_ssc.Added = ADDED_SENTINEL
+        mock_zeroconf_mod.ServiceStateChange = mock_ssc
+
+        import builtins
+        orig_import = builtins.__import__
+        def _mock_import(name, *args, **kwargs):
+            if name == 'zeroconf':
+                return mock_zeroconf_mod
+            if name == 'zeroconf.asyncio':
+                return mock_zeroconf_mod
+            return orig_import(name, *args, **kwargs)
+
+        with mock.patch('builtins.__import__', side_effect=_mock_import):
+            async def _run():
+                return await mod.discover_server(timeout=2.0)
+            result = asyncio.run(_run())
+
+        self.assertEqual(result, 'wss://192.168.1.50:8090')
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -845,10 +845,7 @@ class Agent:
                     found = True
                     continue  # drop old value; re-emit below
                 out.append(line)
-            if not found:
-                out.insert(0, 'SERVER_URL=' + url)
-            else:
-                out.insert(0, 'SERVER_URL=' + url)
+            out.insert(0, 'SERVER_URL=' + url)
             os.makedirs(os.path.dirname(CONFIG_FILE) or '.', exist_ok=True)
             with open(CONFIG_FILE, 'w') as f:
                 f.write('\n'.join(out) + '\n')
