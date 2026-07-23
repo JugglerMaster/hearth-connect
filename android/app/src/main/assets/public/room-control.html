@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1.0, user-scalable=no">
   <meta name="apple-mobile-web-app-capable" content="yes">
-  <title>Base Station — Hearth-Connect</title>
+  <title>Room Control — Hearth-Connect</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
   <link rel="stylesheet" href="/css/style.css">
 </head>
@@ -12,7 +12,7 @@
   <div class="page" id="app">
     <header class="control-header" style="justify-content:center">
       <div class="header-left">
-        <h1>Base Station</h1>
+        <h1>Room Control</h1>
         <span id="connectionDot" class="status-dot offline"></span>
       </div>
     </header>
@@ -22,10 +22,10 @@
       <div id="ftDebug" class="ft-debug">ft:idle</div>
       <div id="rxDebug" class="rx-debug">rx:idle</div>
       <div id="monitorPlaceholder" class="monitor-placeholder hidden">
-        <div>🔊 Listening…</div>
+        <div>No feed selected</div>
       </div>
       <div id="monitorError" class="monitor-error hidden"></div>
-      <button id="monitorResumeBtn" class="monitor-resume hidden" title="Resume">▶</button>
+      <button id="monitorResumeBtn" class="monitor-resume hidden" title="Resume">&#9654;</button>
       <div class="monitor-overlay">
         <span id="monitorStatus" class="monitor-status hidden"></span>
         <button id="monitorMuteBtn" class="icon-btn" type="button" aria-label="Mute" aria-pressed="false" title="Mute">
@@ -34,9 +34,6 @@
         </button>
         <button id="monitorTalkBtn" class="icon-btn" type="button" aria-label="Talk" aria-pressed="false" title="Talk">
           <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0"/><line x1="12" y1="18" x2="12" y2="22"/></svg>
-        </button>
-        <button id="monitorFaceTalkBtn" class="icon-btn" type="button" aria-label="FaceTalk" aria-pressed="false" title="Send camera + mic">
-          <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="6" width="14" height="12" rx="2"/><path d="m22 8-6 4 6 4z"/></svg>
         </button>
         <span id="monitorQuality" class="monitor-quality"></span>
         <button id="monitorFullscreenBtn" class="icon-btn fs" type="button" aria-label="Fullscreen" aria-pressed="false" title="Fullscreen">
@@ -51,14 +48,13 @@
         <div id="volumeSliderWrap" class="volume-slider-wrap hidden">
           <input type="range" id="monitorVolume" min="0" max="200" step="1" value="100" orient="vertical">
         </div>
-        <button id="volumeToggleBtn" class="volume-toggle" title="Volume">🔊</button>
+        <button id="volumeToggleBtn" class="volume-toggle" title="Volume">&#128266;</button>
       </div>
     </div>
 
     <div id="homeView">
       <div class="panel devices-panel">
         <h2>Devices</h2>
-        <button id="testSelfVideoBtn" class="btn btn-small btn-outline" style="margin-bottom:8px">🎥 Test: show my own video</button>
         <div id="deviceList" class="device-list"></div>
       </div>
 
@@ -69,11 +65,14 @@
     </div>
   </div>
 
+  <audio id="remoteAudio" autoplay playsinline></audio>
+  <audio id="noSleepAudio" loop playsinline></audio>
+
   <div id="toast" class="toast hidden"></div>
 
   <div id="incomingCall" class="call-modal hidden">
     <div class="call-box">
-      <div class="call-title">🔔 Incoming call</div>
+      <div class="call-title">Incoming call</div>
       <div id="incomingCallFrom" class="call-from"></div>
       <div class="call-actions">
         <button id="answerCallBtn" class="btn btn-primary">Answer</button>
@@ -84,7 +83,7 @@
 
   <script src="/js/signaling.js"></script>
   <script src="/js/webrtc.js"></script>
-  <script src="/js/base-station.js"></script>
+  <script src="/js/room-control.js"></script>
   <script src="/js/topbar.js"></script>
 </body>
 </html>

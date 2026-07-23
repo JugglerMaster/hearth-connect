@@ -43,7 +43,7 @@ class SignalingClient {
   connect() {
     if (this.useSSE) return this.connectSSE();
 
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) return;
+    if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) return;
     this.intentionalClose = false;
 
     try {

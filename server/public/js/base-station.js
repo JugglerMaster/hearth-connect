@@ -563,7 +563,7 @@
   }
 
   function renderDevices() {
-    const kiosks = devices.filter(d => d.type === 'kiosk' && d.id !== deviceId);
+    const kiosks = devices.filter(d => (d.type === 'kiosk' || d.type === 'room') && d.id !== deviceId);
     const bases = devices.filter(d => d.type === 'base' && d.id !== deviceId);
 
     // Build broadcast panel HTML.
@@ -599,7 +599,7 @@
 
   function buildBroadcastPanel() {
     // Build the target <select>: an "All devices" option plus one per kiosk.
-    const kiosks = devices.filter(d => d.type === 'kiosk' && d.id !== deviceId);
+    const kiosks = devices.filter(d => (d.type === 'kiosk' || d.type === 'room') && d.id !== deviceId);
     const options = ['<option value="all">All devices</option>']
       .concat(kiosks.map(k => `<option value="${k.id}">${k.label}</option>`))
       .join('');
@@ -946,7 +946,7 @@
   function startView(peerId, mode) {
     console.log('[view] start', peerId, mode);
     if (viewingId === peerId && viewMode === mode) { stopView(); return; }
-    if (devices.find(d => d.id === peerId && d.type !== 'kiosk')) return;
+    if (devices.find(d => d.id === peerId && (d.type !== 'kiosk' && d.type !== 'room'))) return;
 
     const type = sourceTypeFor(peerId);
     // Fall back to audio if video was requested but no video stream exists
@@ -1562,6 +1562,31 @@
 
     setInterval(watchdog, 2000);
 
+    // Recover from Android app backgrounding: when the WebView is paused,
+    // WebRTC connections die (ICE → failed). On resume the signaling socket
+    // reconnects but the old PC is stale. Detect the foreground transition
+    // and force a recovery so the view doesn't get stuck.
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState !== 'visible' || !viewingId) return;
+      // If signaling isn't connected yet, let the 'open' → 'welcome' flow
+      // handle recovery. Starting it here poisons the `recovering` flag
+      // before subscribeSource can even be sent, blocking auto-resume.
+      if (!sig.connected) {
+        console.log('[view] visibilitychange → visible but signaling offline, deferring to welcome');
+        return;
+      }
+      const pc = rtc.peerConnections.get(viewingId);
+      const iceState = pc ? pc.iceConnectionState : null;
+      const connState = pc ? pc.connectionState : null;
+      console.log('[view] visibilitychange → visible, ice:', iceState, 'conn:', connState);
+      if (!pc || iceState === 'failed' || iceState === 'disconnected' || connState === 'failed') {
+        console.log('[view] stale connection detected after foreground, recovering');
+        recovering = false;
+        recoverAttempts = 0;
+        recoverWatch();
+      }
+    });
+
     sig.on('open', () => {
       connectionDot.className = 'status-dot reconnecting';
       sig.joinRoom('default', deviceId);
@@ -1580,6 +1605,20 @@
       // Auto-resume the feed the user was watching before a reload (F5 / crash).
       const lastViewing = localStorage.getItem('hearth_baseViewingId');
       if (lastViewing && sources.some(s => s.publisherId === lastViewing)) {
+        // If the existing connection is stale (e.g. after Android backgrounding),
+        // tear down the old PC and re-subscribe fresh.
+        if (viewingId === lastViewing) {
+          const pc = rtc.peerConnections.get(viewingId);
+          const iceState = pc ? pc.iceConnectionState : null;
+          const connState = pc ? pc.connectionState : null;
+          if (!pc || iceState === 'failed' || iceState === 'disconnected' || connState === 'failed') {
+            console.log('[view] stale connection on welcome, recovering', lastViewing);
+            recovering = false;
+            recoverAttempts = 0;
+            recoverWatch();
+            return;
+          }
+        }
         console.log('[view] auto-resuming', lastViewing);
         startView(lastViewing, 'video');
       }
@@ -1717,7 +1756,7 @@
           online: true,
           config: data.config || {},
         });
-        if (!wasKnown && data.type === 'kiosk') {
+        if (!wasKnown && (data.type === 'kiosk' || data.type === 'room')) {
           showToast('Device joined: ' + (data.label || data.deviceId));
         }
       }

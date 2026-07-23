@@ -224,6 +224,25 @@ export class ConfigManager {
           audioAlertEnabled: true,
           audioAlertThresholdDb: -40,
         };
+      case 'room':
+        return {
+          ...common,
+          camera: 'front',
+          resolution: legacyIOS ? '480p' : '720p',
+          frameRate: 30,
+          nightMode: false,
+          torch: false,
+          micSensitivity: 0.8,
+          speakerVolume: 0.5,
+          twoWayAudioEnabled: true,
+          showFeed: false,
+          keepAwake: true,
+          displayMode: 'blank',
+          audioMode: 'mute',
+          broadcastDisabled: false,
+          audioAlertEnabled: true,
+          audioAlertThresholdDb: -40,
+        };
       case 'base':
         return {
           ...common,

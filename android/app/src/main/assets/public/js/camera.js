@@ -557,12 +557,10 @@
       existingPc.close();
       rtc.peerConnections.delete(peerId);
     }
-    const pc = rtc.createPeerConnection(peerId, 'send');
-    console.log('[kiosk] created send pc for', peerId, 'tracks:', rtc.localStream.getTracks().length);
-    rtc.createOffer(peerId).catch(err => {
-      logEvent('offerErr:' + err.name);
-      console.error('[kiosk] createOffer for', peerId, err);
-    });
+    // createPeerConnection adds tracks which triggers onnegotiationneeded,
+    // creating the offer automatically. Do NOT also call createOffer() —
+    // the two offers race and produce m-line order mismatch errors.
+    rtc.createPeerConnection(peerId, 'send');
   }
 
   // iOS ≤12 requires a user gesture before the camera permission prompt can
@@ -624,7 +622,9 @@
       localStorage.setItem('hearth_monitorDeviceId', deviceId);
       deviceLabel.textContent = sig.deviceLabel;
       connectionDot.className = 'status-dot online';
-      applyConfig(data.config);
+      // Force displayMode to blank on every connect (override server-persisted value)
+      const config = data.config ? Object.assign({}, data.config, { displayMode: 'blank' }) : { displayMode: 'blank' };
+      applyConfig(config);
       logEvent('welcome:' + data.deviceId.slice(-4));
       if (isLegacyIOS()) {
         // iOS ≤12: camera start is gated behind the "Tap to enable camera"

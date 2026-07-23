@@ -210,7 +210,7 @@ export class SignalingHandler {
       return;
     }
 
-    const validTypes: DeviceType[] = ['kiosk', 'base'];
+    const validTypes: DeviceType[] = ['kiosk', 'base', 'room'];
     if (!validTypes.includes(deviceType)) {
       this.sendError(transport, 'INVALID_TYPE', `deviceType must be one of: ${validTypes.join(', ')}`);
       return;
@@ -374,8 +374,8 @@ export class SignalingHandler {
       return;
     }
 
-    if (client.deviceType !== 'kiosk' && client.deviceType !== 'base') {
-      this.sendError(transport, 'NOT_ALLOWED', 'Only cameras and base stations can publish');
+    if (client.deviceType !== 'kiosk' && client.deviceType !== 'base' && client.deviceType !== 'room') {
+      this.sendError(transport, 'NOT_ALLOWED', 'Only cameras, base stations, and room controls can publish');
       return;
     }
 
@@ -577,8 +577,8 @@ export class SignalingHandler {
       return;
     }
 
-    if (client.deviceType !== 'kiosk') {
-      this.sendError(transport, 'NOT_ALLOWED', 'Only kiosks can subscribe to broadcasts');
+    if (client.deviceType !== 'kiosk' && client.deviceType !== 'room') {
+      this.sendError(transport, 'NOT_ALLOWED', 'Only kiosks and room controls can subscribe to broadcasts');
       return;
     }
 
@@ -591,12 +591,12 @@ export class SignalingHandler {
       return;
     }
 
-    // Authoritative guard: a kiosk with system broadcasts disabled must not
+    // Authoritative guard: a kiosk or room with system broadcasts disabled must not
     // receive "Broadcast Message" announcements, even if its client ignores
     // the source. Re-check the stored device config (which the base sets).
     const subscriber = this.config.getDevice(client.deviceId);
     if (subscriber && subscriber.config && subscriber.config.broadcastDisabled === true) {
-      console.log(`Kiosk ${client.deviceId} has broadcasts disabled — denying subscribe`);
+      console.log(`${client.deviceType} ${client.deviceId} has broadcasts disabled — denying subscribe`);
       return;
     }
 
@@ -653,8 +653,8 @@ export class SignalingHandler {
       return;
     }
 
-    if (targetDevice.type !== 'kiosk') {
-      this.sendError(transport, 'INVALID_TARGET', 'Display config can only be set on kiosks');
+    if (targetDevice.type !== 'kiosk' && targetDevice.type !== 'room') {
+      this.sendError(transport, 'INVALID_TARGET', 'Display config can only be set on kiosks and room controls');
       return;
     }
 

@@ -28,8 +28,17 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 adb shell am start -n com.hearthconnect/.MainActivity
 ```
 
+Quick rebuild + deploy (from `android/` dir):
+```bash
+./gradlew assembleDebug && adb install -r app/build/outputs/apk/debug/app-debug.apk
+```
+
 > Note: `gradlew` needs its wrapper jar. Android Studio generates it on first open,
 > or run `gradle wrapper` once you have Gradle installed.
+
+## Rotation handling
+
+`AndroidManifest.xml` declares `android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden"` on `MainActivity`. This tells Android to **not** destroy and recreate the Activity on rotation — the WebView, signaling connection, and WebRTC session stay alive. Without it, every rotation would kill the page and force a full reconnect.
 
 ## Connect the Tab A7 for testing
 - Enable **Developer options → USB debugging** (tap Build number 7×).
@@ -75,7 +84,10 @@ adb forward tcp:8090 tcp:8090   # host:8090 -> device/emulator :8090 (reach the 
 adb reverse tcp:8090 tcp:8090   # device -> host (if the device needs to hit a host server)
 adb install -r app-debug.apk    # (re)install
 adb shell am start -n com.hearthconnect/.MainActivity
-adb logcat | grep HearthConnect # watch app logs
+adb logcat | grep HearthConnect   # watch app logs
+adb logcat -s chromium            # watch WebView/Chromium logs (JS console, errors)
+adb logcat -s HearthMain          # activity lifecycle, WebView setup, SSL errors
+adb logcat -s HearthSignaling     # Ktor server, WS connections, message routing, device joins
 ```
 After `adb forward tcp:8090 tcp:8090`, open `http://localhost:8090` in a browser
 on the host to hit the embedded signaling server.

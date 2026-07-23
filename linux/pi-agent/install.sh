@@ -23,7 +23,8 @@ sudo apt-get install -y \
   v4l-utils \
   alsa-utils \
   python3-pip \
-  python3-websockets
+  python3-websockets \
+  python3-zeroconf
 
 if python3 -c "import websockets" 2>/dev/null; then
   echo "websockets already available"
@@ -31,6 +32,14 @@ elif python3 -m pip --version >/dev/null 2>&1; then
   python3 -m pip install --break-system-packages websockets
 else
   echo "WARNING: could not install websockets; install manually: apt install python3-websockets"
+fi
+
+if python3 -c "import zeroconf" 2>/dev/null; then
+  echo "zeroconf already available"
+elif python3 -m pip --version >/dev/null 2>&1; then
+  python3 -m pip install --break-system-packages zeroconf
+else
+  echo "WARNING: could not install zeroconf; install manually: apt install python3-zeroconf"
 fi
 
 # ─── Install agent + enable systemd service (no manual steps needed) ───
@@ -87,13 +96,13 @@ fi
 if [[ -z "${EXISTING_URL:-}" && -f "$CONFIG_SRC" ]]; then
   EXISTING_URL="$(grep -E '^SERVER_URL=' "$CONFIG_SRC" | head -1 | cut -d= -f2-)"
 fi
-EXISTING_URL="${EXISTING_URL:-wss://your-server-host:8090}"
+EXISTING_URL="${EXISTING_URL:-}"
 
 if [[ -n "${SERVER_URL:-}" ]]; then
   : # already set via environment
 elif [[ -t 0 ]]; then
-  read -r -p "Server URL for the Hearth-Connect server [${EXISTING_URL}]: " SERVER_URL
-  SERVER_URL="${SERVER_URL:-$EXISTING_URL}"
+  echo "Enter the server URL (leave blank for auto-discovery via mDNS):"
+  read -r -p "Server URL [${EXISTING_URL:-auto-discover}]: " SERVER_URL
 fi
 
 # Build the installed config.env: start from the repo template, but if a config
@@ -132,6 +141,6 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now hearth-pi-agent
 
 echo "Done. The Pi Agent is installed at $INSTALL_DIR and running as user '$AGENT_USER'."
-echo "  server: ${SERVER_URL:-<not set — edit $INSTALL_DIR/config.env>}"
+echo "  server: ${SERVER_URL:-<auto-discover via mDNS>}"
 echo "  status: sudo systemctl status hearth-pi-agent"
 echo "  logs:   sudo journalctl -u hearth-pi-agent -f"

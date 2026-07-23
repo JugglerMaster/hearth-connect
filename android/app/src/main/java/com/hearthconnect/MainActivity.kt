@@ -25,6 +25,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
     companion object {
         private const val TAG = "HearthMain"
+        init {
+            WebView.setWebContentsDebuggingEnabled(true)
+        }
     }
 
     private val handler = Handler(Looper.getMainLooper())

@@ -2,7 +2,7 @@
 
 // ─── Device & Room types ────────────────────────────────────
 
-export type DeviceType = 'kiosk' | 'base';
+export type DeviceType = 'kiosk' | 'base' | 'room';
 export type SourceType = 'video+audio' | 'video-only' | 'audio-only' | 'none';
 export type AudioFocusMode = 'manual' | 'last-active';
 export type DisplayMode = 'self' | 'blank' | 'base';

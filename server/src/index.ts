@@ -8,6 +8,7 @@ import { execFileSync } from 'child_process';
 import express from 'express';
 import { WebSocketServer, WebSocket } from 'ws';
 import QRCode from 'qrcode';
+import Bonjour from 'bonjour-service';
 import { ConfigManager } from './ConfigManager';
 import { ChannelManager } from './ChannelManager';
 import { SignalingHandler } from './SignalingHandler';
@@ -20,6 +21,7 @@ const HTTP_PORT = parseInt(process.env.SERVER_HTTP_PORT || '80', 10);
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, '..', 'data');
 const CERT_DIR = process.env.CERT_DIR || path.join(__dirname, '..', 'certs');
 const TLS_ENABLED = process.env.TLS_ENABLED === 'true' || process.argv.includes('--tls');
+const MDNS_ENABLED = process.env.MDNS_DISABLED !== 'true'; // enabled by default
 
 // ─── State ─────────────────────────────────────────────────
 
@@ -336,6 +338,47 @@ app.post('/api/signal', express.json(), (req, res) => {
   res.json({ ok: true });
 });
 
+// ─── mDNS / Bonjour Service ────────────────────────────────
+// Publish a _hearth-connect._tcp.local service so Pi agents on the same LAN
+// can discover the server automatically (no manual SERVER_URL needed).
+
+let bonjour: Bonjour | null = null;
+
+function publishMdns(): void {
+  if (!MDNS_ENABLED) {
+    console.log('[mDNS] disabled (MDNS_DISABLED=true)');
+    return;
+  }
+
+  const lanIps = computeLanIps();
+  const ip = lanIps[0] || '127.0.0.1';
+  const wsProto = TLS_ENABLED ? 'wss' : 'ws';
+  const serverUrl = `${wsProto}://${ip}:${PORT}`;
+
+  bonjour = new Bonjour();
+  bonjour.publish({
+    name: 'Hearth-Connect',
+    type: 'hearth-connect',
+    protocol: 'tcp',
+    port: PORT,
+    txt: {
+      serverUrl,
+      roomId: 'default',
+      label: 'Hearth-Connect Server',
+    },
+  });
+
+  console.log(`[mDNS] published _hearth-connect._tcp — ${serverUrl}`);
+}
+
+function unpublishMdns(): void {
+  if (bonjour) {
+    bonjour.unpublishAll();
+    bonjour.destroy();
+    bonjour = null;
+  }
+}
+
 // ─── Start ─────────────────────────────────────────────────
 
 const proto = TLS_ENABLED ? 'https' : 'http';
@@ -344,6 +387,7 @@ if (!TLS_ENABLED) {
   // HTTP only
   server.listen(PORT, () => {
     console.log(`Hearth-Connect server running at http://localhost:${PORT}`);
+    publishMdns();
   });
 } else {
   // HTTPS on main port, HTTP redirect on secondary port
@@ -351,6 +395,7 @@ if (!TLS_ENABLED) {
     console.log(`Hearth-Connect server running at https://0.0.0.0:${PORT}`);
     console.log('[TLS] min/max version forced to TLSv1.2 (legacy WebKit WSS compat)');
     console.log('[WS] perMessageDeflate disabled (legacy WebKit WSS compat)');
+    publishMdns();
   });
 
   // Optional HTTP redirect server (non-fatal if port unavailable)
@@ -372,6 +417,7 @@ if (!TLS_ENABLED) {
 
 process.on('SIGINT', () => {
   console.log('\nShutting down...');
+  unpublishMdns();
   configManager.dispose();
   wss.close();
   server.close();
@@ -379,6 +425,7 @@ process.on('SIGINT', () => {
 });
 
 process.on('SIGTERM', () => {
+  unpublishMdns();
   configManager.dispose();
   wss.close();
   server.close();

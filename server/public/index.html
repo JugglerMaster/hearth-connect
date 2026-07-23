@@ -10,7 +10,7 @@
 </head>
 <body>
   <div class="page">
-    <header>
+    <header style="text-align:center">
       <h1>Hearth-Connect</h1>
       <p class="subtitle">Video Intercom / Baby Monitor</p>
     </header>
@@ -27,6 +27,12 @@
         <h2>Base Station</h2>
         <p>Full control &amp; monitoring<span class="badge">admin</span></p>
       </a>
+
+      <a href="/room-control.html" class="card">
+        <div class="card-icon">🎛️</div>
+        <h2>Room Control</h2>
+        <p>Full control with camera<span class="badge">all-in-one</span></p>
+      </a>
     </main>
 
     <footer>
@@ -35,6 +41,7 @@
     </footer>
   </div>
   <script src="/js/signaling.js"></script>
+  <script src="/js/topbar.js"></script>
   <script>
     const dot = document.getElementById('serverStatus');
     const label = document.getElementById('serverLabel');

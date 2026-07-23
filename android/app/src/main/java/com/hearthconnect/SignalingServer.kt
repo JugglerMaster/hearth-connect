@@ -308,6 +308,11 @@ class SignalingServer(private val context: Context) {
             connToDevice.remove(existingClient.connId)
         }
 
+        // Create default config for new devices (mirrors Node.js createDevice)
+        if (deviceConfigs[deviceId] == null) {
+            deviceConfigs[deviceId] = defaultConfig(deviceType)
+        }
+
         val client = ConnectedClient(
             connId = connId,
             deviceId = deviceId,
@@ -475,7 +480,7 @@ class SignalingServer(private val context: Context) {
 
     private fun handleBroadcastSource(connId: String, payload: JSONObject) {
         val client = getClient(connId) ?: return sendError(connId, "NOT_IN_ROOM", "Join a room first")
-        if (client.deviceType != "base") return sendError(connId, "NOT_ALLOWED", "Only base stations can broadcast")
+        if (client.deviceType !in BASE_TYPES) return sendError(connId, "NOT_ALLOWED", "Only base stations can broadcast")
 
         val sourceId = payload.optString("sourceId", "")
         val label = payload.optString("label", "Base Station Broadcast")
@@ -524,7 +529,7 @@ class SignalingServer(private val context: Context) {
 
     private fun handleSubscribeBroadcast(connId: String, payload: JSONObject) {
         val client = getClient(connId) ?: return sendError(connId, "NOT_IN_ROOM", "Join a room first")
-        if (client.deviceType != "kiosk") return sendError(connId, "NOT_ALLOWED", "Only kiosks can subscribe to broadcasts")
+        if (client.deviceType !in BASE_TYPES) return sendError(connId, "NOT_ALLOWED", "Only kiosks and rooms can subscribe to broadcasts")
 
         val publisherId = payload.optString("publisherId", "")
         if (publisherId.isEmpty()) return
@@ -574,7 +579,7 @@ class SignalingServer(private val context: Context) {
 
     private fun handleSetConfig(connId: String, payload: JSONObject) {
         val client = getClient(connId) ?: return
-        if (client.deviceType != "base") return sendError(connId, "NOT_ALLOWED", "Only base stations can push configuration")
+        if (client.deviceType !in BASE_TYPES) return sendError(connId, "NOT_ALLOWED", "Only base stations can push configuration")
 
         val targetDeviceId = payload.optString("targetDeviceId", "")
         val config = payload.optJSONObject("config")
@@ -651,7 +656,7 @@ class SignalingServer(private val context: Context) {
 
     private fun handleSetDisplayConfig(connId: String, payload: JSONObject) {
         val client = getClient(connId) ?: return
-        if (client.deviceType != "base") return sendError(connId, "NOT_ALLOWED", "Only base stations can set display config")
+        if (client.deviceType !in BASE_TYPES) return sendError(connId, "NOT_ALLOWED", "Only base stations can set display config")
 
         val targetDeviceId = payload.optString("targetDeviceId", "")
         val displayMode = payload.optString("displayMode", "")
@@ -752,7 +757,7 @@ class SignalingServer(private val context: Context) {
 
     private fun handleRemoveDevice(connId: String, payload: JSONObject) {
         val client = getClient(connId) ?: return
-        if (client.deviceType != "base") return sendError(connId, "NOT_ALLOWED", "Only base stations can remove devices")
+        if (client.deviceType !in BASE_TYPES) return sendError(connId, "NOT_ALLOWED", "Only base stations can remove devices")
 
         val targetDeviceId = payload.optString("targetDeviceId", "")
         if (targetDeviceId.isEmpty()) return sendError(connId, "INVALID_PARAMS", "targetDeviceId required")
@@ -1006,6 +1011,36 @@ class SignalingServer(private val context: Context) {
         private const val KEYSTORE_FILE = "hearthconnect.p12"
         private const val RECENT_SEEN_WINDOW = 24 * 60 * 60 * 1000L // 24 hours
         private val VALID_SOURCE_TYPES = setOf("video+audio", "video-only", "audio-only", "none")
+        private val BASE_TYPES = setOf("base", "room")
+
+        private fun defaultConfig(type: String): JSONObject {
+            return when (type) {
+                "kiosk", "room" -> JSONObject().apply {
+                    put("camera", "front")
+                    put("resolution", "720p")
+                    put("frameRate", 30)
+                    put("nightMode", false)
+                    put("torch", false)
+                    put("micSensitivity", 0.8)
+                    put("speakerVolume", 0.5)
+                    put("twoWayAudioEnabled", true)
+                    put("showFeed", false)
+                    put("keepAwake", true)
+                    put("displayMode", "blank")
+                    put("audioMode", "mute")
+                    put("broadcastDisabled", false)
+                    put("audioAlertEnabled", true)
+                    put("audioAlertThresholdDb", -40)
+                }
+                "base" -> JSONObject().apply {
+                    put("visibleSources", JSONArray())
+                    put("audioFocusMode", "manual")
+                    put("gridLayout", "1x1")
+                    put("idleTimeout", 0)
+                }
+                else -> JSONObject()
+            }
+        }
     }
 }
 

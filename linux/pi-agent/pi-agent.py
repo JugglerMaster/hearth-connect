@@ -39,9 +39,10 @@ Gst = GstWebRTC = GstSdp = GLib = None
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 log = logging.getLogger('hearth-pi-agent')
 
-WS_URL = os.environ.get('SERVER_URL', 'wss://localhost:8090').rstrip('/')
-if not WS_URL.startswith('ws'):
+WS_URL = os.environ.get('SERVER_URL', '').rstrip('/')
+if WS_URL and not WS_URL.startswith('ws'):
     WS_URL = 'wss://' + WS_URL
+# WS_URL is empty string when SERVER_URL is unset — triggers mDNS discovery.
 ROOM_ID = os.environ.get('ROOM_ID', 'default')
 DEVICE_LABEL = os.environ.get('DEVICE_LABEL', 'Pi Agent')
 VIDEO_DEVICE = os.environ.get('VIDEO_DEVICE', '')
@@ -784,6 +785,8 @@ class Agent:
         self._last_audio_device = AUDIO_DEVICE
         self._last_resolution = DEFAULT_RESOLUTION
         self._last_framerate = DEFAULT_FRAMERATE
+        self._consecutive_failures = 0
+        self._mdns_attempted = False  # only try mDNS once per startup unless re-triggered
 
     def _load_device_id(self):
         """Return a stable device id, generating and persisting one on first run."""
@@ -804,6 +807,54 @@ class Agent:
         except Exception as e:
             log.warning('could not persist device id: %s', e)
         return new_id
+
+    async def _discover_server_via_mdns(self):
+        """Query mDNS for a Hearth-Connect server. Updates WS_URL on success."""
+        global WS_URL
+        if WS_URL:
+            return  # already configured
+        try:
+            from mdns_discover import discover_server
+            log.info('mDNS: searching for Hearth-Connect server on LAN...')
+            url = await discover_server(timeout=5.0)
+            if url:
+                WS_URL = url.rstrip('/')
+                if not WS_URL.startswith('ws'):
+                    WS_URL = 'wss://' + WS_URL
+                log.info('mDNS: found server at %s', WS_URL)
+                self._persist_server_url(WS_URL)
+            else:
+                log.warning('mDNS: no server found — will retry in %ds', self.reconnect_delay)
+        except ImportError:
+            log.warning('zeroconf not installed — mDNS discovery unavailable')
+        except Exception as e:
+            log.warning('mDNS discovery error: %s', e)
+
+    def _persist_server_url(self, url):
+        """Write the discovered SERVER_URL back to config.env so it survives restarts."""
+        try:
+            lines = []
+            if os.path.exists(CONFIG_FILE):
+                with open(CONFIG_FILE) as f:
+                    lines = f.read().splitlines()
+            out = []
+            found = False
+            for line in lines:
+                key = line.split('=', 1)[0].strip() if '=' in line else ''
+                if key == 'SERVER_URL':
+                    found = True
+                    continue  # drop old value; re-emit below
+                out.append(line)
+            if not found:
+                out.insert(0, 'SERVER_URL=' + url)
+            else:
+                out.insert(0, 'SERVER_URL=' + url)
+            os.makedirs(os.path.dirname(CONFIG_FILE) or '.', exist_ok=True)
+            with open(CONFIG_FILE, 'w') as f:
+                f.write('\n'.join(out) + '\n')
+            log.info('persisted SERVER_URL=%s to %s', url, CONFIG_FILE)
+        except Exception as e:
+            log.warning('failed to persist SERVER_URL to %s: %s', CONFIG_FILE, e)
 
     def enqueue_ws(self, msg):
         if self.loop:
@@ -1133,12 +1184,28 @@ class Agent:
         import threading
         threading.Thread(target=glib_loop.run, daemon=True).start()
         import websockets
+
+        # If no SERVER_URL is configured, try mDNS discovery before first connect.
+        if not WS_URL:
+            await self._discover_server_via_mdns()
+            self._mdns_attempted = True
+
         while True:
+            if not WS_URL:
+                log.warning('no SERVER_URL — retrying discovery in %ds', self.reconnect_delay)
+                await asyncio.sleep(self.reconnect_delay)
+                self.reconnect_delay = min(self.reconnect_delay * 2, 30)
+                if not self._mdns_attempted:
+                    await self._discover_server_via_mdns()
+                    self._mdns_attempted = True
+                continue
+
             try:
                 log.info('connecting to %s', WS_URL)
                 async with websockets.connect(WS_URL, max_size=None) as ws:
                     self.ws = ws
                     self.reconnect_delay = 1
+                    self._consecutive_failures = 0
                     await ws.send(json.dumps({'type': 'JOIN_ROOM', 'payload': {
                         'roomId': ROOM_ID, 'deviceId': self.device_id,
                         'deviceType': 'kiosk', 'label': DEVICE_LABEL}}))
@@ -1155,6 +1222,13 @@ class Agent:
                     refresh_task.cancel()
             except Exception as e:
                 log.warning('connection lost: %s', e)
+                self._consecutive_failures += 1
+                # After 3 consecutive failures, try mDNS re-discovery in case
+                # the server moved to a new IP.
+                if self._consecutive_failures >= 3:
+                    log.info('consecutive failures >= 3 — attempting mDNS re-discovery')
+                    self._mdns_attempted = False
+                    self._consecutive_failures = 0
             await asyncio.sleep(self.reconnect_delay)
             self.reconnect_delay = min(self.reconnect_delay * 2, 30)
 
