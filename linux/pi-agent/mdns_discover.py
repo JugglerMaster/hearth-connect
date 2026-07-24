@@ -44,13 +44,20 @@ async def discover_server(timeout: float = DEFAULT_TIMEOUT) -> Optional[str]:
 
     async def _resolve(name, stype):
         nonlocal found_url
-        info = await zc.async_get_service_info(stype, name)
-        if info and info.properties:
-            url = info.properties.get(b'serverUrl')
-            if url:
-                found_url = url.decode('utf-8') if isinstance(url, bytes) else url
-                log.info('mDNS discovered server: %s', found_url)
-                event.set()
+        # In zeroconf >= 0.147 the 'Added' event may fire before the TXT
+        # record arrives, leaving info.properties empty on the first query.
+        # Retry a few times with a short delay so the TXT record has time to
+        # be delivered and parsed into ServiceInfo.properties.
+        for _attempt in range(5):
+            info = await zc.async_get_service_info(stype, name)
+            if info and info.properties:
+                url = info.properties.get(b'serverUrl')
+                if url:
+                    found_url = url.decode('utf-8') if isinstance(url, bytes) else url
+                    log.info('mDNS discovered server: %s', found_url)
+                    event.set()
+                    return
+            await asyncio.sleep(0.5)
 
     zc = None
     browser = None
