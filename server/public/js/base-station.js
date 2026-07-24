@@ -1237,6 +1237,7 @@
       sig.unsubscribeSource(viewingId);
     }
     subscribed.delete(viewingId);
+    subscribed.add(viewingId);
     sig.subscribeSource(viewingId);
 
     if (recoverTimer) clearTimeout(recoverTimer);

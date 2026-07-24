@@ -445,15 +445,21 @@ class WebRTCManager {
   // candidate's mid doesn't match any local transceiver, look up the correct
   // one by mline index.
   _resolveMid(pc, sdpMid, sdpMLineIndex) {
+    const transceivers = pc.getTransceivers();
     if (sdpMid) {
-      const hasMatch = pc.getTransceivers().some(t => t.mid === sdpMid);
+      const hasMatch = transceivers.some(t => t.mid === sdpMid);
       if (hasMatch) return sdpMid;
     }
-    if (sdpMLineIndex != null) {
-      const t = pc.getTransceivers()[sdpMLineIndex];
+    if (sdpMLineIndex != null && sdpMLineIndex < transceivers.length) {
+      const t = transceivers[sdpMLineIndex];
       if (t && t.mid) return t.mid;
     }
-    return sdpMid;
+    // Can't match the mid — return null so addIceCandidate uses sdpMLineIndex alone
+    if (transceivers.length > 0) {
+      console.warn('[webrtc] _resolveMid: no match for sdpMid=', sdpMid, 'sdpMLineIndex=', sdpMLineIndex,
+        'transceivers=', transceivers.map(t => t.mid));
+    }
+    return null;
   }
 
   async handleIceCandidate(data) {
@@ -478,13 +484,11 @@ class WebRTCManager {
     }
     const mid = this._resolveMid(pc, cand.sdpMid, cand.sdpMLineIndex);
     try {
-      await pc.addIceCandidate(new RTCIceCandidate({
-        candidate: cand.candidate,
-        sdpMid: mid,
-        sdpMLineIndex: cand.sdpMLineIndex,
-      }));
+      const iceInit = { candidate: cand.candidate, sdpMLineIndex: cand.sdpMLineIndex };
+      if (mid) iceInit.sdpMid = mid;
+      await pc.addIceCandidate(new RTCIceCandidate(iceInit));
     } catch (err) {
-      console.error('addIceCandidate failed:', err);
+      console.error('addIceCandidate failed:', err, 'mid=', mid, 'mline=', cand.sdpMLineIndex);
     }
   }
 
@@ -508,11 +512,9 @@ class WebRTCManager {
           ? this._normalizeCandidate(c, c && c.sdpMid, c && c.sdpMLineIndex)
           : c;
         const mid = this._resolveMid(pc, cand.sdpMid, cand.sdpMLineIndex);
-        await pc.addIceCandidate(new RTCIceCandidate({
-          candidate: cand.candidate,
-          sdpMid: mid,
-          sdpMLineIndex: cand.sdpMLineIndex,
-        }));
+        const iceInit = { candidate: cand.candidate, sdpMLineIndex: cand.sdpMLineIndex };
+        if (mid) iceInit.sdpMid = mid;
+        await pc.addIceCandidate(new RTCIceCandidate(iceInit));
       } catch (err) {
         console.error('flush addIceCandidate failed:', err);
       }
