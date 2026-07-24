@@ -38,12 +38,11 @@ async def discover_server(timeout: float = DEFAULT_TIMEOUT) -> Optional[str]:
     found_url: Optional[str] = None
     event = asyncio.Event()
 
-    def on_state_change(zc, service_type, name, state_change):
-        nonlocal found_url
+    def on_state_change(zeroconf, service_type, name, state_change, **_kw):
         if state_change == ServiceStateChange.Added:
-            asyncio.ensure_future(_resolve(zc, name, service_type))
+            asyncio.ensure_future(_resolve(name, service_type))
 
-    async def _resolve(zc, name, stype):
+    async def _resolve(name, stype):
         nonlocal found_url
         info = await zc.async_get_service_info(stype, name)
         if info and info.properties:
@@ -57,8 +56,11 @@ async def discover_server(timeout: float = DEFAULT_TIMEOUT) -> Optional[str]:
     browser = None
     try:
         zc = AsyncZeroconf()
+        # Pass the underlying Zeroconf instance to the browser — AsyncZeroconf
+        # in zeroconf >= 0.147 dropped the .cache attribute that
+        # ServiceBrowser.__init__ accesses internally.
         browser = AsyncServiceBrowser(
-            zc, SERVICE_TYPE, handlers=[on_state_change])
+            zc.zeroconf, SERVICE_TYPE, handlers=[on_state_change])
         await asyncio.wait_for(event.wait(), timeout=timeout)
     except asyncio.TimeoutError:
         log.info('mDNS: no server found within %.1fs', timeout)

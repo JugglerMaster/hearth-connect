@@ -80,6 +80,19 @@ DIMS = {'480p': (640, 480), '720p': (1280, 720), '1080p': (1920, 1080)}
 STUN = 'stun://stun.l.google.com:19302'
 
 
+def _no_verify_ssl():
+    """SSL context that accepts self-signed certs (LAN-only use).
+    Forces HTTP/1.1 by disabling ALPN so WebSocket upgrade works — the Ktor
+    Netty server auto-negotiates h2 via ALPN when TLS is enabled, but the
+    websockets library expects the traditional HTTP/1.1 101 upgrade."""
+    import ssl
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    ctx.set_alpn_protocols(['http/1.1'])
+    return ctx
+
+
 def rand_id(n=8):
     return ''.join(random.choices(string.ascii_lowercase + string.digits, k=n))
 
@@ -285,6 +298,31 @@ def parse_arecord_devices(stdout):
     return devices
 
 
+def alsa_channels(device):
+    """Detect native channel count for an ALSA device (e.g. 'hw:2,0').
+
+    Returns the native channel count, or 0 if detection fails.  Some USB audio
+    devices (camera mics) only work at their native channel count; GStreamer's
+    alsasrc fails to preroll when it can't map channel positions for the
+    negotiated count.
+    """
+    if not device:
+        return 0
+    try:
+        out = subprocess.run(
+            ['arecord', '-D', device, '--dump-hw-params'],
+            input=b'', capture_output=True, timeout=5)
+        text = out.stdout.decode() + out.stderr.decode()
+        for line in text.splitlines():
+            if line.startswith('CHANNELS:'):
+                parts = line.split()
+                if len(parts) >= 2:
+                    return int(parts[1])
+    except Exception:
+        pass
+    return 0
+
+
 def source_type(has_video, has_audio):
     """Map device availability to the protocol SourceType (plan 01 §7)."""
     if has_video and has_audio:
@@ -325,7 +363,8 @@ def audio_peak_decision(db, state, cfg, now):
 
 def monitor_pipeline_str(has_video, has_audio, width, height, framerate,
                          video_device='', audio_device='', enc='x264enc',
-                         stun=STUN, test_source=False, use_libcamerasrc=False):
+                         stun=STUN, test_source=False, use_libcamerasrc=False,
+                         audio_channels=0):
     """Build the monitor (sendrecv) GStreamer launch string WITHOUT parsing it.
 
     Kept pure so it can be unit-tested without GStreamer. test_source swaps in
@@ -368,9 +407,15 @@ def monitor_pipeline_str(has_video, has_audio, width, height, framerate,
         else:
             src = 'alsasrc'
             dev = ('device=' + audio_device) if audio_device else ''
-        parts.append(
-            '{src} {dev} ! audioconvert ! audioresample ! capsfilter caps=audio/x-raw,channels=1 ! level ! opusenc ! rtpopuspay ! queue ! wb.'.format(
-                src=src, dev=dev))
+        if audio_channels > 0:
+            parts.append(
+                '{src} {dev} ! capsfilter caps=audio/x-raw,channels={ch} '
+                '! audioconvert ! audioresample ! opusenc ! rtpopuspay ! queue ! wb.'.format(
+                    src=src, dev=dev, ch=audio_channels))
+        else:
+            parts.append(
+                '{src} {dev} ! audioconvert ! audioresample ! opusenc ! rtpopuspay ! queue ! wb.'.format(
+                    src=src, dev=dev))
     return ' '.join(parts)
 
 
@@ -425,12 +470,21 @@ class MonitorSession:
         self.alert_armed = True
         self.last_level_ts = 0
         self.talkback_active = agent.talkback_active
+        self._had_audio_while_playing = False  # track if we had audio in PLAYING state
+        self._closing = False  # set during close() to prevent regression rebuilds on a dead session
         self.rxvol = None
         self._making_offer = False
+        self._last_offer_ts = 0.0
         self._mid_map = {}
+        self.pipeline = None
         self.build()
 
     def build(self):
+        # Tear down any existing pipeline first so two pipelines never race
+        # for the same V4L2/ALSA device node.
+        if self.pipeline:
+            self.pipeline.set_state(Gst.State.NULL)
+            self.pipeline = None
         width, height = DIMS.get(self.agent.resolution, DIMS['720p'])
         cfg_video = self.agent.config.get('videoDevice') or VIDEO_DEVICE
         cfg_audio = self.agent.config.get('audioDevice') or AUDIO_DEVICE
@@ -464,7 +518,8 @@ class MonitorSession:
                 framerate = self.agent.framerate
         pipeline_str = monitor_pipeline_str(
             self.has_video, self.has_audio, width, height, framerate,
-            cfg_video, cfg_audio, enc, STUN, TEST_SOURCE, use_libcamera)
+            cfg_video, cfg_audio, enc, STUN, TEST_SOURCE, use_libcamera,
+            audio_channels=alsa_channels(cfg_audio) if self.has_audio else 0)
         log.info('monitor session %s pipeline: %s', self.subscriber_id, pipeline_str)
         self.pipeline_str = pipeline_str
         self.pipeline = Gst.parse_launch(pipeline_str)
@@ -546,22 +601,44 @@ class MonitorSession:
         # otherwise create a fresh OFFER every time and loop forever (the base
         # briefly connects then gets reset into pc:new). Guard so only one
         # in-flight offer exists per session; cleared once the answer lands.
+        # Also debounce: set-remote-description triggers on-negotiation-needed
+        # after _making_offer is cleared, causing a feedback loop of rapid
+        # OFFERs. Require a minimum gap between offers.
+        now = time.time()
+        log.info('on-negotiation-needed fired for session %s (making_offer=%s dt=%.1f)',
+                 self.subscriber_id, self._making_offer, now - self._last_offer_ts)
         if self._making_offer:
             return
+        if now - self._last_offer_ts < 2.0:
+            log.debug('on-negotiation-needed debounced for %s', self.subscriber_id)
+            return
         self._making_offer = True
+        self._last_offer_ts = now
         promise = Gst.Promise.new_with_change_func(self.on_offer_created)
         element.emit('create-offer', None, promise)
 
     def on_offer_created(self, promise):
-        promise.wait()
-        reply = promise.get_reply()
-        offer = reply.get_value('offer')
-        promise2 = Gst.Promise.new_with_change_func(self.on_local_description_set)
-        self.webrtc.emit('set-local-description', offer, promise2)
-        text = offer.sdp.as_text()
-        self._mid_map = self._parse_mids(text)
-        self.agent.enqueue_ws({'type': 'OFFER', 'payload': {
-            'to': self.subscriber_id, 'sdp': {'type': 'offer', 'sdp': text}}})
+        try:
+            log.info('on_offer_created called for %s', self.subscriber_id)
+            promise.wait()
+            reply = promise.get_reply()
+            if reply is None:
+                log.error('on_offer_created: reply is None for %s', self.subscriber_id)
+                return
+            offer = reply.get_value('offer')
+            if offer is None:
+                log.error('on_offer_created: offer is None for %s', self.subscriber_id)
+                return
+            promise2 = Gst.Promise.new_with_change_func(self.on_local_description_set)
+            self.webrtc.emit('set-local-description', offer, promise2)
+            text = offer.sdp.as_text()
+            self._mid_map = self._parse_mids(text)
+            self.agent.enqueue_ws({'type': 'OFFER', 'payload': {
+                'to': self.subscriber_id, 'sdp': {'type': 'offer', 'sdp': text}}})
+            log.info('OFFER sent for %s', self.subscriber_id)
+        except Exception as e:
+            log.error('on_offer_created FAILED for %s: %s', self.subscriber_id, e)
+            self._making_offer = False
 
     def on_local_description_set(self, promise):
         promise.wait()
@@ -586,7 +663,88 @@ class MonitorSession:
         }})
 
     def on_bus_message(self, bus, message):
-        if message.type == Gst.MessageType.ELEMENT:
+        if message.type == Gst.MessageType.ERROR:
+            # Ignore errors from a previous (now-stalled) pipeline.  Without
+            # this guard a stale "Device busy" on the old pipeline would tear
+            # down the freshly-built replacement session.
+            if message.src != self.pipeline:
+                return True
+            err, debug = message.parse_error()
+            log.error('GStreamer ERROR: %s\n%s', err.message, debug or '')
+            # Audio device busy: previous pipeline still holds it.  Tear down
+            # and rebuild video-only so the base station gets *something*.
+            # Only match audio-related busy errors — a video device busy error
+            # (e.g. '/dev/video0 is busy') must NOT trigger this path.
+            msg_lower = (err.message or '').lower()
+            is_audio_busy = ('alsasrc' in msg_lower or 'audio' in msg_lower) and 'busy' in msg_lower
+            if is_audio_busy:
+                if self.has_audio:
+                    log.warning('audio device busy — rebuilding pipeline video-only')
+                    self.has_audio = False
+                    self.close()
+                    self.build()
+                    return True
+            # Video device busy: v4l2src failed to open the camera.  Tear down
+            # the session so the base station can reconnect fresh (the camera may
+            # have been temporarily unavailable).
+            is_video_busy = 'v4l2src' in msg_lower or '/dev/video' in msg_lower
+            if is_video_busy and 'busy' in msg_lower:
+                log.warning('video device busy — tearing down session for fresh reconnect')
+                self.close()
+                self.agent.sessions.pop(self.subscriber_id, None)
+                return True
+            # Fatal: tear down session so the base station can reconnect fresh.
+            self.close()
+            self.agent.sessions.pop(self.subscriber_id, None)
+        elif message.type == Gst.MessageType.WARNING:
+            err, debug = message.parse_warning()
+            log.warning('GStreamer WARN: %s', err.message)
+        elif message.type == Gst.MessageType.EOS:
+            if message.src != self.pipeline:
+                return True
+            log.info('GStreamer EOS on session %s', self.subscriber_id)
+            self.close()
+            self.agent.sessions.pop(self.subscriber_id, None)
+        elif message.type == Gst.MessageType.STATE_CHANGED:
+            old, new, pending = message.parse_state_changed()
+            if message.src == self.pipeline:
+                log.info('pipeline %s state: %s -> %s', self.subscriber_id,
+                         old.value_nick, new.value_nick)
+                # Reset flag when leaving PLAYING (before any regression checks).
+                if old == Gst.State.PLAYING:
+                    self._had_audio_while_playing = False
+                # Track when we enter PLAYING with audio so we can detect
+                # subsequent regression through PAUSED → READY.
+                if new == Gst.State.PLAYING and self.has_audio:
+                    self._had_audio_while_playing = True
+                # If the pipeline regresses from PLAYING to PAUSED (audio
+                # preroll failure without a bus ERROR), rebuild video-only.
+                if old == Gst.State.PLAYING and new == Gst.State.PAUSED and self.has_audio:
+                    if self._closing:
+                        log.debug('pipeline regressed during close — skipping rebuild')
+                        return True
+                    log.warning('pipeline regressed from PLAYING — audio preroll failed, '
+                                'rebuilding video-only')
+                    self.has_audio = False
+                    self._had_audio_while_playing = False
+                    self.close()
+                    self.build()
+                    return True
+                # If the pipeline reaches READY after we were in PLAYING with
+                # audio, that means the audio source died (preroll timeout,
+                # device removed, etc.) without an explicit bus ERROR.
+                if old == Gst.State.PAUSED and new == Gst.State.READY and self._had_audio_while_playing:
+                    if self._closing:
+                        log.debug('pipeline regressed during close — skipping rebuild')
+                        return True
+                    log.warning('pipeline regressed from PLAYING→PAUSED→READY — audio source lost, '
+                                'rebuilding video-only')
+                    self.has_audio = False
+                    self._had_audio_while_playing = False
+                    self.close()
+                    self.build()
+                    return True
+        elif message.type == Gst.MessageType.ELEMENT:
             struct = message.get_structure()
             if struct and struct.get_name() == 'level':
                 rms = struct.get_value('rms')
@@ -630,8 +788,17 @@ class MonitorSession:
 
     def close(self):
         if self.pipeline:
+            self._closing = True
             self.pipeline.set_state(Gst.State.NULL)
             self.pipeline = None
+            # Non-blocking: do NOT wait for the device to release here.
+            # The GLib main loop thread drives the state change asynchronously.
+            # Blocking would freeze the asyncio event loop (preventing
+            # SUBSCRIBER_JOINED from being processed) and fuser -k would kill
+            # our own process since *we* are the device holder.
+            # If the device is still busy when the next pipeline opens, the
+            # GStreamer bus ERROR handler ("Device busy") will tear it down
+            # and trigger a clean rebuild.
 
 
 class BroadcastSession:
@@ -959,6 +1126,7 @@ class Agent:
     async def handle_message(self, msg):
         t = msg.get('type')
         p = msg.get('payload', {})
+        log.info('received msg type=%s payload_keys=%s', t, list(p.keys()) if isinstance(p, dict) else p)
         if t == 'WELCOME':
             self.device_id = p.get('deviceId', self.device_id)
             self.config = p.get('config', {}) or {}
@@ -1055,6 +1223,20 @@ class Agent:
             self.apply_config()
         elif t == 'ERROR':
             log.warning('server error: %s', p)
+
+    def _teardown_all_sessions(self):
+        """Close every active session and release camera/mic devices.
+
+        Called when the WebSocket drops so orphaned GStreamer pipelines don't
+        keep the camera red light on or block device access on reconnect."""
+        for sess in self.sessions.values():
+            sess.close()
+        self.sessions.clear()
+        for sess in self.broadcast_sessions.values():
+            sess.close()
+        self.broadcast_sessions.clear()
+        self.broadcast_sources.clear()
+        self.talkback_active = False
 
     def ensure_media(self):
         self.enumerate_devices()
@@ -1199,7 +1381,7 @@ class Agent:
 
             try:
                 log.info('connecting to %s', WS_URL)
-                async with websockets.connect(WS_URL, max_size=None) as ws:
+                async with websockets.connect(WS_URL, max_size=None, ssl=_no_verify_ssl()) as ws:
                     self.ws = ws
                     self.reconnect_delay = 1
                     self._consecutive_failures = 0
@@ -1217,6 +1399,13 @@ class Agent:
                             log.error('handle error: %s', e)
                     pump.cancel()
                     refresh_task.cancel()
+                # WS dropped — tear down all active sessions.  The server has
+                # already wiped our subscription state and sent SUBSCRIBER_LEFT
+                # to publishers (if it could reach them), so any surviving
+                # GStreamer pipelines are orphaned and holding camera/mic
+                # devices.  Without this teardown the camera red light stays on
+                # and the next reconnect can't open the device (REGRESSION FIX).
+                self._teardown_all_sessions()
             except Exception as e:
                 log.warning('connection lost: %s', e)
                 self._consecutive_failures += 1

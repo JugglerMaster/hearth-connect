@@ -148,6 +148,13 @@ fi
 sudo systemctl daemon-reload
 sudo systemctl enable --now hearth-pi-agent
 
+# If the service was already running before install.sh ran, `enable --now`
+# is a no-op for the process — it won't pick up new files/config.  Force a
+# restart so the updated code and config.env take effect immediately.
+if systemctl is-active --quiet hearth-pi-agent; then
+  sudo systemctl restart hearth-pi-agent
+fi
+
 echo "Done. The Pi Agent is installed at $INSTALL_DIR and running as user '$AGENT_USER'."
 echo "  server: ${SERVER_URL:-<blank — will auto-discover via mDNS>}"
 echo "  status: sudo systemctl status hearth-pi-agent"

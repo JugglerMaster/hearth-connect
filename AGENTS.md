@@ -178,3 +178,41 @@ without the native stack. Use the same zero-dep philosophy:
 `usbmuxd` → `ios-webkit-debug-proxy` → `remotedebug-ios-webkit-adapter`.
 Use it for DOM/state inspection, console capture, and signaling-handshake
 checks on a real device. See `tests/ios-debug-bridge/README.md` for host setup.
+
+## Known Regressions and Browser Compatibility
+
+### GStreamer SDP mid mismatch (Firefox, Chrome with GStreamer agent)
+
+GStreamer webrtcbin uses mids like `video0`/`audio1` in its SDP offer. Browsers
+(especially Firefox 127+) may rename these to `0`/`1` in the answer SDP. When
+the Pi agent sends ICE candidates carrying the original GStreamer mids, the
+browser's `addIceCandidate` fails with "No such transceiver" because no local
+transceiver matches `mid=audio1`.
+
+**Fix** (`webrtc.js`): `_resolveMid()` maps an incoming candidate's mid to the
+browser's actual transceiver mid by falling back to `sdpMLineIndex` lookup when
+the named mid doesn't match any local transceiver. Applied in both
+`handleIceCandidate` and `flushCandidates`.
+
+**Symptom**: `addIceCandidate failed: DOMException: Cannot set ICE candidate
+for level=1 mid=audio1: No such transceiver` -- appears in Firefox and sometimes
+Chrome. Audio stream never connects; video may connect but audio is missing.
+
+### Camera red light stays on after disconnect
+
+When the WebSocket drops (browser crash, network blip), the server immediately
+sends `SUBSCRIBER_LEFT` to the publisher. However, the Pi agent's old
+`MonitorSession` pipelines survive across the WS reconnect -- `self.sessions` is
+an Agent-level dict that persists while the WS loop cycles. The orphaned
+GStreamer pipelines hold `/dev/video*` open, keeping the camera red light on
+and blocking the next session from opening the device.
+
+**Fix** (`pi-agent.py`): `_teardown_all_sessions()` is called when the WS
+`async with` block exits (connection dropped). It closes every
+`MonitorSession` and `BroadcastSession`, clears the session dicts, and
+releases all camera/mic devices. This must happen before the reconnect sleep
+so the device is free for the next connection.
+
+**Symptom**: Camera red light stays on indefinitely after the base station
+closes the feed or the browser crashes. A second device cannot connect because
+`/dev/video0 is busy`.

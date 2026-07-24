@@ -32,6 +32,7 @@ import kotlin.math.sqrt
  */
 class HubService : Service(), SignalingServer.ServerEventListener {
     private lateinit var server: SignalingServer
+    private var mdnsPublisher: MdnsPublisher? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
     private var audioMonitor: AudioMonitor? = null
@@ -68,6 +69,9 @@ class HubService : Service(), SignalingServer.ServerEventListener {
         server = SignalingServer(this, this)
         server.start(PORT)
 
+        // Publish mDNS service so Pi agents on the LAN can discover the server.
+        mdnsPublisher = MdnsPublisher(this).also { it.register(PORT) }
+
         // Listen for screen on/off to toggle native audio monitoring.
         val filter = IntentFilter().apply {
             addAction(Intent.ACTION_SCREEN_OFF)
@@ -83,6 +87,7 @@ class HubService : Service(), SignalingServer.ServerEventListener {
     override fun onDestroy() {
         stopAudioMonitor()
         try { unregisterReceiver(screenReceiver) } catch (_: Exception) {}
+        mdnsPublisher?.unregister()
         server.stop()
         wakeLock?.release()
         wifiLock?.release()

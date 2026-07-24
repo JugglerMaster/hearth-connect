@@ -439,6 +439,23 @@ class WebRTCManager {
     };
   }
 
+  // Map an incoming ICE candidate mid to the browser's actual transceiver mid.
+  // GStreamer webrtcbin uses mids like "video0"/"audio1" in its offer SDP, but
+  // browsers (especially Firefox) may rename them (e.g. to "0"/"1"). If the
+  // candidate's mid doesn't match any local transceiver, look up the correct
+  // one by mline index.
+  _resolveMid(pc, sdpMid, sdpMLineIndex) {
+    if (sdpMid) {
+      const hasMatch = pc.getTransceivers().some(t => t.mid === sdpMid);
+      if (hasMatch) return sdpMid;
+    }
+    if (sdpMLineIndex != null) {
+      const t = pc.getTransceivers()[sdpMLineIndex];
+      if (t && t.mid) return t.mid;
+    }
+    return sdpMid;
+  }
+
   async handleIceCandidate(data) {
     const { from, candidate, sdpMid, sdpMLineIndex, isBroadcast } = data;
     let pc, key;
@@ -459,8 +476,13 @@ class WebRTCManager {
       this.queueCandidate(key, cand);
       return;
     }
+    const mid = this._resolveMid(pc, cand.sdpMid, cand.sdpMLineIndex);
     try {
-      await pc.addIceCandidate(new RTCIceCandidate(cand));
+      await pc.addIceCandidate(new RTCIceCandidate({
+        candidate: cand.candidate,
+        sdpMid: mid,
+        sdpMLineIndex: cand.sdpMLineIndex,
+      }));
     } catch (err) {
       console.error('addIceCandidate failed:', err);
     }
@@ -485,7 +507,12 @@ class WebRTCManager {
         const cand = (typeof c === 'string' || !c.candidate)
           ? this._normalizeCandidate(c, c && c.sdpMid, c && c.sdpMLineIndex)
           : c;
-        await pc.addIceCandidate(new RTCIceCandidate(cand));
+        const mid = this._resolveMid(pc, cand.sdpMid, cand.sdpMLineIndex);
+        await pc.addIceCandidate(new RTCIceCandidate({
+          candidate: cand.candidate,
+          sdpMid: mid,
+          sdpMLineIndex: cand.sdpMLineIndex,
+        }));
       } catch (err) {
         console.error('flush addIceCandidate failed:', err);
       }
