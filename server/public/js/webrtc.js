@@ -378,6 +378,15 @@ class WebRTCManager {
     if (!pc) {
       // We are the answerer of the initial monitor offer → polite peer.
       pc = this.createPeerConnection(from, 'recv', true);
+      // Pre-create recv transceivers for video and audio so the browser
+      // creates a matching transceiver for each m-line in the Pi agent's
+      // offer. Without this, Firefox only creates a transceiver for the
+      // first m-line (video) and silently drops audio, causing ICE to
+      // stall on mline 1.
+      try {
+        pc.addTransceiver('video', { direction: 'recvonly' });
+        pc.addTransceiver('audio', { direction: 'recvonly' });
+      } catch (e) { /* ignore — browser may not support pre-creating */ }
     }
 
     try {
