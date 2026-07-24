@@ -108,54 +108,12 @@ hearth-connect/
 
 ## Client-Side Verification (ad-hoc)
 
-The repo has no client test suite (the only tests are server-side TS in
-`server/test/`). Browser-only client logic in `server/public/js/*.js`
-(e.g. the base-station "Hold to Broadcast" press-and-hold flow) can be
-behaviorally verified without a browser by running the **real** file inside a
-Node `vm` with hand-rolled stubs — no `jsdom`/network/install needed.
-
-Approach:
-- Create a zero-dependency Node script under `/tmp` named
-  `hermes-verify-<feature>.js` (tempfile; delete when done).
-- Build a minimal DOM shim:
-  - `makeEl(id)` → object with `classList` (add/remove/contains),
-    `innerHTML` (setter can detect a known element id in the HTML and
-    materialize it), `textContent`, `value`, `dataset`, `style.setProperty`,
-    and an `_fire(type, ev)` that invokes `addEventListener` handlers.
-  - `document.getElementById` returns pre-created fixed-id elements, plus the
-    dynamically created control when present.
-  - `window` with `addEventListener`/`_fire` so window-level handlers are
-    reachable.
-  - `localStorage` (in-memory) and `navigator.mediaDevices.getUserMedia`
-    returning a **manually-resolved** `Promise` (so you can simulate the mic
-    permission resolving *after* a release, to test the fast-tap race).
-- Stub the two classes the IIFE instantiates:
-  - `SignalingClient` — capture the instance in the constructor, expose
-    `on`/`emit`, and record `broadcastSource` / `unbroadcastSource` calls.
-  - `WebRTCManager` — `createBroadcastPeerConnection` returns a no-op
-    `{ addTrack(){} }`.
-- `vm.createContext(sandbox)` + `vm.runInContext(realFileSource)` to load the
-  actual client file unmodified.
-- Drive it: fire `DOMContentLoaded` (runs `init()`), emit a `welcome`
-  message with a `base` + at least one `kiosk` device and a **hidden**
-  `monitorFeed` so `renderDevices()` builds the broadcast panel and
-  materializes `#toggleBroadcastButton`; then dispatch real events
-  (`mousedown`/`mouseup`/`touchstart`/`touchend`, plus `window` releases)
-  and assert `broadcastSource`/`unbroadcastSource` calls + button style/label.
-
-Key things to assert for press-and-hold:
-1. `mousedown` → `getUserMedia` called, broadcast NOT yet started.
-2. After mic resolves → `broadcastSource` called, button → danger "release to stop".
-3. `mouseup` → `unbroadcastSource` called, button reverts.
-4. Window-level `touchend` (release outside button) also stops it.
-5. **Fast-tap race**: `mousedown` then immediate `mouseup` *before* the mic
-   resolves → when the mic finally resolves, `broadcastSource` is never called
-   and the late-acquired mic track is stopped (no leak / no stuck-on broadcast).
-6. Right-click (`button: 2`) does not start a broadcast.
-
-This caught the stuck-on-broadcast race and confirmed release-anywhere handling.
-It does NOT exercise real WebRTC media flow, iOS Safari specifics, or the live
-kiosk receive side — those still need an on-device check.
+No client test suite exists. Browser JS in `server/public/js/*.js` can be
+tested without a browser by running the real file in a Node `vm` with a
+minimal DOM shim (stub `document`, `window`, `localStorage`, `getUserMedia`,
+`SignalingClient`, `WebRTCManager`). See `tests/hermes-verify-*.js` for
+examples. Catches JS-level races (e.g. press-and-hold broadcast fast-tap)
+but not real WebRTC media or iOS Safari behavior.
 
 ### Pi agent (Python)
 
@@ -216,3 +174,41 @@ so the device is free for the next connection.
 **Symptom**: Camera red light stays on indefinitely after the base station
 closes the feed or the browser crashes. A second device cannot connect because
 `/dev/video0 is busy`.
+
+### PS3Eye 4-channel audio silent on browser viewers
+
+The PS3Eye camera exposes 4 raw microphone capsule channels via ALSA
+(`hw:2,0`, 16kHz). If the GStreamer pipeline passes all 4 channels through to
+Opus encoding without downmixing, the browser receives 4-channel Opus audio.
+Most browsers expect mono or stereo — 4-channel audio plays as silence or
+garbled noise.
+
+**Root cause**: `monitor_pipeline_str()` used the device's native channel count
+(from `alsa_channels()`) in a single `capsfilter` placed *before*
+`audioconvert`. This told `alsasrc` to output 4 channels, and nothing
+downstream reduced them to mono. The `level` element (for audio peak alerts)
+was also missing.
+
+**Fix** (`pi-agent.py:410-418`): The pipeline now uses two capsfilters:
+1. First capsfilter forces the source's native channel count (e.g. 4 for
+   PS3Eye) so `alsasrc` can negotiate with the ALSA device.
+2. Second capsfilter forces `channels=1` *after* `audioconvert`, which
+   triggers mono downmix before encoding.
+3. `level` element re-inserted between the downmix capsfilter and `opusenc`.
+
+Before (broken):
+```
+alsasrc device=hw:2,0 ! capsfilter caps=audio/x-raw,channels=4
+  ! audioconvert ! audioresample ! opusenc ! rtpopuspay
+```
+
+After (fixed):
+```
+alsasrc device=hw:2,0 ! capsfilter caps=audio/x-raw,channels=4
+  ! audioconvert ! audioresample ! capsfilter caps=audio/x-raw,channels=1
+  ! level ! opusenc ! rtpopuspay
+```
+
+**Symptom**: Audio stream connected (WebRTC track present) but browser viewers
+hear silence from PS3Eye mic. Single-channel USB mics (e.g. C-Media PnP)
+were unaffected because they output 1 channel natively.

@@ -1,10 +1,8 @@
 # Hearth-Connect
 
-**v0.3** — Two-Way Audio & Video
+**v0.8** — Multi-Platform Video Intercom
 
-HTML5 video intercom / baby monitor system. Runs on iPads/iPhones via Safari. Self-hosted.
-
-> **In progress:** a native **Linux agent** (headless monitor client, no browser) targeting **Raspberry Pi 3+** is under active development.
+HTML5 video intercom / baby monitor system. Self-hosted. Runs on iPads/iPhones (Safari), Raspberry Pi (headless GStreamer agent), and Android (native Ktor + libwebrtc base station).
 
 ## Requirements
 
@@ -16,54 +14,63 @@ HTML5 video intercom / baby monitor system. Runs on iPads/iPhones via Safari. Se
 
 ### Core Architecture
 - **WebRTC P2P mesh** — sub-500ms latency, two-way audio, no media relay through server
-- **Server = matchmaker only** — signaling via WebSocket (or SSE fallback for iOS ≤12); no SFU needed for 2–3 cameras
-- **Single-room model** — multiple kiosks per room; base station subscribes to any source
+- **Server = matchmaker only** — signaling via WebSocket; no SFU needed for 2–3 cameras
+- **Multi-publisher room model** — multiple sources per room; subscribers independently subscribe
 - **Self-signed TLS** — CA cert installed once per iOS device via Settings → VPN & Device Management
 
 ### Device Roles
-| Page | Role | Purpose |
-|------|------|---------|
-| `monitor.html` | **Monitor** (publisher) | Thin client — captures camera/mic, publishes to room, minimal UI |
-| `base-station.html` | **Base Station** (subscriber + admin) | Full control hub — monitors kiosks, pushes config, manages devices |
-| `index.html` | Landing | Role selector + server status |
+| Platform | Role | Status |
+|----------|------|--------|
+| `monitor.html` (iOS Safari) | **Kiosk/Publisher** | Stable |
+| `base-station.html` (iOS Safari) | **Base Station/Admin** | Stable |
+| `linux/pi-agent/` (Raspberry Pi) | **Headless Publisher** | Working (audio + video) |
+| `android/` (Android native) | **Base Station** | Working (some QOL bugs) |
+| `index.html` | Landing / role selector | Stable |
 
 ### Monitor (Camera Device) — `monitor.html`
 - **Auto-reconnect** — deviceId persisted in localStorage; rejoins room on reload
-- **User gesture required** — iOS ≤12 shows "Tap to enable camera" overlay; iOS 13+ auto-starts
 - **Media constraints** — front/rear camera, 480p/720p/1080p, 15/24/30 fps
-<!-- TODO: revisit — night mode / torch note removed; not verified as implemented -->
 - **Audio alerting** — real-time RMS dB monitoring; peak detection with configurable threshold/hysteresis; relays `AUDIO_PEAK` to base station
 - **Wake Lock API** — keeps screen on (iOS 16.4+)
 - **Device enumeration** — reports available cameras/mics to base station for remote selection
 - **Track sync** — resolution/framerate/camera changes swap tracks on live peer connections without reconnecting
-- **Legacy iOS (≤12) support** — SSE signaling fallback, combined `getUserMedia`, AudioContext created inside gesture
 
 ### Base Station — `base-station.html`
 - **Device dashboard** — lists all kiosks with label, online/offline status, last-seen timestamp
 - **Per-device audio level** — live dB readout; visual alert highlight when threshold exceeded
 - **Monitor modes** — Video (full stream) or Audio-only (keeps audio track, hides video)
-- **Volume control** — 0–200% gain via Web Audio `GainNode` (video element muted; audio routed through graph)
-- **Remote config panel** — per-kiosk settings:
-  - Label, camera (by deviceId or front/rear), resolution, frame rate
-  - Microphone selection (by deviceId)
-  - Two-way audio toggle, keep-awake toggle
-  - Audio alert enable + threshold (dB)
+- **Volume control** — 0–200% gain via Web Audio `GainNode`
+- **Remote config panel** — per-kiosk settings: label, camera, resolution, frame rate, mic, two-way audio, keep-awake, audio alert threshold
 - **Device removal** — purges from recently-seen list and persisted config
 - **Toast notifications** — "Device joined", "Source online"
 - **Watchdog + auto-recover** — detects stalled tracks (8s no activity) → ICE restart → resubscribes + re-offers
 
+### Raspberry Pi Agent — `linux/pi-agent/`
+- **Native GStreamer + WebRTC** — no browser, headless, runs as systemd service
+- **V4L2 video** — USB cameras (PS3Eye, UVC webcams) or Pi Camera via libcamera
+- **ALSA audio** — auto-detects USB mic, supports multi-channel devices (PS3Eye 4-ch downmixed to mono)
+- **Two-way talkback** — receives base station audio via sendrecv WebRTC peer connection
+- **Remote config** — base station pushes resolution/framerate/encoder settings to Pi
+- **mDNS discovery** — auto-finds server on local network
+- **Install**: `linux/pi-agent/install.sh` or deploy via `linux/deploy-pi.sh`
+
+### Android Base Station — `android/`
+- **Native Ktor + libwebrtc** — embedded signaling server, no browser dependency
+- **Samsung Galaxy Tab A7** target (SM-T500, Android 11)
+- **Build**: open `android/` in Android Studio, or `./gradlew assembleDebug`
+- **Deploy**: `adb install -r app/build/outputs/apk/debug/app-debug.apk`
+
 ### Signaling & Discovery
-<!-- TODO: revisit — QR code discovery removed for now -->
 - **Kiosk entry** — manually enters room name (opens `monitor.html`)
 - **No pairing tokens required** — room join is direct via `JOIN_ROOM`
 - **Recently-seen devices** — 24h in-memory window (survives server restart via persisted config)
+- **mDNS service** — server publishes `_hearth-connect._tcp.local` for Pi agent discovery
 
 ### Configuration & Persistence
 - **JSON file storage** (`server/data/config.json`) — no database
-- **Per-device config** — camera, resolution, framerate, mic/speaker levels, twoWayAudio, keepAwake, label, audioAlert*, device selection
+- **Per-device config** — camera, resolution, framerate, mic/speaker levels, twoWayAudio, keepAwake, label, audioAlert*
 - **Base station config** — visibleSources, audioFocusMode (manual/last-active), gridLayout, idleTimeout
-- **Config queuing** — changes pushed to offline devices applied on next reconnect *(unverified — may or may not be wired up)*
-<!-- TODO: presets (named Daytime/Nighttime/Naptime/Away profiles + cron scheduling) NOT implemented yet -->
+- **Config persistence** — base station pushes config to server; applied on device reconnect
 
 ### Reconnection Strategy
 | Layer | Behavior |
@@ -73,18 +80,10 @@ HTML5 video intercom / baby monitor system. Runs on iPads/iPhones via Safari. Se
 | Device offline | 60s grace period before source removed from room |
 
 ### Two-Way Audio & Video (Base → Monitor)
-- **FaceTalk** — base station pushes its **camera + mic** to the watched monitor over a dedicated broadcast `RTCPeerConnection`; the monitor renders the base's video and plays its audio. Releases the base camera automatically when FaceTalk ends.
-- **Broadcast Message** — press-and-hold **audio-only** announcement to all monitors (or a selected one); the button only broadcasts while held and cancels a stuck/in-flight start on release (fast-tap race handled).
-- **Broadcast target select** — send FaceTalk/announcement to **all devices** or a **single monitor**
-- **Monitor display modes** — `blank` / `self` (own camera preview) / `base` (base's FaceTalk feed); FaceTalk overrides the configured display mode for the duration of the call
-- **Fullscreen** — base station can fullscreen a monitor feed; handles iOS Safari pause/freeze-on-exit (hard re-attach + resume paused video)
-- **iOS silent-switch safe audio** — monitor audio routed through an unmuted video element so it plays even with the hardware mute switch on
-- **Volume slider** — lower-right expandable vertical gain slider on the base station (0–200% via Web Audio `GainNode`)
-
-### Legacy iOS Support (≤12)
-- SSE downstream + HTTPS POST upstream (WebSocket unreliable → close code 1006)
-- Combined `getUserMedia` (separate video/audio calls break audio on old WebKit)
-- AudioContext created inside user gesture to avoid suspended state
+- **FaceTalk** — base station pushes its camera + mic to the watched monitor over a dedicated broadcast `RTCPeerConnection`
+- **Broadcast Message** — press-and-hold audio-only announcement to all monitors (or a selected one)
+- **Monitor display modes** — `blank` / `self` (own camera preview) / `base` (base's FaceTalk feed)
+- **iOS silent-switch safe audio** — monitor audio routed through an unmuted video element
 
 ---
 
@@ -105,32 +104,25 @@ Open `https://<host>:8090` on the base station iPad; on each camera iPad open th
 
 ### Recommended: install as a systemd service
 
-For a host that boots the server unattended, the **recommended** install is the
-systemd unit. `setupservice.sh` resolves the git checkout, the `node` binary,
-and the service user at runtime (no hard-coded paths), builds the server, and
-writes a generated unit to `/etc/systemd/system/hearth-connect.service`:
-
 ```bash
-# system service (runs from your git checkout; `git pull` + rebuild to update)
-sudo ./setupservice.sh
+sudo ./setupservice.sh            # system service
+./setupservice.sh --user          # per-user unit (no root)
 
-# or as a per-user unit (no root needed for start/stop):
-./setupservice.sh --user
-
-# options:
-#   --port 8090          SERVER_PORT for the unit
-#   --node /path/to/node override the node binary
-#   --no-build           skip `npm run build`
-```
-
-After a code update, rebuild and restart:
-
-```bash
+# After code update:
 cd server && npm install && npm run build && sudo systemctl restart hearth-connect
 ```
 
-> The Raspberry Pi agent installs the same way via
-> `linux/pi-agent/install-systemd.sh`.
+### Raspberry Pi Agent
+
+```bash
+# Deploy from your dev machine
+linux/deploy-pi.sh <pi-hostname>
+
+# Or install directly on the Pi
+ssh pi 'bash -s' < linux/pi-agent/install.sh
+```
+
+Edit `linux/pi-agent/config.env` to set `SERVER_URL`, `ROOM_ID`, `VIDEO_DEVICE`, `AUDIO_DEVICE`.
 
 ## Deployment
 
@@ -140,7 +132,7 @@ docker compose up -d
 ```
 
 - Ports: `8090` (HTTPS), `8091` (HTTP → HTTPS redirect)
-- Certs in `docker/certs/` — install `ca.crt` profile on each iOS device (Settings → General → VPN & Device Management)
+- Certs in `docker/certs/` — install `ca.crt` profile on each iOS device
 
 ## Development
 
@@ -150,115 +142,73 @@ npm install
 npm run dev   # ts-node-dev with hot reload
 ```
 
-### Live iOS Safari debugging (Linux → USB)
-
-`tests/ios-debug-bridge/` drives **real iOS Safari** on a USB-tethered iPhone/iPad
-directly from a Linux host — no Mac required. It attaches to an open Safari tab
-over the Chrome DevTools Protocol for DOM/state inspection, live `console` +
-`pageerror` capture, and DOM-only assertions against the running app.
-
-Transport chain: raw CDP (`ws`) → `remotedebug-ios-webkit-adapter` (:9000) →
-`ios-webkit-debug-proxy` (:9222, WebInspector) → `usbmuxd` (USB) → iOS Safari.
-
-> Debug aid only — it inspects/asserts DOM & console; it cannot automate
-> camera/mic (iOS requires a real user gesture + secure context). See
-> `tests/ios-debug-bridge/README.md` for host install + usage, and the
-> Node-`vm` client verification approach in `AGENTS.md`.
-
 ## Project Structure
 
 ```
 hearth-connect/
-├── AGENTS.md
 ├── server/
-│   ├── package.json
-│   ├── tsconfig.json
-│   ├── Dockerfile
-│   └── src/
-│       ├── index.ts              # Express + WS/SSE server, TLS
-│       ├── types.ts              # Shared type definitions
-│       ├── ConfigManager.ts      # JSON file config persistence
-│       ├── ChannelManager.ts     # In-memory room/device state
-│       └── SignalingHandler.ts   # WebSocket message routing
+│   ├── src/
+│   │   ├── index.ts              # Express + WS server, TLS
+│   │   ├── types.ts              # Shared type definitions
+│   │   ├── ConfigManager.ts      # JSON file config persistence
+│   │   ├── ChannelManager.ts     # In-memory room/device state
+│   │   └── SignalingHandler.ts   # WebSocket message routing
 │   └── public/
 │       ├── index.html            # Landing / role selector
 │       ├── monitor.html          # Monitor (publisher)
 │       ├── base-station.html     # Base station (subscriber + admin)
 │       ├── css/style.css
 │       └── js/
-│           ├── signaling.js      # WS/SSE client + reconnection
+│           ├── signaling.js      # WS client + reconnection
 │           ├── webrtc.js         # getUserMedia + RTCPeerConnection
-│           ├── camera.js         # Monitor page logic (served by monitor.html)
+│           ├── camera.js         # Monitor page logic
 │           └── base-station.js   # Base station page logic
+├── linux/
+│   └── pi-agent/
+│       ├── pi-agent.py           # GStreamer + WebRTC native agent
+│       ├── config.env            # Runtime config (server URL, devices)
+│       ├── install.sh            # One-shot install script
+│       └── test_pi_agent.py      # Unit tests (no GStreamer needed)
+├── android/
+│   └── app/                      # Native Android base station (Ktor + libwebrtc)
 ├── docker/
 │   ├── docker-compose.yml
 │   └── gen-cert.sh
-├── linux/
-│   └── pi-agent/
-├── favicon.svg
-└── README.md
+└── AGENTS.md                     # Architectural decisions & known regressions
 ```
 
 ---
 
 ## Roadmap
 
+### In Progress
+- [ ] Android base station QOL polish (bugs, UI refinements)
+- [ ] Audio talkback tuning (Pi ↔ base station two-way audio)
+
 ### Multi-Room & Auth
 - [ ] Multiple named rooms (create/join from base station)
 - [ ] Optional PIN per room (viewer access control)
-- [ ] Pairing tokens for kiosk provisioning (QR contains token, not just URL)
 - [ ] Device ownership (prevent unauthorized config pushes)
 
-### Two-Way Audio & Video ✅ (shipped)
-- [x] **Two-way audio** — base station mic → monitor speaker (FaceTalk + press-and-hold Broadcast Message announcement)
-- [x] **Two-way video** — base station camera → monitor display (FaceTalk; monitor renders incoming video via `base` display mode)
-- [x] Broadcast target routing — send to all monitors or a single selected monitor
-- [x] Video call UI on base station (FaceTalk button, fullscreen, volume slider, base camera released on hang-up)
-- [x] iOS hardening — silent-switch-safe audio, fullscreen pause/freeze-on-exit recovery, fast-tap broadcast race
-
 ### Smart Audio Notifications
-- [ ] **Audio gating** — base station audio muted until kiosk dB exceeds threshold (baby cry detection)
 - [ ] Configurable trigger level, hysteresis, and cooldown period
 - [ ] Optional push notification (APNs / web push) when threshold breached while base station backgrounded
 - [ ] Per-source alert profiles (daytime vs nighttime sensitivity)
 
 ### Battery-Aware Client
-- [ ] **Battery Status API** integration — detect charging state & level
-- [ ] Auto-reduce resolution/framerate when unplugged (e.g., 1080p→480p, 30→15 fps)
-- [ ] Disable torch, night mode, keep-awake when on battery
-- [ ] Optional aggressive mode: audio-only when battery < 20%
+- [ ] Battery Status API — detect charging state & level
+- [ ] Auto-reduce resolution/framerate when unplugged
 - [ ] Visual indicator on base station showing kiosk power state
 
-### Alternative Host Platforms
-- [ ] **Raspberry Pi** — headless kiosk via V4L2/ALSA (USB camera + mic), systemd service, no browser
-- [ ] **iOS Native App** — Swift/Capacitor wrapper for background WebRTC, push notifications, no Safari limitations
-- [ ] **Android App** — same capabilities as iOS native
-- [ ] **Linux/macOS/Windows** — Electron or Tauri desktop client for base station
+### Scaling & Platforms
+- [ ] Integrate **mediasoup** or **LiveKit** as optional SFU for 5+ cameras
+- [ ] iOS native app (Swift/Capacitor) for background WebRTC + push notifications
+- [ ] Desktop client (Electron or Tauri) for base station
 
-### QR Code Sharing & Provisioning
-- [ ] QR contains pairing token + room + server URL (not just URL)
-- [ ] One-scan kiosk enrollment — no manual room entry
-- [ ] Token expiry & single-use enforcement
-- [ ] Base station "Invite Kiosk" generates printable/shareable QR
-
-### Scaling (SFU)
-- [ ] Integrate **mediasoup** or **LiveKit** as optional SFU
-- [ ] Base station subscribes to SFU instead of P2P mesh
-- [ ] Enable 5+ simultaneous cameras without mesh explosion
-
-### Viewer App
-- [ ] Dedicated `viewer.html` — read-only monitor (no admin controls)
-- [ ] Viewer config: allowedSources, defaultSource, audioAutoPlay, talkbackEnabled, PIN
-- [ ] "Add to Home Screen" PWA manifest for kiosk/viewer
-
-### Recording & Platform Polish
+### Recording & Polish
 - [ ] Optional MediaRecorder → segment to disk (WebM/MP4)
 - [ ] Audio alert webhooks (Home Assistant, ntfy, Pushover)
-- [ ] Motion detection via canvas diff (browser-side) → trigger recording
-- [ ] Raspberry Pi 4/5 + USB camera + `v4l2loopback` as headless kiosk
-- [ ] systemd service + nginx reverse proxy guide
 - [ ] Health check endpoint + Prometheus metrics
-- [ ] Automated cert renewal (Let's Encrypt for public hosts)
 
 ---
 

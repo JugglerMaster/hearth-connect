@@ -410,11 +410,13 @@ def monitor_pipeline_str(has_video, has_audio, width, height, framerate,
         if audio_channels > 0:
             parts.append(
                 '{src} {dev} ! capsfilter caps=audio/x-raw,channels={ch} '
-                '! audioconvert ! audioresample ! opusenc ! rtpopuspay ! queue ! wb.'.format(
+                '! audioconvert ! audioresample ! capsfilter caps=audio/x-raw,channels=1 '
+                '! level ! opusenc ! rtpopuspay ! queue ! wb.'.format(
                     src=src, dev=dev, ch=audio_channels))
         else:
             parts.append(
-                '{src} {dev} ! audioconvert ! audioresample ! opusenc ! rtpopuspay ! queue ! wb.'.format(
+                '{src} {dev} ! audioconvert ! audioresample ! capsfilter caps=audio/x-raw,channels=1 '
+                '! level ! opusenc ! rtpopuspay ! queue ! wb.'.format(
                     src=src, dev=dev))
     return ' '.join(parts)
 
