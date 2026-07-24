@@ -446,6 +446,8 @@ class WebRTCManager {
   // one by mline index.
   _resolveMid(pc, sdpMid, sdpMLineIndex) {
     const transceivers = pc.getTransceivers();
+    // No transceivers at all — can't add any candidates yet
+    if (transceivers.length === 0) return undefined;
     if (sdpMid) {
       const hasMatch = transceivers.some(t => t.mid === sdpMid);
       if (hasMatch) return sdpMid;
@@ -454,12 +456,10 @@ class WebRTCManager {
       const t = transceivers[sdpMLineIndex];
       if (t && t.mid) return t.mid;
     }
-    // Can't match the mid — return null so addIceCandidate uses sdpMLineIndex alone
-    if (transceivers.length > 0) {
-      console.warn('[webrtc] _resolveMid: no match for sdpMid=', sdpMid, 'sdpMLineIndex=', sdpMLineIndex,
-        'transceivers=', transceivers.map(t => t.mid));
-    }
-    return null;
+    // No matching transceiver — return undefined so caller skips this candidate.
+    // This happens when the Pi agent offers audio but the browser only created
+    // a video transceiver (e.g. base station answerer with no local audio).
+    return undefined;
   }
 
   async handleIceCandidate(data) {
@@ -483,6 +483,7 @@ class WebRTCManager {
       return;
     }
     const mid = this._resolveMid(pc, cand.sdpMid, cand.sdpMLineIndex);
+    if (mid === undefined) return; // no matching transceiver — skip silently
     try {
       const iceInit = { candidate: cand.candidate, sdpMLineIndex: cand.sdpMLineIndex };
       if (mid) iceInit.sdpMid = mid;
@@ -512,6 +513,7 @@ class WebRTCManager {
           ? this._normalizeCandidate(c, c && c.sdpMid, c && c.sdpMLineIndex)
           : c;
         const mid = this._resolveMid(pc, cand.sdpMid, cand.sdpMLineIndex);
+        if (mid === undefined) continue;
         const iceInit = { candidate: cand.candidate, sdpMLineIndex: cand.sdpMLineIndex };
         if (mid) iceInit.sdpMid = mid;
         await pc.addIceCandidate(new RTCIceCandidate(iceInit));
