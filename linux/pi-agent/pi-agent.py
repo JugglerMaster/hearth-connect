@@ -576,8 +576,6 @@ class MonitorSession:
         self.rxvol = None
         self._making_offer = False
         self._last_offer_ts = 0.0
-        self._played_pending_offer = False
-        self._fallback_registered = False
         self._pipeline_gen = 0  # bumped by build(); stale offers from old gens are discarded
         self._mid_map = {}
         self.pipeline = None
@@ -644,21 +642,14 @@ class MonitorSession:
         self.webrtc.connect('on-negotiation-needed', self.on_negotiation_needed)
         self.webrtc.connect('on-ice-candidate', self.on_ice_candidate)
         self.webrtc.connect('pad-added', self.on_pad_added)
-        # GStreamer 1.26: request pads (! wb.) don't reliably create
-        # transceivers for all media types. add-transceiver ensures both
-        # video and audio transceivers exist. The combination of add-transceiver
-        # + request pads breaks on-negotiation-needed, but _fallback_create_offer()
-        # handles that by manually creating the offer after the pipeline reaches PLAYING.
-        direction = GstWebRTC.WebRTCRTPTransceiverDirection.SENDRECV
-        if self.has_video:
-            self.webrtc.emit('add-transceiver', direction, None)
-        if self.has_audio:
-            self.webrtc.emit('add-transceiver', direction, None)
+        # Do NOT call add-transceiver here.  Request pads (! wb.) linked by the
+        # pipeline string correctly create transceivers in GStreamer ≥ 1.20.
+        # Calling add-transceiver alongside request pads creates ghost
+        # transceivers that steal the RTP routing — media encodes but never
+        # reaches the browser.
         bus = self.pipeline.get_bus()
         bus.add_signal_watch()
         bus.connect('message', self.on_bus_message)
-        self._played_pending_offer = False
-        self._fallback_registered = False
         self.pipeline.set_state(Gst.State.PLAYING)
 
     def on_pad_added(self, element, pad):
@@ -731,7 +722,6 @@ class MonitorSession:
         now = time.time()
         log.info('on-negotiation-needed fired for session %s (making_offer=%s dt=%.1f)',
                  self.subscriber_id, self._making_offer, now - self._last_offer_ts)
-        self._played_pending_offer = True  # signal fired, cancel fallback
         if self._making_offer:
             return
         if now - self._last_offer_ts < 2.0:
@@ -742,32 +732,6 @@ class MonitorSession:
         gen = self._pipeline_gen
         promise = Gst.Promise.new_with_change_func(lambda p: self.on_offer_created(p, gen))
         element.emit('create-offer', None, promise)
-
-    def _fallback_create_offer(self):
-        """Manually create an offer if on-negotiation-needed never fired.
-
-        Called via GLib.timeout_add shortly after the pipeline reaches PLAYING.
-        If the signal already fired, this is a no-op.
-        """
-        if self._closing or self._making_offer or self._played_pending_offer:
-            return False  # stop the timeout
-        if self.pipeline is None or self._closing:
-            return False
-        # Debug: log how many transceivers webrtcbin has
-        try:
-            transceivers = self.webrtc.emit('get-transceivers')
-            n_trans = len(transceivers) if transceivers else 0
-        except Exception:
-            n_trans = -1
-        log.info('fallback: on-negotiation-needed did not fire for %s — '
-                 'manually creating offer (%d transceivers)',
-                 self.subscriber_id, n_trans)
-        self._making_offer = True
-        self._last_offer_ts = time.time()
-        gen = self._pipeline_gen
-        promise = Gst.Promise.new_with_change_func(lambda p: self.on_offer_created(p, gen))
-        self.webrtc.emit('create-offer', None, promise)
-        return False  # one-shot timeout
 
     def on_offer_created(self, promise, gen=None):
         try:
@@ -808,6 +772,9 @@ class MonitorSession:
             log.info('OFFER SDP for %s: %d m-lines (%s)',
                      self.subscriber_id, len(m_lines),
                      ', '.join(m_types))
+            for line in text.splitlines():
+                if line.startswith(('m=', 'a=mid:', 'a=rtpmap:', 'a=send')):
+                    log.info('OFFER SDP line: %s', line)
             self.agent.enqueue_ws({'type': 'OFFER', 'payload': {
                 'to': self.subscriber_id, 'sdp': {'type': 'offer', 'sdp': text}}})
             log.info('OFFER sent for %s', self.subscriber_id)
@@ -892,13 +859,6 @@ class MonitorSession:
                 # subsequent regression through PAUSED → READY.
                 if new == Gst.State.PLAYING and self.has_audio:
                     self._had_audio_while_playing = True
-                # Fallback: if on-negotiation-needed hasn't fired by the time
-                # the pipeline reaches PLAYING, manually trigger create-offer.
-                # GStreamer 1.26 webrtcbin sometimes fails to emit the signal
-                # when multiple media streams are linked via request pads.
-                if new == Gst.State.PLAYING and not self._fallback_registered:
-                    self._fallback_registered = True
-                    GLib.timeout_add(2000, self._fallback_create_offer)
                 # If the pipeline regresses from PLAYING to PAUSED (audio
                 # preroll failure without a bus ERROR), rebuild video-only.
                 if old == Gst.State.PLAYING and new == Gst.State.PAUSED and self.has_audio:

@@ -790,7 +790,7 @@ def _make_session(agent=None, **overrides):
     """Create a MonitorSession-like object with mocked GStreamer types.
 
     We set up the minimal attributes that on_negotiation_needed,
-    on_offer_created, _fallback_create_offer, and on_audio_level need,
+    on_offer_created, and on_audio_level need,
     then bind the real MonitorSession methods.
     """
     import types
@@ -808,8 +808,6 @@ def _make_session(agent=None, **overrides):
         rxvol=None,
         _making_offer=False,
         _last_offer_ts=0.0,
-        _played_pending_offer=False,
-        _fallback_registered=False,
         _pipeline_gen=0,
         pipeline=None,
         webrtc=None,
@@ -821,7 +819,6 @@ def _make_session(agent=None, **overrides):
     # Bind real methods from MonitorSession
     s.on_negotiation_needed = pa.MonitorSession.on_negotiation_needed.__get__(s)
     s.on_offer_created = pa.MonitorSession.on_offer_created.__get__(s)
-    s._fallback_create_offer = pa.MonitorSession._fallback_create_offer.__get__(s)
     s._parse_mids = pa.MonitorSession._parse_mids.__get__(s)
     s.on_local_description_set = pa.MonitorSession.on_local_description_set.__get__(s)
     return s
@@ -938,29 +935,6 @@ class TestClosingGuard(unittest.TestCase):
         # _making_offer stays False because debounced
         self.assertFalse(s._making_offer)
         self.assertEqual(element._emitted, [])
-
-    def test_fallback_ignored_when_closing(self):
-        s = _make_session(_closing=True, pipeline=_MockPipeline(), webrtc=_MockWebrtc())
-
-        result = s._fallback_create_offer()
-
-        self.assertFalse(result)  # returns False to stop timeout
-        self.assertFalse(s._making_offer)
-
-    def test_fallback_ignored_when_making_offer(self):
-        s = _make_session(_making_offer=True, pipeline=_MockPipeline(), webrtc=_MockWebrtc())
-
-        result = s._fallback_create_offer()
-
-        self.assertFalse(result)
-        self.assertTrue(s._making_offer)  # unchanged
-
-    def test_fallback_ignored_when_played_pending(self):
-        s = _make_session(_played_pending_offer=True, pipeline=_MockPipeline(), webrtc=_MockWebrtc())
-
-        result = s._fallback_create_offer()
-
-        self.assertFalse(result)
 
 
 class TestBuildResetsState(unittest.TestCase):
