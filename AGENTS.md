@@ -18,6 +18,14 @@ HTML5 video intercom / baby monitor system. Runs on iPads/iPhones via Safari. Se
 - Self-signed TLS for iOS HTTPS requirement
 - Docker Compose for deployment
 
+> **Development testing happens against the Android hub, not the Linux Node server.**
+> The active signaling server during development is the embedded Ktor server inside the
+> native Android app (`android/` — see `android/README.md`, `SignalingServer` Ktor CIO on
+> `/ws` serving `assets/public`). The `server/` Node.js stack is the reference/portable
+> implementation, but day-to-day dev + device testing targets the Android hub running on the
+> Samsung Galaxy Tab A7. When testing clients or the Pi agent, point `SERVER_URL` at the
+> Android hub, not a `localhost` Node instance.
+
 ### Multi-Publisher Room Model
 - A Room contains multiple MediaSources (one per publisher device)
 - Subscribers independently subscribe to sources

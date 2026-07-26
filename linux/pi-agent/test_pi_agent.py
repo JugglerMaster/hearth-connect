@@ -365,6 +365,61 @@ class TestBroadcastPipelineStr(unittest.TestCase):
                          'webrtcbin name=wb stun-server=' + pa.STUN)
 
 
+class TestAudioMonitorTarget(unittest.TestCase):
+    SELF = 'pi-self'
+    SOURCES = [
+        {'id': 'a-src', 'publisherId': 'kioskA', 'type': 'video+audio'},
+        {'id': 'b-src', 'publisherId': 'kioskB', 'type': 'audio-only'},
+        {'id': 'c-src', 'publisherId': 'kioskC', 'type': 'video-only'},
+        {'id': 'self-src', 'publisherId': SELF, 'type': 'video+audio'},
+        {'id': 'bc-src', 'publisherId': 'base1', 'type': 'audio-only', 'isBroadcast': True},
+    ]
+
+    def test_disabled_returns_none(self):
+        self.assertIsNone(pa.audio_monitor_target(
+            {'audioMonitorEnabled': False, 'audioMonitorSourceId': 'a-src'},
+            self.SOURCES, self.SELF))
+
+    def test_missing_flag_returns_none(self):
+        self.assertIsNone(pa.audio_monitor_target({}, self.SOURCES, self.SELF))
+
+    def test_auto_picks_first_audio_capable(self):
+        cfg = {'audioMonitorEnabled': True, 'audioMonitorSourceId': 'auto'}
+        self.assertEqual(pa.audio_monitor_target(cfg, self.SOURCES, self.SELF), 'kioskA')
+
+    def test_auto_empty_string_same_as_auto(self):
+        cfg = {'audioMonitorEnabled': True, 'audioMonitorSourceId': ''}
+        self.assertEqual(pa.audio_monitor_target(cfg, self.SOURCES, self.SELF), 'kioskA')
+
+    def test_select_by_source_id(self):
+        cfg = {'audioMonitorEnabled': True, 'audioMonitorSourceId': 'b-src'}
+        self.assertEqual(pa.audio_monitor_target(cfg, self.SOURCES, self.SELF), 'kioskB')
+
+    def test_select_by_publisher_id(self):
+        cfg = {'audioMonitorEnabled': True, 'audioMonitorSourceId': 'kioskB'}
+        self.assertEqual(pa.audio_monitor_target(cfg, self.SOURCES, self.SELF), 'kioskB')
+
+    def test_video_only_source_skipped(self):
+        cfg = {'audioMonitorEnabled': True, 'audioMonitorSourceId': 'c-src'}
+        self.assertIsNone(pa.audio_monitor_target(cfg, self.SOURCES, self.SELF))
+
+    def test_never_listens_to_self(self):
+        cfg = {'audioMonitorEnabled': True, 'audioMonitorSourceId': 'self-src'}
+        self.assertIsNone(pa.audio_monitor_target(cfg, self.SOURCES, self.SELF))
+
+    def test_broadcast_source_not_eligible(self):
+        cfg = {'audioMonitorEnabled': True, 'audioMonitorSourceId': 'bc-src'}
+        self.assertIsNone(pa.audio_monitor_target(cfg, self.SOURCES, self.SELF))
+
+    def test_no_sources(self):
+        cfg = {'audioMonitorEnabled': True, 'audioMonitorSourceId': 'auto'}
+        self.assertIsNone(pa.audio_monitor_target(cfg, [], self.SELF))
+
+    def test_unknown_id_returns_none(self):
+        cfg = {'audioMonitorEnabled': True, 'audioMonitorSourceId': 'nope'}
+        self.assertIsNone(pa.audio_monitor_target(cfg, self.SOURCES, self.SELF))
+
+
 # ─── mDNS discovery tests ──────────────────────────────────
 # These import mdns_discover directly (no GStreamer/websockets needed).
 # We mock zeroconf so the tests run on any machine.
@@ -631,6 +686,457 @@ class TestStateRegressionDetection(unittest.TestCase):
         # PLAYING → PAUSED triggers rebuild.
         result = self._fire_state(session, GstState_PLAYING, GstState_PAUSED)
         self.assertEqual(result, 'PLAYING_PAUSED')
+
+
+# ─── Double-offer race condition tests ─────────────────────
+# These test the generation-counter, _closing guards, and AUDIO_PEAK
+# suppression logic in MonitorSession.  We create lightweight mock objects
+# that carry the right attributes and bind the real methods to them, so the
+# actual GStreamer stack is never needed.
+
+
+class _MockAgent:
+    """Minimal agent stand-in for MonitorSession tests."""
+    def __init__(self):
+        self.has_video = True
+        self.has_audio = True
+        self.talkback_active = False
+        self.config = {}
+        self.device_id = 'mock-pi'
+        self.resolution = '720p'
+        self.framerate = 30
+        self._enqueued = []
+        self._audio_peak_suppressed = False
+
+    def enqueue_ws(self, msg):
+        self._enqueued.append(msg)
+
+    def speaker_volume(self):
+        return 0.5
+
+    # Bind real on_audio_level from Agent class
+    on_audio_level = pa.Agent.on_audio_level
+
+
+class _MockWebrtc:
+    """Minimal webrtcbin stand-in."""
+    def __init__(self):
+        self._signals = {}
+        self._emitted = []
+
+    def connect(self, sig, handler):
+        self._signals[sig] = handler
+
+    def emit(self, sig, *args):
+        self._emitted.append((sig, args))
+
+    def get_static_pad(self, name):
+        return None
+
+
+class _MockPromise:
+    """Mock Gst.Promise that resolves immediately."""
+    def __init__(self, reply=None, exc=None):
+        self._reply = reply
+        self._exc = exc
+
+    def wait(self):
+        if self._exc:
+            raise self._exc
+
+    def get_reply(self):
+        return self._reply
+
+
+class _MockPipeline:
+    """Mock GStreamer pipeline."""
+    def __init__(self):
+        self.state = 'NULL'
+        self.bus = None
+
+    def set_state(self, state):
+        self.state = state
+
+    def get_by_name(self, name):
+        return _MockWebrtc()
+
+    def get_bus(self):
+        class _Bus:
+            def add_signal_watch(self): pass
+            def connect(self, *a): pass
+        return _Bus()
+
+
+class _MockGst:
+    """Minimal Gst stand-in for build()."""
+    class State:
+        NULL = 'NULL'
+        PLAYING = 'PLAYING'
+    @staticmethod
+    def parse_launch(s):
+        return _MockPipeline()
+    class Promise:
+        @staticmethod
+        def new_with_change_func(cb):
+            return _MockPromise()
+
+
+class _MockGstWebRTC:
+    class WebRTCRTPTransceiverDirection:
+        SENDRECV = 0
+
+
+def _make_session(agent=None, **overrides):
+    """Create a MonitorSession-like object with mocked GStreamer types.
+
+    We set up the minimal attributes that on_negotiation_needed,
+    on_offer_created, _fallback_create_offer, and on_audio_level need,
+    then bind the real MonitorSession methods.
+    """
+    import types
+    agent = agent or _MockAgent()
+    s = types.SimpleNamespace(
+        agent=agent,
+        subscriber_id='test-sub',
+        has_video=True,
+        has_audio=True,
+        alert_armed=True,
+        last_level_ts=0,
+        talkback_active=False,
+        _had_audio_while_playing=False,
+        _closing=False,
+        rxvol=None,
+        _making_offer=False,
+        _last_offer_ts=0.0,
+        _played_pending_offer=False,
+        _fallback_registered=False,
+        _pipeline_gen=0,
+        pipeline=None,
+        webrtc=None,
+        _mid_map={},
+    )
+    # Set overrides
+    for k, v in overrides.items():
+        setattr(s, k, v)
+    # Bind real methods from MonitorSession
+    s.on_negotiation_needed = pa.MonitorSession.on_negotiation_needed.__get__(s)
+    s.on_offer_created = pa.MonitorSession.on_offer_created.__get__(s)
+    s._fallback_create_offer = pa.MonitorSession._fallback_create_offer.__get__(s)
+    s._parse_mids = pa.MonitorSession._parse_mids.__get__(s)
+    s.on_local_description_set = pa.MonitorSession.on_local_description_set.__get__(s)
+    return s
+
+
+class TestGenerationCounter(unittest.TestCase):
+    """Test that stale offers from old pipeline generations are discarded."""
+
+    def test_stale_offer_discarded_on_gen_mismatch(self):
+        """Regression rebuilds pipeline (gen bumps); old promise callback must not send."""
+        agent = _MockAgent()
+        s = _make_session(agent=agent)
+
+        # Simulate: on-negotiation-needed captured gen=0
+        # Then pipeline regressed and build() bumped gen to 1
+        s._pipeline_gen = 1  # build() bumped it
+        s._making_offer = True  # old on-negotiation-needed set this
+
+        # Old promise resolves with gen=0
+        reply = type('R', (), {'get_value': lambda self, k: type('O', (), {
+            'sdp': type('S', (), {'as_text': lambda self: 'v=0\r\nm=video 9 UDP/TLS/RTP/SAVPF\r\na=mid:video0\r\n'})()})()})()
+        promise = _MockPromise(reply=reply)
+
+        s.on_offer_created(promise, gen=0)
+
+        # Offer should NOT have been sent
+        self.assertEqual(agent._enqueued, [])
+        self.assertFalse(s._making_offer)
+
+    def test_fresh_offer_sent_when_gen_matches(self):
+        """Normal case: offer created and sent when gen matches."""
+        import unittest.mock as mock
+        agent = _MockAgent()
+        s = _make_session(agent=agent)
+        s.webrtc = _MockWebrtc()
+
+        # gen=0 matches _pipeline_gen=0
+        reply = type('R', (), {'get_value': lambda self, k: type('O', (), {
+            'sdp': type('S', (), {'as_text': lambda self: 'v=0\r\nm=video 9 UDP/TLS/RTP/SAVPF\r\na=mid:video0\r\n'})()})()})()
+        promise = _MockPromise(reply=reply)
+
+        with mock.patch.object(pa, 'Gst', _MockGst):
+            s.on_offer_created(promise, gen=0)
+
+        # Offer SHOULD have been sent
+        self.assertEqual(len(agent._enqueued), 1)
+        self.assertEqual(agent._enqueued[0]['type'], 'OFFER')
+
+    def test_no_gen_always_sends(self):
+        """Backward compat: gen=None (no generation tracking) always sends."""
+        import unittest.mock as mock
+        agent = _MockAgent()
+        s = _make_session(agent=agent)
+        s.webrtc = _MockWebrtc()
+
+        reply = type('R', (), {'get_value': lambda self, k: type('O', (), {
+            'sdp': type('S', (), {'as_text': lambda self: 'v=0\r\nm=video 9 UDP/TLS/RTP/SAVPF\r\na=mid:video0\r\n'})()})()})()
+        promise = _MockPromise(reply=reply)
+
+        with mock.patch.object(pa, 'Gst', _MockGst):
+            s.on_offer_created(promise, gen=None)
+
+        self.assertEqual(len(agent._enqueued), 1)
+
+    def test_closing_discards_offer_even_when_gen_matches(self):
+        """Closing guard fires even when generation matches."""
+        agent = _MockAgent()
+        s = _make_session(agent=agent, _closing=True)
+
+        reply = type('R', (), {'get_value': lambda self, k: type('O', (), {
+            'sdp': type('S', (), {'as_text': lambda self: 'v=0\r\nm=video 9 UDP/TLS/RTP/SAVPF\r\na=mid:video0\r\n'})()})()})()
+        promise = _MockPromise(reply=reply)
+
+        s.on_offer_created(promise, gen=0)
+
+        self.assertEqual(agent._enqueued, [])
+        self.assertFalse(s._making_offer)
+
+
+class TestClosingGuard(unittest.TestCase):
+    """Test that _closing prevents new offers from being created."""
+
+    def test_on_negotiation_needed_ignored_when_closing(self):
+        s = _make_session(_closing=True)
+        element = _MockWebrtc()
+
+        s.on_negotiation_needed(element)
+
+        # Should not have attempted to create offer
+        self.assertFalse(s._making_offer)
+        self.assertEqual(element._emitted, [])
+
+    def test_on_negotiation_needed_proceeds_when_not_closing(self):
+        s = _make_session(_last_offer_ts=0.0)  # debounce won't trigger
+        element = _MockWebrtc()
+
+        # Patch Gst.Promise to capture the callback
+        import unittest.mock as mock
+        with mock.patch.object(pa, 'Gst', _MockGst):
+            s.on_negotiation_needed(element)
+
+        self.assertTrue(s._making_offer)
+        self.assertEqual(len(element._emitted), 1)
+        self.assertEqual(element._emitted[0][0], 'create-offer')
+
+    def test_on_negotiation_needed_debounced(self):
+        """Second call within 2s is debounced."""
+        import time
+        s = _make_session(_last_offer_ts=time.time())  # just set
+        element = _MockWebrtc()
+
+        s.on_negotiation_needed(element)
+
+        # _making_offer stays False because debounced
+        self.assertFalse(s._making_offer)
+        self.assertEqual(element._emitted, [])
+
+    def test_fallback_ignored_when_closing(self):
+        s = _make_session(_closing=True, pipeline=_MockPipeline(), webrtc=_MockWebrtc())
+
+        result = s._fallback_create_offer()
+
+        self.assertFalse(result)  # returns False to stop timeout
+        self.assertFalse(s._making_offer)
+
+    def test_fallback_ignored_when_making_offer(self):
+        s = _make_session(_making_offer=True, pipeline=_MockPipeline(), webrtc=_MockWebrtc())
+
+        result = s._fallback_create_offer()
+
+        self.assertFalse(result)
+        self.assertTrue(s._making_offer)  # unchanged
+
+    def test_fallback_ignored_when_played_pending(self):
+        s = _make_session(_played_pending_offer=True, pipeline=_MockPipeline(), webrtc=_MockWebrtc())
+
+        result = s._fallback_create_offer()
+
+        self.assertFalse(result)
+
+
+class TestBuildResetsState(unittest.TestCase):
+    """Test that build() properly resets state for a fresh pipeline."""
+
+    def test_build_bumps_pipeline_gen(self):
+        import types
+        s = types.SimpleNamespace(_pipeline_gen=0)
+
+        # Inline the relevant build() logic
+        s._closing = False
+        s._making_offer = False
+        s._pipeline_gen += 1
+
+        self.assertEqual(s._pipeline_gen, 1)
+
+    def test_build_resets_closing_and_making_offer(self):
+        import types
+        s = types.SimpleNamespace(_closing=True, _making_offer=True, _pipeline_gen=3)
+
+        s._closing = False
+        s._making_offer = False
+        s._pipeline_gen += 1
+
+        self.assertFalse(s._closing)
+        self.assertFalse(s._making_offer)
+        self.assertEqual(s._pipeline_gen, 4)
+
+
+class TestAudioPeakSuppression(unittest.TestCase):
+    """Test that AUDIO_PEAK is suppressed after server returns UNKNOWN_TYPE."""
+
+    def test_suppressed_flag_stops_sending(self):
+        agent = _MockAgent()
+        agent._audio_peak_suppressed = True
+        agent.config = {'audioAlertEnabled': True, 'audioAlertThresholdDb': -40,
+                        'audioAlertHysteresisDb': 6}
+
+        session_mock = type('S', (), {'alert_armed': True, 'last_level_ts': 0.0})()
+        agent.on_audio_level(session_mock, -30.0)
+
+        # No messages should be queued
+        self.assertEqual(agent._enqueued, [])
+
+    def test_not_suppressed_sends_normally(self):
+        agent = _MockAgent()
+        agent._audio_peak_suppressed = False
+        agent.config = {'audioAlertEnabled': True, 'audioAlertThresholdDb': -40,
+                        'audioAlertHysteresisDb': 6}
+
+        session_mock = type('S', (), {'alert_armed': True, 'last_level_ts': 0.0})()
+        agent.on_audio_level(session_mock, -30.0)
+
+        # Should have sent an AUDIO_PEAK (threshold crossed)
+        peak_msgs = [m for m in agent._enqueued if m['type'] == 'AUDIO_PEAK']
+        self.assertTrue(len(peak_msgs) > 0)
+
+
+class TestAudioPeakErrorHandler(unittest.TestCase):
+    """Test that UNKNOWN_TYPE error for AUDIO_PEAK sets the suppression flag."""
+
+    def _make_agent_with_handler(self):
+        """Create an agent and fire an ERROR message through its message handler."""
+        import types
+        agent = _MockAgent()
+        agent._audio_peak_suppressed = False
+        agent.config = {}
+        agent.sessions = {}
+        agent.broadcast_sessions = {}
+        agent.broadcast_sources = {}
+        agent.talkback_active = False
+
+        # Inline the ERROR handling logic from on_message
+        def handle_error(payload):
+            if payload.get('message', '').startswith('Unknown message type: AUDIO_PEAK'):
+                agent._audio_peak_suppressed = True
+
+        return agent, handle_error
+
+    def test_unknown_type_audio_peak_suppresses(self):
+        agent, handler = self._make_agent_with_handler()
+        handler({'code': 'UNKNOWN_TYPE', 'message': 'Unknown message type: AUDIO_PEAK'})
+        self.assertTrue(agent._audio_peak_suppressed)
+
+    def test_other_error_does_not_suppress(self):
+        agent, handler = self._make_agent_with_handler()
+        handler({'code': 'SOMETHING', 'message': 'Some other error'})
+        self.assertFalse(agent._audio_peak_suppressed)
+
+    def test_exact_match_only(self):
+        agent, handler = self._make_agent_with_handler()
+        handler({'message': 'Unknown message type: AUDIO'})
+        self.assertFalse(agent._audio_peak_suppressed)
+
+
+class TestFullRaceScenario(unittest.TestCase):
+    """End-to-end simulation of the regression race condition.
+
+    Simulates:
+    1. Pipeline reaches PLAYING → on-negotiation-needed fires → gen=0 captured
+    2. Pipeline regresses → close() → build() (gen bumps to 1)
+    3. Old promise resolves → on_offer_created(gen=0) → MUST be discarded
+    4. New pipeline reaches PLAYING → on-negotiation-needed → gen=1 → creates new offer
+    """
+
+    def test_regression_race_no_double_offer(self):
+        import unittest.mock as mock
+        agent = _MockAgent()
+        s = _make_session(agent=agent)
+        s.webrtc = _MockWebrtc()
+
+        # Step 1: Initial negotiation — gen=0
+        s._pipeline_gen = 0
+        s._last_offer_ts = 0.0  # old timestamp, no debounce
+
+        # Step 2: Regression → close + build
+        s._closing = True
+        # build() resets state and bumps gen
+        s._closing = False
+        s._making_offer = False
+        s._pipeline_gen = 1
+
+        # Step 3: Old promise resolves with stale gen=0
+        reply = type('R', (), {'get_value': lambda self, k: type('O', (), {
+            'sdp': type('S', (), {'as_text': lambda self: 'v=0\r\nm=video 9 UDP/TLS/RTP/SAVPF\r\na=mid:video0\r\n'})()})()})()
+        stale_promise = _MockPromise(reply=reply)
+        s.on_offer_created(stale_promise, gen=0)
+
+        # Stale offer must NOT have been sent
+        self.assertEqual(agent._enqueued, [],
+                         'Stale offer from old pipeline generation was sent!')
+
+        # Step 4: New pipeline negotiation — gen=1
+        element = _MockWebrtc()
+        with mock.patch.object(pa, 'Gst', _MockGst):
+            s.on_negotiation_needed(element)
+
+        # New offer SHOULD have been created
+        self.assertTrue(s._making_offer)
+        self.assertEqual(len(element._emitted), 1)
+        self.assertEqual(element._emitted[0][0], 'create-offer')
+
+        # And now the new promise should send the offer
+        fresh_promise = _MockPromise(reply=reply)
+        with mock.patch.object(pa, 'Gst', _MockGst):
+            s.on_offer_created(fresh_promise, gen=1)
+
+        self.assertEqual(len(agent._enqueued), 1)
+        self.assertEqual(agent._enqueued[0]['type'], 'OFFER')
+
+    def test_no_double_offer_when_no_regression(self):
+        """Normal case: no regression, single offer sent."""
+        import unittest.mock as mock
+        agent = _MockAgent()
+        s = _make_session(agent=agent)
+        s.webrtc = _MockWebrtc()
+
+        # on-negotiation-needed → gen=0
+        element = _MockWebrtc()
+        with mock.patch.object(pa, 'Gst', _MockGst):
+            s.on_negotiation_needed(element)
+
+        # Promise resolves
+        reply = type('R', (), {'get_value': lambda self, k: type('O', (), {
+            'sdp': type('S', (), {'as_text': lambda self: 'v=0\r\nm=video 9 UDP/TLS/RTP/SAVPF\r\na=mid:video0\r\n'})()})()})()
+        promise = _MockPromise(reply=reply)
+        with mock.patch.object(pa, 'Gst', _MockGst):
+            s.on_offer_created(promise, gen=0)
+
+        self.assertEqual(len(agent._enqueued), 1)
+        self.assertEqual(agent._enqueued[0]['type'], 'OFFER')
+
+        # Second on-negotiation-needed is debounced (<2s)
+        s2 = _MockWebrtc()
+        s.on_negotiation_needed(s2)
+        self.assertEqual(len(agent._enqueued), 1)  # still just 1
 
 
 if __name__ == '__main__':

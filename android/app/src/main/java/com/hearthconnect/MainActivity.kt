@@ -5,6 +5,7 @@ import android.annotation.SuppressLint
 import android.net.http.SslError
 import android.os.Build
 import android.util.Log
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
@@ -35,6 +36,20 @@ class MainActivity : AppCompatActivity() {
     }
 
     private val handler = Handler(Looper.getMainLooper())
+
+    /** JavaScript interface for WebView → native communication. */
+    inner class WebAppInterface {
+        @android.webkit.JavascriptInterface
+        fun setKeepAwake(enabled: Boolean) {
+            // Find the running HubService and update its keepAwake preference.
+            val intent = Intent(this@MainActivity, HubService::class.java)
+            startService(intent) // ensure service is running
+            // Use SharedPreferences directly since HubService reads from the same prefs.
+            getSharedPreferences("hearth_hub", Context.MODE_PRIVATE)
+                .edit().putBoolean("keepAwake", enabled).apply()
+            Log.i(TAG, "keepAwake set to $enabled from WebView")
+        }
+    }
 
     private val requiredPermissions = arrayOf(
         Manifest.permission.CAMERA,
@@ -95,6 +110,9 @@ class MainActivity : AppCompatActivity() {
             loadWithOverviewMode = true
         }
 
+        // Expose native interface to WebView JS.
+        binding.webView.addJavascriptInterface(WebAppInterface(), "Android")
+
         binding.webView.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
                 return false
@@ -118,12 +136,22 @@ class MainActivity : AppCompatActivity() {
         binding.webView.setLayerType(View.LAYER_TYPE_HARDWARE, null)
     }
 
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        binding.webView.saveState(outState)
+    }
+
+    override fun onRestoreInstanceState(savedInstanceState: Bundle) {
+        super.onRestoreInstanceState(savedInstanceState)
+        binding.webView.restoreState(savedInstanceState)
+    }
+
     private fun loadBaseStation() {
         binding.statusText.visibility = View.GONE
         binding.webView.visibility = View.VISIBLE
         // Delay load to give the embedded server time to bind the port.
         handler.postDelayed({
-            binding.webView.loadUrl("https://127.0.0.1:${HubService.PORT}/base-station.html")
+            binding.webView.loadUrl("https://127.0.0.1:${HubService.PORT}/")
         }, 2000)
     }
 

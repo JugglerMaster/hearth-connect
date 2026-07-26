@@ -252,7 +252,7 @@ export class SignalingHandler {
       this.channels.removeClientByConn(existingClient.connId);
     }
 
-    const client = this.channels.addClient(transport.connId, deviceId, deviceType, roomId, effectiveLabel);
+    const client = this.channels.addClient(transport.connId, deviceId, deviceType, roomId, effectiveLabel, transport.ip);
     this.config.updateDevice(deviceId, { lastSeenAt: Date.now() });
 
     // Send current state to the joining client
@@ -284,6 +284,7 @@ export class SignalingHandler {
         label: effectiveLabel,
         lastSeenAt: Date.now(),
         config: device.config,
+        ip: transport.ip,
       },
     }, deviceId);
 
@@ -886,6 +887,7 @@ export class SignalingHandler {
 
     // Broadcast updated device status to all clients (includes full config
     // so every base station's local cache stays in sync).
+    const targetClientForStatus = this.channels.getClient(targetDeviceId);
     this.channels.broadcastAll({
       type: 'DEVICE_STATUS',
       payload: {
@@ -895,6 +897,7 @@ export class SignalingHandler {
         label: fullConfig?.label || targetDevice.label,
         config: fullConfig || targetDevice.config,
         lastSeenAt: Date.now(),
+        ip: targetClientForStatus?.ip,
       },
     });
 

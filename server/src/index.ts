@@ -258,10 +258,12 @@ const server = createServer();
 const wss = new WebSocketServer({ server, perMessageDeflate: false });
 
 // Wrap a raw WebSocket as a Transport for modern clients.
-function makeWsTransport(ws: WebSocket): Transport {
+function makeWsTransport(ws: WebSocket, req: http.IncomingMessage): Transport {
   const connId = randomUUID();
+  const ip = req.socket.remoteAddress || req.headers['x-forwarded-for'] as string || undefined;
   return {
     connId,
+    ip,
     send(msg: object) {
       if (ws.readyState === WebSocket.OPEN) {
         try { ws.send(JSON.stringify(msg)); } catch { /* ignore */ }
@@ -273,8 +275,8 @@ function makeWsTransport(ws: WebSocket): Transport {
   };
 }
 
-wss.on('connection', (ws: WebSocket) => {
-  const transport = makeWsTransport(ws);
+wss.on('connection', (ws: WebSocket, req: http.IncomingMessage) => {
+  const transport = makeWsTransport(ws, req);
   channelManager.registerTransport(transport);
   ws.on('message', (raw: Buffer) => {
     signalingHandler.handle(transport, raw.toString());
@@ -309,6 +311,7 @@ app.get('/api/events', (req, res) => {
 
   const transport: Transport = {
     connId,
+    ip: req.socket.remoteAddress || req.headers['x-forwarded-for'] as string || undefined,
     send(msg: object) {
       try { res.write('data: ' + JSON.stringify(msg) + '\n\n'); } catch { /* ignore */ }
     },

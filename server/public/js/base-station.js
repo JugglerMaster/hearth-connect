@@ -25,6 +25,69 @@
   let audioState = {};           // deviceId → { levelDb, alerting }
   let lastActivity = {};         // peerId → ts of last track activity
 
+  // ─── Audible audio-threshold alert (WebAudio beep) ──────────────
+  // When a source crosses its audio threshold (rising-edge AUDIO_PEAK), play a
+  // short synthesized beep so an operator not watching the screen still hears it.
+  // No media asset needed. Debounced per-device so a noisy room can't machine-gun
+  // the speaker. Toggle persists in localStorage.
+  let alertSoundEnabled = localStorage.getItem('hearth_alertSound') !== 'off';
+  let alertAudioCtx = null;              // created/resumed on first user gesture
+  const alertLastPlayed = {};            // deviceId → ts of last beep
+  const ALERT_DEBOUNCE_MS = 10000;
+
+  function primeAlertAudio() {
+    // iOS/Safari blocks audio until a user gesture — create/resume the context
+    // on the first interaction so later programmatic beeps are allowed.
+    try {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return;
+      if (!alertAudioCtx) alertAudioCtx = new AC();
+      if (alertAudioCtx.state === 'suspended') alertAudioCtx.resume();
+    } catch (e) { /* audio unavailable — ignore */ }
+  }
+
+  function playAlertSound(deviceId) {
+    if (!alertSoundEnabled) return;
+    const now = Date.now();
+    if (deviceId && alertLastPlayed[deviceId] && now - alertLastPlayed[deviceId] < ALERT_DEBOUNCE_MS) return;
+    if (deviceId) alertLastPlayed[deviceId] = now;
+    try {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return;
+      if (!alertAudioCtx) alertAudioCtx = new AC();
+      if (alertAudioCtx.state === 'suspended') alertAudioCtx.resume();
+      const ctx = alertAudioCtx;
+      const t0 = ctx.currentTime;
+      const gain = ctx.createGain();
+      gain.connect(ctx.destination);
+      // ~5s alert: three rising two-tone chirps with an audible envelope.
+      const tones = [660, 880, 660, 880, 660, 880];
+      const step = 0.8; // seconds per tone → 6 tones ≈ 4.8s
+      tones.forEach((freq, i) => {
+        const osc = ctx.createOscillator();
+        const g = ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.value = freq;
+        const start = t0 + i * step;
+        const end = start + step * 0.7;
+        g.gain.setValueAtTime(0.0001, start);
+        g.gain.exponentialRampToValueAtTime(0.25, start + 0.03);
+        g.gain.exponentialRampToValueAtTime(0.0001, end);
+        osc.connect(g);
+        g.connect(gain);
+        osc.start(start);
+        osc.stop(end + 0.02);
+      });
+    } catch (e) {
+      console.error('[base] alert sound failed:', e && e.message);
+    }
+  }
+
+  // Prime audio on the first user interaction anywhere on the page.
+  ['click', 'touchstart', 'keydown'].forEach(evt => {
+    window.addEventListener(evt, primeAlertAudio, { once: true, passive: true });
+  });
+
   // Broadcast state
   let isBroadcasting = false;
   let broadcastSourceId = null;
@@ -93,6 +156,17 @@
   const answerCallBtn = document.getElementById('answerCallBtn');
   const dismissCallBtn = document.getElementById('dismissCallBtn');
   let configDeviceId = null;
+
+  // Alert-sound toggle (global base-station preference).
+  const alertSoundToggle = document.getElementById('alertSoundToggle');
+  if (alertSoundToggle) {
+    alertSoundToggle.checked = alertSoundEnabled;
+    alertSoundToggle.addEventListener('change', () => {
+      alertSoundEnabled = alertSoundToggle.checked;
+      localStorage.setItem('hearth_alertSound', alertSoundEnabled ? 'on' : 'off');
+      if (alertSoundEnabled) { primeAlertAudio(); playAlertSound('__preview__'); }
+    });
+  }
 
   // Talk / mute / call state (per active view)
   let talkingTo = null;       // deviceId we are currently talking to
@@ -658,7 +732,7 @@
       return `
         <div class="${itemClass}" data-id="${d.id}">
           <div class="device-info">
-            <div class="device-name">${d.label}${zzz}${dbText ? `<span class="db-readout">${dbText}</span>` : ''}</div>
+            <div class="device-name">${d.label}${d.ip ? ` <span class="device-ip">${d.ip}</span>` : ''}${zzz}${dbText ? `<span class="db-readout">${dbText}</span>` : ''}</div>
             <div class="device-last-seen ${d.online ? 'online' : 'offline'}">${d.online ? 'online' : formatTime(d.lastSeenAt)}</div>
           </div>
           <div class="btn-row">
@@ -693,7 +767,7 @@
           <div class="grid-cell" data-id="${k.id}">
             <video class="grid-video" id="grid-video-${k.id}" autoplay playsinline></video>
             <div class="grid-overlay">
-              <span class="grid-label">${k.label}</span>
+              <span class="grid-label">${k.label}${k.ip ? ` <span class="device-ip">${k.ip}</span>` : ''}</span>
               <button class="btn btn-small btn-danger remove-from-grid" data-id="${k.id}">×</button>
             </div>
           </div>
@@ -718,7 +792,7 @@
       return `
         <div class="device-item" data-id="${d.id}">
           <div class="device-info">
-            <div class="device-name">${d.label}</div>
+            <div class="device-name">${d.label}${d.ip ? ` <span class="device-ip">${d.ip}</span>` : ''}</div>
           </div>
           <div class="btn-row">
             ${audioBtn}
@@ -1717,10 +1791,13 @@
     });
 
     sig.on('audioPeak', (data) => {
+      const wasAlerting = audioState[data.deviceId] && audioState[data.deviceId].alerting;
       audioState[data.deviceId] = {
         levelDb: data.levelDb,
         alerting: !!data.peak,
       };
+      // Rising edge only (peak:true and not already alerting) → audible beep.
+      if (data.peak && !wasAlerting) playAlertSound(data.deviceId);
       // Update the dB readout + alert highlight in place. Do NOT call
       // renderDevices() here — it rebuilds the whole device list and would
       // destroy a <select> (display/audio dropdown) that the operator is
@@ -1748,6 +1825,7 @@
         if (data.label) d.label = data.label;
         if (data.type) d.type = data.type;
         if (data.config) d.config = data.config;
+        if (data.ip) d.ip = data.ip;
       } else if (data.status === 'online' && data.type) {
         devices.push({
           id: data.deviceId,
@@ -1756,6 +1834,7 @@
           lastSeenAt: data.lastSeenAt || Date.now(),
           online: true,
           config: data.config || {},
+          ip: data.ip,
         });
         if (!wasKnown && (data.type === 'kiosk' || data.type === 'room')) {
           showToast('Device joined: ' + (data.label || data.deviceId));

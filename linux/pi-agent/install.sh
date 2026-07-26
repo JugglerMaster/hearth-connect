@@ -22,6 +22,7 @@ sudo apt-get install -y \
   libssl-dev \
   v4l-utils \
   alsa-utils \
+  dnsmasq \
   python3-pip \
   python3-websockets \
   python3-zeroconf
@@ -46,6 +47,18 @@ fi
 INSTALL_DIR=/opt/hearth-pi-agent
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Detect Pi model — Pi 3B's hardware H.264 encoder (v4l2h264enc) stalls under
+# GStreamer, so we default to software x264enc on those boards.
+PI_MODEL=""
+if [[ -f /proc/device-tree/model ]]; then
+  PI_MODEL="$(tr -d '\0' < /proc/device-tree/model)"
+fi
+NEEDS_SW_ENCODER=0
+if [[ "$PI_MODEL" == *"Raspberry Pi 3"* ]]; then
+  NEEDS_SW_ENCODER=1
+  echo "Detected Pi 3B — hardware H.264 encoder is unreliable; will use software x264enc."
+fi
+
 # Run the agent as the user who invoked the script (honors sudo: if installed
 # via `sudo bash install.sh`, use the original user, not root). systemd refuses
 # to start the unit if `User=` names a non-existent account (status 217/USER).
@@ -60,6 +73,7 @@ fi
 sudo mkdir -p "$INSTALL_DIR"
 sudo cp "$SCRIPT_DIR/pi-agent.py" "$INSTALL_DIR/"
 sudo cp "$SCRIPT_DIR/mdns_discover.py" "$INSTALL_DIR/"
+sudo cp "$SCRIPT_DIR/captive_portal.py" "$INSTALL_DIR/"
 
 # ─── Install the server's CA so the agent trusts the self-signed TLS cert ───
 # The Pi agent verifies the server's WSS certificate. For a self-hosted LAN
@@ -100,31 +114,35 @@ elif [[ -t 0 ]]; then
   read -r -p "Server URL [blank = auto-discover]: " SERVER_URL
 fi
 
-# Build the installed config.env.  If the user gave a URL (or left it blank for
-# autodiscovery), write a fresh config from the template with that value.  Only
-# preserve the existing installed config when re-running non-interactively with
-# no env var — that means "don't touch my setup."
-if [[ -n "${SERVER_URL:-}" ]]; then
-  TMP_CFG="$(mktemp)"
-  sed "s|^SERVER_URL=.*|SERVER_URL=$SERVER_URL|" "$CONFIG_SRC" > "$TMP_CFG"
-  sudo cp "$TMP_CFG" "$INSTALLED_CFG"
-  rm -f "$TMP_CFG"
-elif [[ -t 0 ]]; then
-  # User was prompted and hit Enter with no input → blank = autodiscover.
-  if [[ -f "$INSTALLED_CFG" ]]; then
-    # Ensure the installed config has a blank SERVER_URL.
-    if grep -qE '^SERVER_URL=.+' "$INSTALLED_CFG"; then
-      TMP_CFG="$(mktemp)"
-      sed 's|^SERVER_URL=.*|SERVER_URL=|' "$INSTALLED_CFG" > "$TMP_CFG"
-      sudo cp "$TMP_CFG" "$INSTALLED_CFG"
-      rm -f "$TMP_CFG"
-    fi
-  else
-    sudo cp "$CONFIG_SRC" "$INSTALLED_CFG"
+# Build the installed config.env.  Always preserve existing settings (VIDEO_ENCODER,
+# RESOLUTION, etc.) when the file already exists — only replace SERVER_URL.
+# Only fall back to the template when no config exists at all (first install).
+if [[ -f "$INSTALLED_CFG" ]]; then
+  # Existing config: update only SERVER_URL, preserve everything else.
+  TARGET_URL="${SERVER_URL:-}"
+  if grep -qE "^SERVER_URL=.*" "$INSTALLED_CFG"; then
+    TMP_CFG="$(mktemp)"
+    sed "s|^SERVER_URL=.*|SERVER_URL=$TARGET_URL|" "$INSTALLED_CFG" > "$TMP_CFG"
+    sudo cp "$TMP_CFG" "$INSTALLED_CFG"
+    rm -f "$TMP_CFG"
   fi
-elif [[ ! -f "$INSTALLED_CFG" ]]; then
-  # Non-interactive, no env var, no existing config — copy template as-is.
+else
+  # No existing config — seed from template.
   sudo cp "$CONFIG_SRC" "$INSTALLED_CFG"
+  if [[ -n "${SERVER_URL:-}" ]]; then
+    TMP_CFG="$(mktemp)"
+    sed "s|^SERVER_URL=.*|SERVER_URL=$SERVER_URL|" "$INSTALLED_CFG" > "$TMP_CFG"
+    sudo cp "$TMP_CFG" "$INSTALLED_CFG"
+    rm -f "$TMP_CFG"
+  fi
+  # On Pi 3B, default to software encoder since the hardware encoder stalls.
+  if [[ "$NEEDS_SW_ENCODER" -eq 1 ]]; then
+    TMP_CFG="$(mktemp)"
+    sed 's|^VIDEO_ENCODER=.*|VIDEO_ENCODER=x264enc|' "$INSTALLED_CFG" > "$TMP_CFG"
+    sudo cp "$TMP_CFG" "$INSTALLED_CFG"
+    rm -f "$TMP_CFG"
+    echo "  Set VIDEO_ENCODER=x264enc (Pi 3B hardware encoder is unreliable)."
+  fi
 fi
 
 # The agent runs as a non-root user but the files were copied via sudo, so make

@@ -20,6 +20,8 @@ This plan is split into per-system files in `plans/`:
 - `plans/08-watch-reconnect.md` — auto-recover the watch when the stream drops
 - `plans/09-camera-enumeration.md` — real camera list for browser kiosks (front/rear vs laptops)
 - `plans/10-device-removal.md` — manual "Remove device" button in settings
+- `plans/15-pi-agent-audio-monitor.md` — Pi plays audio (headless audio-only monitor subscriber)
+- `plans/16-base-station-audio-alert-sound.md` — base station plays a sound on audio-threshold alert
 
 ---
 

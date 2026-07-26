@@ -13,6 +13,7 @@
 
   var LS_KEY = 'hearthRestoreLastPage';
   var LS_LAST = 'hearthLastPage';
+  var LS_KEEP_AWAKE = 'hearthKeepAwake';
 
   function getCurrentPath() {
     return window.location.pathname;
@@ -40,6 +41,7 @@
 
     var current = getCurrentPath();
     var restoreOn = localStorage.getItem(LS_KEY) === 'true';
+    var keepAwakeOn = localStorage.getItem(LS_KEEP_AWAKE) !== 'false'; // default true
 
     // Page links / selector
     var pageItems = PAGES.map(function (p) {
@@ -55,12 +57,13 @@
       '<div class="drawer-setting">' +
         '<label class="drawer-setting-label" for="drawerRestoreToggle">Restore last page</label>' +
         '<div class="toggle-switch' + (restoreOn ? ' active' : '') + '" id="drawerRestoreToggle"></div>' +
+      '</div>' +
+      '<div class="drawer-setting">' +
+        '<label class="drawer-setting-label" for="drawerKeepAwakeToggle">Keep Awake</label>' +
+        '<div class="toggle-switch' + (keepAwakeOn ? ' active' : '') + '" id="drawerKeepAwakeToggle"></div>' +
       '</div>';
 
     document.body.appendChild(drawer);
-
-    // Save current page as last visited
-    try { localStorage.setItem(LS_LAST, current); } catch {}
 
     // If restore is on and we're on index, redirect to last page
     if (restoreOn && current === '/') {
@@ -71,6 +74,13 @@
           return; // don't wire up listeners during redirect
         }
       } catch {}
+    }
+
+    // Save current page as last visited (skip on index when restore is on,
+    // since the redirect above would have fired — arriving here means no
+    // saved page exists yet, and saving '/' would poison the next restore).
+    if (!(restoreOn && current === '/')) {
+      try { localStorage.setItem(LS_LAST, current); } catch {}
     }
 
     // Open / close
@@ -103,6 +113,20 @@
         toggle.classList.toggle('active');
         var on = toggle.classList.contains('active');
         try { localStorage.setItem(LS_KEY, on ? 'true' : 'false'); } catch {}
+      });
+    }
+
+    // Keep Awake toggle
+    var keepAwakeToggle = document.getElementById('drawerKeepAwakeToggle');
+    if (keepAwakeToggle) {
+      keepAwakeToggle.addEventListener('click', function () {
+        keepAwakeToggle.classList.toggle('active');
+        var on = keepAwakeToggle.classList.contains('active');
+        try { localStorage.setItem(LS_KEEP_AWAKE, on ? 'true' : 'false'); } catch {}
+        // Notify native Android layer if available
+        if (window.Android && window.Android.setKeepAwake) {
+          window.Android.setKeepAwake(on);
+        }
       });
     }
   }

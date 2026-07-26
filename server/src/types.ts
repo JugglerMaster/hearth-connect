@@ -113,6 +113,7 @@ export interface PresetRecord {
 // (legacy iOS 12, whose WebSocket stack is unreliable — close code 1006).
 export interface Transport {
   connId: string;
+  ip?: string;
   send(msg: object): void;
   close(): void;
 }
@@ -123,6 +124,7 @@ export interface ConnectedClient {
   deviceType: DeviceType;
   roomId: string;
   label: string;
+  ip?: string;
   sources: MediaSourceInfo[];
   // Publisher deviceIds this client is currently subscribed to. Used to notify
   // publishers (SUBSCRIBER_LEFT) when the subscriber disconnects, so a monitor

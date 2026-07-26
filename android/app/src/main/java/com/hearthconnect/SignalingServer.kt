@@ -41,6 +41,7 @@ class SignalingServer(private val context: Context, private val listener: Server
     private val sessions = ConcurrentHashMap<String, WebSocketSession>()   // connId → session
     private val clients = ConcurrentHashMap<String, ConnectedClient>()     // deviceId → client
     private val connToDevice = ConcurrentHashMap<String, String>()         // connId → deviceId
+    private val connIp = ConcurrentHashMap<String, String>()              // connId → remote IP
     private val recentlySeen = ConcurrentHashMap<String, RecentlySeenEntry>()
     private val deviceConfigs = ConcurrentHashMap<String, JSONObject>()    // deviceId → config
     private var connIdCounter = 0
@@ -64,8 +65,10 @@ class SignalingServer(private val context: Context, private val listener: Server
                 routing {
                     webSocket("/") {
                         val connId = "conn-${++connIdCounter}"
+                        val remoteIp = call.request.local.remoteAddress
                         sessions[connId] = this
-                        Log.i(TAG, "WS conn #$connId opened from ${call.request.local.remoteAddress}")
+                        connIp[connId] = remoteIp
+                        Log.i(TAG, "WS conn #$connId opened from $remoteIp")
 
                         try {
                             incoming.consumeEach { frame ->
@@ -85,6 +88,7 @@ class SignalingServer(private val context: Context, private val listener: Server
                         } finally {
                             handleDisconnect(connId)
                             sessions.remove(connId)
+                            connIp.remove(connId)
                             Log.i(TAG, "WS conn #$connId closed")
                         }
                     }
@@ -182,10 +186,8 @@ class SignalingServer(private val context: Context, private val listener: Server
         val type = msg.optString("type", "")
         val payload = msg.optJSONObject("payload") ?: JSONObject()
 
-        if (type != "AUDIO_PEAK") {
-            val deviceId = connToDevice[connId] ?: "unauthenticated"
-            Log.d(TAG, "MSG $type from $deviceId")
-        }
+        val deviceId = connToDevice[connId] ?: "unauthenticated"
+        Log.d(TAG, "MSG $type from $deviceId")
 
         when (type) {
             "JOIN_ROOM" -> handleJoinRoom(connId, payload)
@@ -210,7 +212,6 @@ class SignalingServer(private val context: Context, private val listener: Server
             "REQUEST_TALK" -> handleRequestTalk(connId, payload)
             "STOP_TALK" -> handleStopTalk(connId, payload)
             "CAPABILITIES" -> handleCapabilities(connId, payload)
-            "AUDIO_PEAK" -> handleAudioPeak(connId, payload)
             "REMOVE_DEVICE" -> handleRemoveDevice(connId, payload)
             "DOORBELL" -> handleDoorbell(connId, payload)
             "CALL_STATE" -> handleCallState(connId, payload)
@@ -319,6 +320,7 @@ class SignalingServer(private val context: Context, private val listener: Server
             deviceType = deviceType,
             roomId = roomId,
             label = label,
+            ip = connIp[connId],
             connectedAt = System.currentTimeMillis()
         )
         clients[deviceId] = client
@@ -330,7 +332,8 @@ class SignalingServer(private val context: Context, private val listener: Server
             label = label,
             type = deviceType,
             lastSeenAt = System.currentTimeMillis(),
-            online = true
+            online = true,
+            ip = connIp[connId]
         )
 
         // Prune stale entries of same type
@@ -361,6 +364,7 @@ class SignalingServer(private val context: Context, private val listener: Server
                 put("label", label)
                 put("lastSeenAt", System.currentTimeMillis())
                 put("config", deviceConfigs[deviceId] ?: JSONObject())
+                put("ip", connIp[connId] ?: "")
             })
         }, excludeDeviceId = deviceId)
 
@@ -601,6 +605,14 @@ class SignalingServer(private val context: Context, private val listener: Server
 
         val fullConfig = deviceConfigs[targetDeviceId]!!
 
+        // If keepAwake changed, sync to SharedPreferences so HubService picks it up
+        if (config.has("keepAwake")) {
+            val keepAwake = config.optBoolean("keepAwake", true)
+            context.getSharedPreferences("hearth_hub", Context.MODE_PRIVATE)
+                .edit().putBoolean("keepAwake", keepAwake).apply()
+            Log.i(TAG, "keepAwake synced to SharedPreferences: $keepAwake")
+        }
+
         // If label changed, update in-memory state
         val newLabel = config.optString("label", "")
         if (newLabel.isNotEmpty()) {
@@ -634,6 +646,7 @@ class SignalingServer(private val context: Context, private val listener: Server
                 put("label", if (newLabel.isNotEmpty()) newLabel else (target?.label ?: targetDeviceId))
                 put("lastSeenAt", System.currentTimeMillis())
                 put("config", fullConfig)
+                if (target?.ip != null) put("ip", target.ip)
             })
         })
 
@@ -740,25 +753,6 @@ class SignalingServer(private val context: Context, private val listener: Server
         }, excludeDeviceId = client.deviceId)
 
         Log.i(TAG, "Capabilities reported: ${client.deviceId}")
-    }
-
-    private fun handleAudioPeak(connId: String, payload: JSONObject) {
-        val client = getClient(connId) ?: return
-        val levelDb = payload.opt("levelDb")
-        broadcastAll(JSONObject().apply {
-            put("type", "AUDIO_PEAK")
-            put("payload", JSONObject().apply {
-                put("deviceId", client.deviceId)
-                put("levelDb", levelDb)
-                put("peak", payload.opt("peak"))
-                put("ts", payload.opt("ts") ?: System.currentTimeMillis())
-            })
-        }, excludeDeviceId = client.deviceId)
-
-        // Forward to native listener for screen wake (when screen is off).
-        if (levelDb is Number) {
-            listener?.onAudioPeak(client.deviceId, levelDb.toDouble())
-        }
     }
 
     private fun handleRemoveDevice(connId: String, payload: JSONObject) {
@@ -916,7 +910,8 @@ class SignalingServer(private val context: Context, private val listener: Server
         var label: String,
         val type: String,
         var lastSeenAt: Long,
-        var online: Boolean
+        var online: Boolean,
+        var ip: String? = null
     )
 
     private fun getRecentlySeenDevices(): JSONArray {
@@ -931,6 +926,7 @@ class SignalingServer(private val context: Context, private val listener: Server
                     put("lastSeenAt", entry.lastSeenAt)
                     put("online", entry.online)
                     put("config", deviceConfigs[entry.id] ?: JSONObject())
+                    if (entry.ip != null) put("ip", entry.ip)
                 })
             }
         }
@@ -999,6 +995,7 @@ class SignalingServer(private val context: Context, private val listener: Server
         val deviceType: String,
         val roomId: String,
         var label: String,
+        var ip: String? = null,
         val sources: MutableList<MediaSource> = mutableListOf(),
         val subscriptions: MutableList<String> = mutableListOf(),
         val connectedAt: Long,
@@ -1036,8 +1033,6 @@ class SignalingServer(private val context: Context, private val listener: Server
                     put("displayMode", "blank")
                     put("audioMode", "mute")
                     put("broadcastDisabled", false)
-                    put("audioAlertEnabled", true)
-                    put("audioAlertThresholdDb", -40)
                 }
                 "base" -> JSONObject().apply {
                     put("visibleSources", JSONArray())
@@ -1053,7 +1048,6 @@ class SignalingServer(private val context: Context, private val listener: Server
     /** Callback interface for SignalingServer → HubService event forwarding. */
     interface ServerEventListener {
         fun onDoorbell(fromDeviceId: String, label: String)
-        fun onAudioPeak(fromDeviceId: String, levelDb: Double)
     }
 }
 

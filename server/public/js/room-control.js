@@ -481,7 +481,7 @@ let streams = {};
       var settingsBtn = '<button class="btn btn-small btn-outline settings-btn" data-id="' + d.id + '">Settings</button>';
       return '<div class="' + itemClass + '" data-id="' + d.id + '">' +
         '<div class="device-info">' +
-        '<div class="device-name">' + d.label + zzz + (dbText ? '<span class="db-readout">' + dbText + '</span>' : '') + '</div>' +
+        '<div class="device-name">' + d.label + (d.ip ? ' <span class="device-ip">' + d.ip + '</span>' : '') + zzz + (dbText ? '<span class="db-readout">' + dbText + '</span>' : '') + '</div>' +
         '<div class="device-last-seen ' + (d.online ? 'online' : 'offline') + '">' + (d.online ? 'online' : formatTime(d.lastSeenAt)) + '</div>' +
         '</div>' +
         '<div class="btn-row">' + audioBtn + videoBtn + settingsBtn +
@@ -1219,8 +1219,9 @@ let streams = {};
         if (data.label) d.label = data.label;
         if (data.type) d.type = data.type;
         if (data.config) d.config = data.config;
+        if (data.ip) d.ip = data.ip;
       } else if (data.status === 'online' && data.type) {
-        devices.push({ id: data.deviceId, label: data.label || data.deviceId, type: data.type, lastSeenAt: data.lastSeenAt || Date.now(), online: true, config: data.config || {} });
+        devices.push({ id: data.deviceId, label: data.label || data.deviceId, type: data.type, lastSeenAt: data.lastSeenAt || Date.now(), online: true, config: data.config || {}, ip: data.ip });
         if (!wasKnown && (data.type === 'kiosk' || data.type === 'room')) showToast('Device joined: ' + (data.label || data.deviceId));
       }
       if (data.deviceId === viewingId && data.status === 'offline') {

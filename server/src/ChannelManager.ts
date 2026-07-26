@@ -14,6 +14,7 @@ export interface RecentlySeenDevice {
   type: DeviceType;
   lastSeenAt: number;
   online: boolean;
+  ip?: string;
   config?: Record<string, unknown>;
 }
 
@@ -53,7 +54,8 @@ export class ChannelManager {
     deviceId: string,
     deviceType: DeviceType,
     roomId: string,
-    label: string
+    label: string,
+    ip?: string
   ): ConnectedClient {
     const client: ConnectedClient = {
       connId,
@@ -61,6 +63,7 @@ export class ChannelManager {
       deviceType,
       roomId,
       label,
+      ip,
       sources: [],
       subscriptions: [],
       connectedAt: Date.now(),
@@ -81,6 +84,7 @@ export class ChannelManager {
       type: deviceType,
       lastSeenAt: Date.now(),
       online: true,
+      ip,
     });
 
     // Prune stale entries: if same device type joins with a new ID,

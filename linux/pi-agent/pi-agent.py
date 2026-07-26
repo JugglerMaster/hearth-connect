@@ -71,6 +71,16 @@ VIDEO_SOURCE = os.environ.get('VIDEO_SOURCE', 'auto')  # 'auto', 'libcamera', 'v
 SPEAKER_DEVICE = os.environ.get('SPEAKER_DEVICE', '')
 AUDIO_SINK = os.environ.get('AUDIO_SINK', '')  # e.g. 'alsasink device=hw:0,0' overrides SPEAKER_DEVICE
 
+# Headless audio-only listen-in (plan 15): seed the base-station config so a Pi
+# can act as a dedicated "listen to room X" speaker without the base pushing
+# config. AUDIO_MONITOR_SOURCE = a sourceId/publisherId or 'auto'. Setting it
+# implies AUDIO_MONITOR_ENABLED. Overridden live by CONFIG_UPDATED.
+AUDIO_MONITOR_SOURCE = os.environ.get('AUDIO_MONITOR_SOURCE', '')
+# Empty/unset falls back to "enabled iff a source is configured" so a bare
+# `AUDIO_MONITOR_ENABLED=` line doesn't accidentally disable an intended source.
+_am_enabled_raw = os.environ.get('AUDIO_MONITOR_ENABLED', '').strip()
+AUDIO_MONITOR_ENABLED = (_am_enabled_raw == '1') if _am_enabled_raw else bool(AUDIO_MONITOR_SOURCE)
+
 # Hard cap on simultaneous subscriber pipelines. Each viewer gets its own
 # GStreamer pipeline; on a 1GB Pi this bounds memory/CPU. Beyond the cap we
 # politely tell the server the subscriber left so the base doesn't hang.
@@ -78,6 +88,10 @@ MAX_SUBSCRIBERS = int(os.environ.get('MAX_SUBSCRIBERS', '4'))
 
 DIMS = {'480p': (640, 480), '720p': (1280, 720), '1080p': (1920, 1080)}
 STUN = 'stun://stun.l.google.com:19302'
+
+# Hotspot / captive portal: SSID for the open AP when WiFi is unavailable.
+# Defaults to the device label or auto-detected Pi model name.
+HOTSPOT_NAME = os.environ.get('HOTSPOT_NAME', '')
 
 
 def _no_verify_ssl():
@@ -99,6 +113,34 @@ def rand_id(n=8):
 
 def gst_element_exists(name):
     return Gst.ElementFactory.find(name) is not None
+
+
+def test_encoder(encoder_name):
+    """Quick preroll test: can this encoder actually produce output?
+
+    ``v4l2h264enc`` exists as a GStreamer element on Pi 3B (installed via
+    gstreamer1.0-plugins-bad) but the hardware encoder stalls under load —
+    the pipeline never reaches PLAYING and no OFFER is created.  This builds
+    a tiny test pipeline and checks if it reaches PAUSED (preroll) within a
+    short timeout.  Returns True on success, False on failure/timeout.
+    """
+    _load_gst()
+    pipeline_str = (
+        'videotestsrc num-buffers=1 ! videoconvert ! '
+        'video/x-raw,format=I420,width=320,height=240,framerate=15/1 ! '
+        '{enc} ! fakesink'.format(enc=encoder_name))
+    try:
+        pipeline = Gst.parse_launch(pipeline_str)
+        ret = pipeline.set_state(Gst.State.PAUSED)
+        if ret == Gst.StateChangeReturn.FAILURE:
+            pipeline.set_state(Gst.State.NULL)
+            return False
+        # Wait up to 3 s for preroll (Gst.SECOND is nanoseconds).
+        ret, state, _pending = pipeline.get_state(3 * Gst.SECOND)
+        pipeline.set_state(Gst.State.NULL)
+        return state in (Gst.State.PAUSED, Gst.State.PLAYING)
+    except Exception:
+        return False
 
 
 def _load_gst():
@@ -334,6 +376,50 @@ def source_type(has_video, has_audio):
     return 'none'
 
 
+def audio_monitor_target(cfg, sources, self_id):
+    """Pure resolver: which publisher should the Pi listen to (plan 15 §D)?
+
+    The Pi is a headless *audio-only* listen-in monitor. Given the base-station
+    config and the current room source list, return the publisherId to subscribe
+    to (audio only), or None when disabled / no suitable source exists.
+
+    cfg:     dict with audioMonitorEnabled / audioMonitorSourceId.
+    sources: iterable of source dicts ({'id','publisherId','type', ...} as sent
+             by the server in WELCOME / SOURCE_ADDED).
+    self_id: this agent's deviceId — never listen to our own source.
+
+    Selection rules:
+      - audioMonitorEnabled must be truthy, else None.
+      - Only sources whose type carries audio ('video+audio' or 'audio-only')
+        and that aren't broadcasts or our own are eligible. A 'video-only'
+        source has no audio → skipped.
+      - audioMonitorSourceId == 'auto' (or empty) → first eligible source.
+      - Otherwise it may name either a sourceId or a publisherId; match either.
+    """
+    if not cfg.get('audioMonitorEnabled'):
+        return None
+    sel = cfg.get('audioMonitorSourceId') or 'auto'
+
+    def eligible(s):
+        if not isinstance(s, dict):
+            return False
+        if s.get('isBroadcast'):
+            return False
+        if s.get('publisherId') == self_id:
+            return False
+        return s.get('type') in ('video+audio', 'audio-only')
+
+    elig = [s for s in (sources or []) if eligible(s)]
+    if not elig:
+        return None
+    if sel == 'auto':
+        return elig[0].get('publisherId')
+    for s in elig:
+        if s.get('id') == sel or s.get('publisherId') == sel:
+            return s.get('publisherId')
+    return None
+
+
 def audio_peak_decision(db, state, cfg, now):
     """Pure audio-threshold + hysteresis decision (plan 07 §C/§D).
 
@@ -460,6 +546,19 @@ def make_video_recv_chain(pipeline):
     return chain
 
 
+def make_video_drop_chain(pipeline):
+    """Drop an incoming video RTP pad WITHOUT decoding (headless audio monitor).
+
+    Unlike make_video_recv_chain (which decodes for FaceTalk parity), this never
+    instantiates avdec_h264 — the Pi audio-only listen-in monitor (plan 15) has
+    no use for the frames, so we sink the raw RTP and save the decode CPU.
+    """
+    chain = Gst.parse_bin_from_description('queue ! fakesink async=false', True)
+    pipeline.add(chain)
+    chain.set_state(Gst.State.PLAYING)
+    return chain
+
+
 class MonitorSession:
     """Per-subscriber sendrecv session: publishes Pi media AND receives the
     base station's talkback audio on the same audio m-line."""
@@ -477,6 +576,9 @@ class MonitorSession:
         self.rxvol = None
         self._making_offer = False
         self._last_offer_ts = 0.0
+        self._played_pending_offer = False
+        self._fallback_registered = False
+        self._pipeline_gen = 0  # bumped by build(); stale offers from old gens are discarded
         self._mid_map = {}
         self.pipeline = None
         self.build()
@@ -487,13 +589,26 @@ class MonitorSession:
         if self.pipeline:
             self.pipeline.set_state(Gst.State.NULL)
             self.pipeline = None
+        # Reset closing/offer state so the rebuilt pipeline can negotiate
+        # fresh.  Called from the regression handler after close().
+        self._closing = False
+        self._making_offer = False
+        self._pipeline_gen += 1
         width, height = DIMS.get(self.agent.resolution, DIMS['720p'])
         cfg_video = self.agent.config.get('videoDevice') or VIDEO_DEVICE
         cfg_audio = self.agent.config.get('audioDevice') or AUDIO_DEVICE
         # VIDEO_ENCODER lets you force the H.264 encoder (e.g. x264enc on Pis
         # whose hardware v4l2h264enc misbehaves, or for headless test sources).
-        enc = os.environ.get('VIDEO_ENCODER') or (
-            'v4l2h264enc' if gst_element_exists('v4l2h264enc') else 'x264enc')
+        env_enc = os.environ.get('VIDEO_ENCODER')
+        if env_enc:
+            enc = env_enc
+        elif gst_element_exists('v4l2h264enc') and test_encoder('v4l2h264enc'):
+            enc = 'v4l2h264enc'
+        else:
+            if gst_element_exists('v4l2h264enc'):
+                log.warning('v4l2h264enc element exists but failed preroll test — '
+                            'falling back to software x264enc')
+            enc = 'x264enc'
         if enc == 'x264enc':
             log.warning('using software x264enc (higher RAM/CPU on Pi)')
         # Determine video source: libcamerasrc for Pi cameras, v4l2src for USB.
@@ -529,10 +644,11 @@ class MonitorSession:
         self.webrtc.connect('on-negotiation-needed', self.on_negotiation_needed)
         self.webrtc.connect('on-ice-candidate', self.on_ice_candidate)
         self.webrtc.connect('pad-added', self.on_pad_added)
-        # webrtcbin does not auto-create transceivers from linked request pads;
-        # explicitly declare one per media (SENDRECV so talkback audio can be
-        # received). Must happen before the pipeline goes to PLAYING or
-        # on-negotiation-needed never fires.
+        # GStreamer 1.26: request pads (! wb.) don't reliably create
+        # transceivers for all media types. add-transceiver ensures both
+        # video and audio transceivers exist. The combination of add-transceiver
+        # + request pads breaks on-negotiation-needed, but _fallback_create_offer()
+        # handles that by manually creating the offer after the pipeline reaches PLAYING.
         direction = GstWebRTC.WebRTCRTPTransceiverDirection.SENDRECV
         if self.has_video:
             self.webrtc.emit('add-transceiver', direction, None)
@@ -541,6 +657,8 @@ class MonitorSession:
         bus = self.pipeline.get_bus()
         bus.add_signal_watch()
         bus.connect('message', self.on_bus_message)
+        self._played_pending_offer = False
+        self._fallback_registered = False
         self.pipeline.set_state(Gst.State.PLAYING)
 
     def on_pad_added(self, element, pad):
@@ -606,9 +724,14 @@ class MonitorSession:
         # Also debounce: set-remote-description triggers on-negotiation-needed
         # after _making_offer is cleared, causing a feedback loop of rapid
         # OFFERs. Require a minimum gap between offers.
+        if self._closing:
+            log.debug('on-negotiation-needed ignored — session %s is closing',
+                      self.subscriber_id)
+            return
         now = time.time()
         log.info('on-negotiation-needed fired for session %s (making_offer=%s dt=%.1f)',
                  self.subscriber_id, self._making_offer, now - self._last_offer_ts)
+        self._played_pending_offer = True  # signal fired, cancel fallback
         if self._making_offer:
             return
         if now - self._last_offer_ts < 2.0:
@@ -616,13 +739,53 @@ class MonitorSession:
             return
         self._making_offer = True
         self._last_offer_ts = now
-        promise = Gst.Promise.new_with_change_func(self.on_offer_created)
+        gen = self._pipeline_gen
+        promise = Gst.Promise.new_with_change_func(lambda p: self.on_offer_created(p, gen))
         element.emit('create-offer', None, promise)
 
-    def on_offer_created(self, promise):
+    def _fallback_create_offer(self):
+        """Manually create an offer if on-negotiation-needed never fired.
+
+        Called via GLib.timeout_add shortly after the pipeline reaches PLAYING.
+        If the signal already fired, this is a no-op.
+        """
+        if self._closing or self._making_offer or self._played_pending_offer:
+            return False  # stop the timeout
+        if self.pipeline is None or self._closing:
+            return False
+        # Debug: log how many transceivers webrtcbin has
         try:
-            log.info('on_offer_created called for %s', self.subscriber_id)
+            transceivers = self.webrtc.emit('get-transceivers')
+            n_trans = len(transceivers) if transceivers else 0
+        except Exception:
+            n_trans = -1
+        log.info('fallback: on-negotiation-needed did not fire for %s — '
+                 'manually creating offer (%d transceivers)',
+                 self.subscriber_id, n_trans)
+        self._making_offer = True
+        self._last_offer_ts = time.time()
+        gen = self._pipeline_gen
+        promise = Gst.Promise.new_with_change_func(lambda p: self.on_offer_created(p, gen))
+        self.webrtc.emit('create-offer', None, promise)
+        return False  # one-shot timeout
+
+    def on_offer_created(self, promise, gen=None):
+        try:
+            log.info('on_offer_created called for %s (closing=%s gen=%s/%s)',
+                     self.subscriber_id, self._closing, gen, self._pipeline_gen)
             promise.wait()
+            if gen is not None and gen != self._pipeline_gen:
+                log.debug('on_offer_created: pipeline gen mismatch (%s != %s) — '
+                          'discarding stale offer for %s',
+                          gen, self._pipeline_gen, self.subscriber_id)
+                self._making_offer = False
+                return
+            if self._closing:
+                log.debug('on_offer_created: session %s closed while offer '
+                          'was being created — discarding stale offer',
+                          self.subscriber_id)
+                self._making_offer = False
+                return
             reply = promise.get_reply()
             if reply is None:
                 log.error('on_offer_created: reply is None for %s', self.subscriber_id)
@@ -635,6 +798,16 @@ class MonitorSession:
             self.webrtc.emit('set-local-description', offer, promise2)
             text = offer.sdp.as_text()
             self._mid_map = self._parse_mids(text)
+            # Log the number of m= lines to verify video+audio are in the offer
+            m_lines = [l for l in text.splitlines() if l.startswith('m=')]
+            m_types = []
+            for l in m_lines:
+                parts = l.split()
+                media = parts[0].split('=', 1)[1]  # e.g. "video" from "m=video"
+                m_types.append(media)
+            log.info('OFFER SDP for %s: %d m-lines (%s)',
+                     self.subscriber_id, len(m_lines),
+                     ', '.join(m_types))
             self.agent.enqueue_ws({'type': 'OFFER', 'payload': {
                 'to': self.subscriber_id, 'sdp': {'type': 'offer', 'sdp': text}}})
             log.info('OFFER sent for %s', self.subscriber_id)
@@ -719,6 +892,13 @@ class MonitorSession:
                 # subsequent regression through PAUSED → READY.
                 if new == Gst.State.PLAYING and self.has_audio:
                     self._had_audio_while_playing = True
+                # Fallback: if on-negotiation-needed hasn't fired by the time
+                # the pipeline reaches PLAYING, manually trigger create-offer.
+                # GStreamer 1.26 webrtcbin sometimes fails to emit the signal
+                # when multiple media streams are linked via request pads.
+                if new == Gst.State.PLAYING and not self._fallback_registered:
+                    self._fallback_registered = True
+                    GLib.timeout_add(2000, self._fallback_create_offer)
                 # If the pipeline regresses from PLAYING to PAUSED (audio
                 # preroll failure without a bus ERROR), rebuild video-only.
                 if old == Gst.State.PLAYING and new == Gst.State.PAUSED and self.has_audio:
@@ -925,6 +1105,132 @@ class BroadcastSession:
             self.pipeline = None
 
 
+class AudioMonitorSession:
+    """Recvonly *audio-only* listen-in on another room source (plan 15).
+
+    The Pi subscribes (SUBSCRIBE_SOURCE) to a normal camera/mic source and plays
+    its audio through the local ALSA sink. The publisher is the offerer (same as
+    a browser subscriber), so the Pi answers. Because the Pi is headless, any
+    offered video m-line is accepted but its RTP is dropped WITHOUT decoding
+    (make_video_drop_chain) — only the audio is decoded and played.
+    """
+
+    def __init__(self, agent, publisher_id):
+        self.agent = agent
+        self.publisher_id = publisher_id
+        self.rxvol = None
+        self._remote_set = False
+        self.build()
+
+    def _volume(self):
+        v = self.agent.config.get('audioMonitorVolume')
+        if v is None:
+            return self.agent.speaker_volume()
+        try:
+            return max(0.0, min(1.0, float(v)))
+        except (TypeError, ValueError):
+            return self.agent.speaker_volume()
+
+    def build(self):
+        log.info('audio-monitor session listening to %s', self.publisher_id)
+        self.pipeline_str = broadcast_pipeline_str(STUN)
+        self.pipeline = Gst.parse_launch(self.pipeline_str)
+        self.webrtc = self.pipeline.get_by_name('wb')
+        self.webrtc.connect('on-negotiation-needed', self.on_negotiation_needed)
+        self.webrtc.connect('on-ice-candidate', self.on_ice_candidate)
+        self.webrtc.connect('pad-added', self.on_pad_added)
+        bus = self.pipeline.get_bus()
+        bus.add_signal_watch()
+        bus.connect('message', self.on_bus_message)
+        self.pipeline.set_state(Gst.State.PLAYING)
+
+    def on_pad_added(self, element, pad):
+        caps = pad.get_current_caps()
+        if not caps:
+            return
+        st = caps.get_structure(0)
+        media = st.get_string('media')
+        try:
+            if media == 'audio' or 'OPUS' in (st.get_string('encoding-name') or ''):
+                chain, self.rxvol = make_audio_recv_chain(
+                    self.pipeline, self._volume(), False)  # listen-in always plays
+                pad.link(chain.get_static_pad('sink'))
+            elif media == 'video':
+                # Headless: drop video without decoding — audio only.
+                chain = make_video_drop_chain(self.pipeline)
+                pad.link(chain.get_static_pad('sink'))
+        except Exception as e:
+            log.warning('audio-monitor recv link failed: %s', e)
+
+    def on_negotiation_needed(self, element):
+        if not self._remote_set:
+            return
+        try:
+            promise = Gst.Promise.new_with_change_func(self.on_answer_created)
+            element.emit('create-answer', None, promise)
+        except Exception as e:
+            log.warning('audio-monitor create-answer emit failed: %s', e)
+
+    def on_answer_created(self, promise):
+        promise.wait()
+        reply = promise.get_reply()
+        answer = reply.get_value('answer')
+        promise2 = Gst.Promise.new_with_change_func(self.on_local_description_set)
+        self.webrtc.emit('set-local-description', answer, promise2)
+        text = answer.sdp.as_text()
+        self.agent.enqueue_ws({'type': 'ANSWER', 'payload': {
+            'to': self.publisher_id, 'sdp': {'type': 'answer', 'sdp': text}}})
+
+    def on_local_description_set(self, promise):
+        promise.wait()
+
+    def on_ice_candidate(self, element, cand):
+        self.agent.enqueue_ws({'type': 'ICE_CANDIDATE', 'payload': {
+            'to': self.publisher_id,
+            'candidate': cand.candidate,
+            'sdpMLineIndex': cand.sdpMLineIndex,
+            'sdpMid': cand.sdpMid,
+        }})
+
+    def on_bus_message(self, bus, message):
+        return True
+
+    def set_remote_offer(self, sdp_text):
+        _ret, sdp = GstSdp.SDPMessage.new()
+        GstSdp.sdp_message_parse_buffer(sdp_text.encode(), sdp)
+        offer = GstWebRTC.WebRTCSessionDescription.new(GstWebRTC.WebRTCSDPType.OFFER, sdp)
+        self._remote_set = True
+        promise = Gst.Promise.new_with_change_func(self.on_remote_set)
+        self.webrtc.emit('set-remote-description', offer, promise)
+
+    def add_ice(self, cand, mline, mid):
+        if isinstance(cand, dict):
+            cand_str = cand.get('candidate') or ''
+            if mline is None:
+                mline = cand.get('sdpMLineIndex')
+            if mid is None:
+                mid = cand.get('sdpMid')
+        else:
+            cand_str = cand
+        if not cand_str:
+            return
+        if mline is None:
+            mline = 0
+        self.webrtc.emit('add-ice-candidate', mline, cand_str)
+
+    def on_remote_set(self, promise):
+        promise.wait()
+
+    def apply_volume(self):
+        if self.rxvol:
+            self.rxvol.set_property('volume', self._volume())
+
+    def close(self):
+        if self.pipeline:
+            self.pipeline.set_state(Gst.State.NULL)
+            self.pipeline = None
+
+
 class Agent:
     def __init__(self):
         # Stable device id: persist across restarts so the base station doesn't
@@ -943,6 +1249,9 @@ class Agent:
         self.sessions = {}          # subscriberId -> MonitorSession (sendrecv, talkback)
         self.broadcast_sessions = {}  # publisherId -> BroadcastSession (recvonly)
         self.broadcast_sources = {}   # publisherId -> source dict from SOURCE_ADDED
+        self.room_sources = {}        # sourceId -> source dict (all non-broadcast sources seen)
+        self.audio_monitor_sessions = {}  # publisherId -> AudioMonitorSession (recvonly audio)
+        self.audio_monitor_pub = None  # publisherId we're currently subscribed to (listen-in)
         self.ws_queue = asyncio.Queue()
         self.loop = None
         self.reconnect_delay = 1
@@ -955,6 +1264,7 @@ class Agent:
         self._last_resolution = DEFAULT_RESOLUTION
         self._last_framerate = DEFAULT_FRAMERATE
         self._consecutive_failures = 0
+        self._audio_peak_suppressed = False  # set True on first UNKNOWN_TYPE from server
         self._mdns_attempted = False  # only try mDNS once per startup unless re-triggered
 
     def _load_device_id(self):
@@ -1060,6 +1370,8 @@ class Agent:
         return max(0.0, min(1.0, float(v)))
 
     def on_audio_level(self, session, db):
+        if self._audio_peak_suppressed:
+            return
         now = time.time()
         state = {'armed': session.alert_armed, 'last_ts': session.last_level_ts}
         emit_peak, throttled, state = audio_peak_decision(db, state, self.config, now)
@@ -1112,6 +1424,11 @@ class Agent:
             self.config.setdefault('videoDevice', self.video_devices[0]['id'])
         if not AUDIO_DEVICE and self.audio_devices:
             self.config.setdefault('audioDevice', self.audio_devices[0]['id'])
+        # Seed audio-monitor listen-in from env if the base hasn't set it (plan 15 §E).
+        if AUDIO_MONITOR_ENABLED:
+            self.config.setdefault('audioMonitorEnabled', True)
+        if AUDIO_MONITOR_SOURCE:
+            self.config.setdefault('audioMonitorSourceId', AUDIO_MONITOR_SOURCE)
 
     def source_type(self):
         return source_type(self.has_video, self.has_audio)
@@ -1132,10 +1449,14 @@ class Agent:
         if t == 'WELCOME':
             self.device_id = p.get('deviceId', self.device_id)
             self.config = p.get('config', {}) or {}
+            for src in (p.get('sources') or []):
+                if isinstance(src, dict) and not src.get('isBroadcast') and src.get('id'):
+                    self.room_sources[src['id']] = src
             self.enumerate_devices()
             self.pick_defaults()
             self.send_capabilities()
             self.ensure_media()
+            self.reconcile_audio_monitor()
         elif t == 'SUBSCRIBER_JOINED':
             sub = p.get('subscriberId')
             is_broadcast = p.get('isBroadcast')
@@ -1161,6 +1482,14 @@ class Agent:
                     sess = BroadcastSession(self, frm)
                     self.broadcast_sessions[frm] = sess
                 sess.set_remote_offer(p['sdp']['sdp'])
+            elif frm == self.audio_monitor_pub or frm in self.audio_monitor_sessions:
+                # Listen-in (plan 15): we subscribed to this source, so the
+                # publisher offers and we answer with an audio-only recv session.
+                sess = self.audio_monitor_sessions.get(frm)
+                if not sess:
+                    sess = AudioMonitorSession(self, frm)
+                    self.audio_monitor_sessions[frm] = sess
+                sess.set_remote_offer(p['sdp']['sdp'])
             else:
                 # The Pi is the offerer on the monitor PC; the base never offers
                 # there. Ignore (a renegotiation offer would need answerer logic).
@@ -1178,6 +1507,9 @@ class Agent:
                 sess = self.broadcast_sessions.get(frm)
                 if sess:
                     sess.add_ice(p.get('candidate'), p.get('sdpMLineIndex'), p.get('sdpMid'))
+            elif frm in self.audio_monitor_sessions:
+                self.audio_monitor_sessions[frm].add_ice(
+                    p.get('candidate'), p.get('sdpMLineIndex'), p.get('sdpMid'))
             elif frm in self.sessions:
                 self.sessions[frm].add_ice(p.get('candidate'), p.get('sdpMLineIndex'), p.get('sdpMid'))
         elif t == 'TALK_ENABLED':
@@ -1210,6 +1542,11 @@ class Agent:
                 self.broadcast_sources[pub] = src
                 log.info('subscribing to broadcast from %s', pub)
                 self.enqueue_ws({'type': 'SUBSCRIBE_BROADCAST', 'payload': {'publisherId': pub}})
+            elif not src.get('isBroadcast') and src.get('id'):
+                # Track normal sources so the audio-monitor resolver (plan 15)
+                # can pick a listen-in target (e.g. 'auto' or a late-arriving one).
+                self.room_sources[src['id']] = src
+                self.reconcile_audio_monitor()
         elif t == 'SOURCE_REMOVED':
             sid = p.get('sourceId')
             for pub, src in list(self.broadcast_sources.items()):
@@ -1220,11 +1557,17 @@ class Agent:
                     if sess:
                         sess.close()
                     del self.broadcast_sources[pub]
+            if sid in self.room_sources:
+                del self.room_sources[sid]
+                self.reconcile_audio_monitor()
         elif t == 'CONFIG_UPDATED':
             self.config = p.get('config', {}) or {}
             self.apply_config()
         elif t == 'ERROR':
             log.warning('server error: %s', p)
+            if p.get('message', '').startswith('Unknown message type: AUDIO_PEAK'):
+                self._audio_peak_suppressed = True
+                log.info('server does not support AUDIO_PEAK — suppressed')
 
     def _teardown_all_sessions(self):
         """Close every active session and release camera/mic devices.
@@ -1238,7 +1581,34 @@ class Agent:
             sess.close()
         self.broadcast_sessions.clear()
         self.broadcast_sources.clear()
+        for sess in self.audio_monitor_sessions.values():
+            sess.close()
+        self.audio_monitor_sessions.clear()
+        self.audio_monitor_pub = None
+        self.room_sources.clear()
         self.talkback_active = False
+
+    def reconcile_audio_monitor(self):
+        """Subscribe/unsubscribe the headless audio-only listen-in (plan 15).
+
+        Resolves the desired publisher from config + known room sources and, if
+        it changed, tears down the old AudioMonitorSession (UNSUBSCRIBE_SOURCE)
+        and subscribes to the new one (SUBSCRIBE_SOURCE). The publisher then
+        offers and AudioMonitorSession answers audio-only."""
+        target = audio_monitor_target(self.config, self.room_sources.values(), self.device_id)
+        if target == self.audio_monitor_pub:
+            return
+        old = self.audio_monitor_pub
+        if old:
+            log.info('audio-monitor: stopping listen-in on %s', old)
+            self.enqueue_ws({'type': 'UNSUBSCRIBE_SOURCE', 'payload': {'publisherId': old}})
+            sess = self.audio_monitor_sessions.pop(old, None)
+            if sess:
+                sess.close()
+        self.audio_monitor_pub = target
+        if target:
+            log.info('audio-monitor: starting listen-in on %s', target)
+            self.enqueue_ws({'type': 'SUBSCRIBE_SOURCE', 'payload': {'publisherId': target}})
 
     def ensure_media(self):
         self.enumerate_devices()
@@ -1261,6 +1631,11 @@ class Agent:
         for s in self.broadcast_sessions.values():
             if s.rxvol:
                 s.rxvol.set_property('volume', self.speaker_volume())
+        for s in self.audio_monitor_sessions.values():
+            s.apply_volume()
+
+        # Listen-in target may have changed (enabled/disabled or new source id).
+        self.reconcile_audio_monitor()
 
         # If broadcasts were just disabled, tear down any active broadcast sessions
         # AND proactively unsubscribe from any sources we'd tracked (a source may
@@ -1358,13 +1733,27 @@ class Agent:
             except Exception as e:
                 log.warning('device refresh failed: %s', e)
 
-    async def run(self):
+    async def _wifi_monitor(self):
+        """Poll WiFi connectivity every 10s; tear down hotspot once connected."""
+        from captive_portal import check_wifi_connected, teardown_hotspot
+        while True:
+            await asyncio.sleep(10)
+            if check_wifi_connected():
+                log.info('WiFi detected — tearing down hotspot')
+                teardown_hotspot()
+                return
+
+    async def run(self, hotspot_active=False):
         self.loop = asyncio.get_event_loop()
         _load_gst()
         glib_loop = GLib.MainLoop()
         import threading
         threading.Thread(target=glib_loop.run, daemon=True).start()
         import websockets
+
+        # If a hotspot was started, monitor for WiFi and tear it down when ready.
+        if hotspot_active:
+            asyncio.ensure_future(self._wifi_monitor())
 
         # If no SERVER_URL is configured, try mDNS discovery before first connect.
         if not WS_URL:
@@ -1422,9 +1811,33 @@ class Agent:
 
 
 def main():
+    from captive_portal import check_wifi_connected, setup_hotspot
+    from captive_portal import CaptivePortal, get_device_name
+
+    hotspot_active = False
+
+    # Check WiFi for up to 60 seconds before giving up.
+    if not WS_URL:
+        log.info('checking WiFi connectivity...')
+        for i in range(60):
+            if check_wifi_connected():
+                log.info('WiFi connected')
+                break
+            if i == 0:
+                log.info('no WiFi detected — starting captive portal in %ds', 60)
+            time.sleep(1)
+        else:
+            # WiFi not available after 60s — set up hotspot
+            log.info('WiFi unavailable — setting up hotspot')
+            device_name = HOTSPOT_NAME or get_device_name()
+            portal = CaptivePortal()
+            portal.start()
+            setup_hotspot(device_name)
+            hotspot_active = True
+
     agent = Agent()
     try:
-        asyncio.run(agent.run())
+        asyncio.run(agent.run(hotspot_active=hotspot_active))
     except KeyboardInterrupt:
         log.info('stopped')
 
