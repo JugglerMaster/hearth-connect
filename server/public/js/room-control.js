@@ -350,9 +350,11 @@ let streams = {};
     var fsEl = document.fullscreenElement || document.webkitFullscreenElement;
     if (!fsEl) {
       fsActive = true;
-      if (el.requestFullscreen) el.requestFullscreen().catch(function () { fsActive = false; });
+      // iOS Safari only supports fullscreen on <video> elements via the native
+      // media API. Try that first; fall back to the Fullscreen API for desktop.
+      if (monitorVideo.webkitEnterFullscreen) monitorVideo.webkitEnterFullscreen();
+      else if (el.requestFullscreen) el.requestFullscreen().catch(function () { fsActive = false; });
       else if (el.webkitRequestFullscreen) el.webkitRequestFullscreen();
-      else if (monitorVideo.webkitEnterFullscreen) monitorVideo.webkitEnterFullscreen();
     } else {
       fsActive = false;
       if (document.exitFullscreen) document.exitFullscreen().catch(function () {});

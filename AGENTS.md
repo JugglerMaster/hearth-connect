@@ -114,6 +114,10 @@ hearth-connect/
 └── README.md
 ```
 
+> **Note:** `android/app/src/main/assets/public` is a symlink to `server/public/`. Edits to
+> `server/public/` automatically apply to both the Node server and the Android hub — no
+> separate copy step needed.
+
 ## Client-Side Verification (ad-hoc)
 
 No client test suite exists. Browser JS in `server/public/js/*.js` can be
