@@ -28,6 +28,7 @@ import os
 import random
 import ssl
 import string
+import socket
 import subprocess
 import time
 
@@ -44,7 +45,7 @@ if WS_URL and not WS_URL.startswith('ws'):
     WS_URL = 'wss://' + WS_URL
 # WS_URL is empty string when SERVER_URL is unset — triggers mDNS discovery.
 ROOM_ID = os.environ.get('ROOM_ID', 'default')
-DEVICE_LABEL = os.environ.get('DEVICE_LABEL', 'Pi Agent')
+DEVICE_LABEL = os.environ.get('DEVICE_LABEL', socket.gethostname())
 VIDEO_DEVICE = os.environ.get('VIDEO_DEVICE', '')
 AUDIO_DEVICE = os.environ.get('AUDIO_DEVICE', '')
 # Default resolution/framerate; overridable at runtime from the base station's
@@ -1200,6 +1201,7 @@ class Agent:
         id_dir = _os.path.dirname(CONFIG_FILE) or '.'
         self.device_id_file = _os.path.join(id_dir, 'device_id')
         self.device_id = self._load_device_id()
+        self.device_label = self._load_device_label()
         self.ws = None
         self.has_video = False
         self.has_audio = False
@@ -1226,6 +1228,7 @@ class Agent:
         self._consecutive_failures = 0
         self._audio_peak_suppressed = False  # set True on first UNKNOWN_TYPE from server
         self._mdns_attempted = False  # only try mDNS once per startup unless re-triggered
+        self._label_persisted = False  # persist device_label on first WELCOME
 
     def _load_device_id(self):
         """Return a stable device id, generating and persisting one on first run."""
@@ -1246,6 +1249,33 @@ class Agent:
         except Exception as e:
             log.warning('could not persist device id: %s', e)
         return new_id
+
+    def _load_device_label(self):
+        """Return the device label: env var > persisted file > hostname."""
+        env_label = os.environ.get('DEVICE_LABEL', '').strip()
+        if env_label:
+            return env_label
+        label_file = os.path.join(os.path.dirname(self.device_id_file) or '.', 'device_label')
+        try:
+            if os.path.exists(label_file):
+                with open(label_file) as f:
+                    existing = f.read().strip()
+                if existing:
+                    return existing
+        except Exception:
+            pass
+        return socket.gethostname()
+
+    def _persist_device_label(self, label):
+        """Write the device label so it survives reinstalls."""
+        label_file = os.path.join(os.path.dirname(self.device_id_file) or '.', 'device_label')
+        try:
+            os.makedirs(os.path.dirname(label_file) or '.', exist_ok=True)
+            with open(label_file, 'w') as f:
+                f.write(label)
+            log.info('persisted device label=%s to %s', label, label_file)
+        except Exception as e:
+            log.warning('could not persist device label: %s', e)
 
     async def _discover_server_via_mdns(self):
         """Query mDNS for a Hearth-Connect server. Updates WS_URL on success."""
@@ -1409,6 +1439,9 @@ class Agent:
         if t == 'WELCOME':
             self.device_id = p.get('deviceId', self.device_id)
             self.config = p.get('config', {}) or {}
+            if not self._label_persisted:
+                self._persist_device_label(self.device_label)
+                self._label_persisted = True
             for src in (p.get('sources') or []):
                 if isinstance(src, dict) and not src.get('isBroadcast') and src.get('id'):
                     self.room_sources[src['id']] = src
@@ -1580,7 +1613,7 @@ class Agent:
     def publish_source(self):
         self.enqueue_ws({'type': 'PUBLISH_SOURCE', 'payload': {
             'sourceId': self.device_id + '-src',
-            'label': DEVICE_LABEL,
+            'label': self.device_label,
             'type': self.source_type(),
         }})
 
@@ -1738,7 +1771,7 @@ class Agent:
                     self._consecutive_failures = 0
                     await ws.send(json.dumps({'type': 'JOIN_ROOM', 'payload': {
                         'roomId': ROOM_ID, 'deviceId': self.device_id,
-                        'deviceType': 'kiosk', 'label': DEVICE_LABEL}}))
+                        'deviceType': 'kiosk', 'label': self.device_label}}))
                     pump = asyncio.ensure_future(self.ws_pump())
                     # Periodically re-scan for devices so cameras plugged in
                     # after boot (or slow to enumerate) get reported.
