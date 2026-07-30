@@ -59,6 +59,28 @@ DEFAULT_FRAMERATE = int(os.environ.get('FRAMERATE', '24'))
 # unset or missing, the agent recreates it from defaults.
 CONFIG_FILE = os.environ.get('CONFIG_FILE', '/opt/hearth-pi-agent/config.env')
 
+def _read_env_value(key):
+    """Read a KEY=VALUE entry from the env file (CONFIG_FILE).
+
+    Returns the stripped value, or None if the key is absent/blank. Does NOT
+    fall back to os.environ (use os.environ directly for that). Comments and
+    blank lines are ignored. Used to recover persisted settings like DEVICE_ID
+    without shelling out to a parser.
+    """
+    try:
+        if os.path.exists(CONFIG_FILE):
+            with open(CONFIG_FILE) as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith('#') or '=' not in line:
+                        continue
+                    k, _, v = line.partition('=')
+                    if k.strip() == key:
+                        return v.strip() or None
+    except Exception:
+        pass
+    return None
+
 # Test-source mode: substitute videotestsrc/audiotestsrc for v4l2src/alsasrc so
 # the agent runs on a headless box with no real camera/mic (used by the e2e
 # smoke test, plan 11). Set TEST_SOURCE=1 to enable.
@@ -86,6 +108,15 @@ AUDIO_MONITOR_ENABLED = (_am_enabled_raw == '1') if _am_enabled_raw else bool(AU
 # GStreamer pipeline; on a 1GB Pi this bounds memory/CPU. Beyond the cap we
 # politely tell the server the subscriber left so the base doesn't hang.
 MAX_SUBSCRIBERS = int(os.environ.get('MAX_SUBSCRIBERS', '4'))
+
+# Grace (seconds) before tearing down a MonitorSession after its subscriber
+# leaves (SUBSCRIBER_LEFT). The Pi keeps the camera/audio pipeline LIVE across
+# a viewer's screen-lock (WebSocket drop → SUBSCRIBER_LEFT) so the audio keeps
+# playing through the lock — the viewer's native-fullscreen media session on iOS
+# survives the lock as long as RTP keeps arriving. A reconnect re-subscribes and
+# gets a fresh session (new OFFER). The grace is bounded so a truly-gone viewer
+# eventually frees the camera instead of leaving the red light on forever.
+MONITOR_LINGER_S = int(os.environ.get('MONITOR_LINGER_S', '600'))  # 10 minutes
 
 DIMS = {'480p': (640, 480), '720p': (1280, 720), '1080p': (1920, 1080)}
 STUN = 'stun://stun.l.google.com:19302'
@@ -1209,6 +1240,11 @@ class Agent:
         self.video_devices = []
         self.audio_devices = []
         self.sessions = {}          # subscriberId -> MonitorSession (sendrecv, talkback)
+        # Linger bookkeeping: subscriberId -> asyncio timer handle / ts, so a
+        # session kept alive after SUBSCRIBER_LEFT can be torn down after the
+        # grace or cancelled when the subscriber re-subscribes.
+        self._stale_timers = {}
+        self._stale_since = {}
         self.broadcast_sessions = {}  # publisherId -> BroadcastSession (recvonly)
         self.broadcast_sources = {}   # publisherId -> source dict from SOURCE_ADDED
         self.room_sources = {}        # sourceId -> source dict (all non-broadcast sources seen)
@@ -1231,24 +1267,72 @@ class Agent:
         self._label_persisted = False  # persist device_label on first WELCOME
 
     def _load_device_id(self):
-        """Return a stable device id, generating and persisting one on first run."""
-        import os as _os
+        """Return a stable per-install device id.
+
+        Precedence:
+          1. explicit DEVICE_ID env var (set via the systemd EnvironmentFile)
+          2. DEVICE_ID persisted inside config.env (CONFIG_FILE)
+          3. legacy device_id file next to config.env (older installs)
+          4. generate 'pi-<rand>' and persist to BOTH config.env and the
+             legacy file so every restart reports the SAME id to the server.
+
+        A stable id is what keeps the server from accumulating duplicate
+        "Pi Agent" entries and from orphaning subscriptions on reconnect: the
+        server keys a device's sources/subscriptions by this id, so a fresh
+        random id every launch looks like a brand-new device.
+        """
+        env_id = os.environ.get('DEVICE_ID', '').strip()
+        if env_id:
+            return env_id
+        cfg_id = _read_env_value('DEVICE_ID')
+        if cfg_id:
+            return cfg_id
+        # Legacy: a device_id file next to config.env (older installs).
         try:
+            import os as _os
             if _os.path.exists(self.device_id_file):
                 with open(self.device_id_file) as f:
                     existing = f.read().strip()
                 if existing:
+                    self._persist_device_id(existing)  # migrate into config.env
                     return existing
         except Exception:
             pass
         new_id = 'pi-' + rand_id()
+        self._persist_device_id(new_id)
+        return new_id
+
+    def _persist_device_id(self, device_id):
+        """Persist device_id to the legacy file and to config.env (DEVICE_ID=)."""
         try:
+            import os as _os
             _os.makedirs(_os.path.dirname(self.device_id_file) or '.', exist_ok=True)
             with open(self.device_id_file, 'w') as f:
-                f.write(new_id)
+                f.write(device_id)
         except Exception as e:
-            log.warning('could not persist device id: %s', e)
-        return new_id
+            log.warning('could not persist device id file: %s', e)
+        try:
+            lines = []
+            if os.path.exists(CONFIG_FILE):
+                with open(CONFIG_FILE) as f:
+                    lines = f.read().splitlines()
+            out = []
+            replaced = False
+            for line in lines:
+                key = line.split('=', 1)[0].strip() if '=' in line else ''
+                if key == 'DEVICE_ID':
+                    out.append('DEVICE_ID=' + device_id)
+                    replaced = True
+                    continue
+                out.append(line)
+            if not replaced:
+                out.append('DEVICE_ID=' + device_id)
+            os.makedirs(os.path.dirname(CONFIG_FILE) or '.', exist_ok=True)
+            with open(CONFIG_FILE, 'w') as f:
+                f.write('\n'.join(out) + '\n')
+            log.info('persisted DEVICE_ID=%s to %s', device_id, CONFIG_FILE)
+        except Exception as e:
+            log.warning('could not persist DEVICE_ID to %s: %s', CONFIG_FILE, e)
 
     def _load_device_label(self):
         """Return the device label: env var > persisted file > hostname."""
@@ -1437,7 +1521,15 @@ class Agent:
         p = msg.get('payload', {})
         log.info('received msg type=%s payload_keys=%s', t, list(p.keys()) if isinstance(p, dict) else p)
         if t == 'WELCOME':
-            self.device_id = p.get('deviceId', self.device_id)
+            # Keep our stable local device id authoritative. The server echoes
+            # the id we sent in JOIN_ROOM, so this is normally a no-op — but if
+            # the server ever returns a different id we must NOT adopt it, or
+            # every reconnect would look like a new device (orphaned sources /
+            # subscriptions, duplicate "Pi Agent" entries).
+            server_dev = p.get('deviceId')
+            if server_dev and server_dev != self.device_id:
+                log.warning('server WELCOME deviceId %r differs from local %r '
+                            '— keeping local stable id', server_dev, self.device_id)
             self.config = p.get('config', {}) or {}
             if not self._label_persisted:
                 self._persist_device_label(self.device_label)
@@ -1455,17 +1547,42 @@ class Agent:
             is_broadcast = p.get('isBroadcast')
             if is_broadcast:
                 return  # broadcast sessions are driven by the base's OFFER
-            if sub and sub not in self.sessions:
-                if len(self.sessions) >= MAX_SUBSCRIBERS:
+            existing = self.sessions.get(sub)
+            if existing is not None:
+                # Viewer reconnected after a screen-lock (or re-subscribed).
+                # The session was kept alive (linger) so audio kept playing
+                # through the lock; rebuild it fresh so a NEW OFFER is generated
+                # to the viewer's new peer connection. The old pipeline is torn
+                # down first (build() handles that) to free the camera device.
+                self._cancel_stale(sub)
+                existing.close()
+                if self.loop:
+                    # Small delay so the old pipeline releases /dev/video* before
+                    # the new one opens it (avoids the device-busy race).
+                    self.loop.call_later(0.25, existing.build)
+                else:
+                    existing.build()
+                return
+            if len(self.sessions) >= MAX_SUBSCRIBERS:
+                # Make room for the new viewer by evicting the oldest lingering
+                # (stale) session. This prevents a screen-locked viewer from
+                # permanently blocking a different one from connecting.
+                evicted = self._evict_oldest_stale()
+                if evicted is None:
                     log.warning('subscriber cap %d reached — rejecting %s', MAX_SUBSCRIBERS, sub)
                     self.enqueue_ws({'type': 'SUBSCRIBER_LEFT', 'payload': {'subscriberId': sub}})
                     return
-                self.sessions[sub] = MonitorSession(self, sub)
+            self.sessions[sub] = MonitorSession(self, sub)
         elif t == 'SUBSCRIBER_LEFT':
             sub = p.get('subscriberId')
-            sess = self.sessions.pop(sub, None)
+            sess = self.sessions.get(sub)
             if sess:
-                sess.close()
+                # DO NOT close immediately. A viewer's WebSocket drops the
+                # instant the iOS screen locks, but the native-fullscreen media
+                # session keeps audio alive as long as RTP keeps arriving. Keep
+                # the pipeline live for a grace period (MONITOR_LINGER_S); a
+                # re-subscribe within that window reuses/rebuilds the session.
+                self._mark_stale(sub)
         elif t == 'OFFER':
             frm = p.get('from')
             is_broadcast = p.get('isBroadcast')
@@ -1562,11 +1679,57 @@ class Agent:
                 self._audio_peak_suppressed = True
                 log.info('server does not support AUDIO_PEAK — suppressed')
 
+    def _mark_stale(self, sub):
+        """Keep a session alive after SUBSCRIBER_LEFT; schedule grace teardown."""
+        if sub in self._stale_timers:
+            return  # already lingering
+        self._stale_since[sub] = time.time()
+        if self.loop:
+            self._stale_timers[sub] = self.loop.call_later(
+                MONITOR_LINGER_S, self._teardown_stale, sub)
+        log.info('subscriber %s left — lingering session %ds for lock-audio',
+                 sub, MONITOR_LINGER_S)
+
+    def _cancel_stale(self, sub):
+        h = self._stale_timers.pop(sub, None)
+        if h:
+            h.cancel()
+        self._stale_since.pop(sub, None)
+
+    def _teardown_stale(self, sub):
+        self._stale_timers.pop(sub, None)
+        self._stale_since.pop(sub, None)
+        sess = self.sessions.pop(sub, None)
+        if sess:
+            log.info('monitor session %s lingered %ds — closing', sub, MONITOR_LINGER_S)
+            sess.close()
+
+    def _evict_oldest_stale(self):
+        """Close the oldest lingering session to free a slot for a new viewer."""
+        oldest = None
+        oldest_ts = None
+        for s, ts in self._stale_since.items():
+            if oldest is None or ts < oldest_ts:
+                oldest = s
+                oldest_ts = ts
+        if oldest is None:
+            return None
+        self._cancel_stale(oldest)
+        sess = self.sessions.pop(oldest, None)
+        if sess:
+            log.info('evicting stale monitor session %s for new viewer', oldest)
+            sess.close()
+        return oldest
+
     def _teardown_all_sessions(self):
         """Close every active session and release camera/mic devices.
 
         Called when the WebSocket drops so orphaned GStreamer pipelines don't
         keep the camera red light on or block device access on reconnect."""
+        for h in self._stale_timers.values():
+            h.cancel()
+        self._stale_timers.clear()
+        self._stale_since.clear()
         for sess in self.sessions.values():
             sess.close()
         self.sessions.clear()

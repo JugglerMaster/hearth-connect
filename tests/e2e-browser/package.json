@@ -1,0 +1,13 @@
+{
+  "name": "hearth-e2e-browser",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node e2e-base-station.mjs",
+    "test:pi-interop": "node e2e-pi-agent-interop.mjs"
+  },
+  "devDependencies": {
+    "playwright": "^1.45.0"
+  }
+}

@@ -32,6 +32,8 @@ import java.io.File
 import java.net.NetworkInterface
 import java.security.KeyStore
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 class SignalingServer(private val context: Context, private val listener: ServerEventListener? = null) {
     private val assets: AssetManager = context.assets
@@ -43,6 +45,20 @@ class SignalingServer(private val context: Context, private val listener: Server
     private val connToDevice = ConcurrentHashMap<String, String>()         // connId → deviceId
     private val connIp = ConcurrentHashMap<String, String>()              // connId → remote IP
     private val recentlySeen = ConcurrentHashMap<String, RecentlySeenEntry>()
+
+    // ─── Grace period for subscriber/source teardown ───────
+    // AGENTS.md: "Device offline: 60s grace period server-side before removing
+    // source from room." A brief WebSocket drop (e.g. an iOS device locking the
+    // screen, which suspends the socket) must NOT immediately tear down the
+    // publisher's stream — otherwise the subscriber's received audio dies the
+    // instant the screen locks. We defer SUBSCRIBER_LEFT / SOURCE_REMOVED and the
+    // offline marking by GRACE_MS, and cancel the pending teardown if the same
+    // device reconnects within the window (so a screen lock that unlocks <60s
+    // later keeps its camera/stream). A genuine departure still frees the
+    // resource after the grace, which is what lets the next watcher take over.
+    private val GRACE_MS = 60_000L
+    private val teardownScheduler = Executors.newSingleThreadScheduledExecutor()
+    private val pendingTeardown = ConcurrentHashMap<String, java.util.concurrent.ScheduledFuture<*>>()
     private val deviceConfigs = ConcurrentHashMap<String, JSONObject>()    // deviceId → config
     private var connIdCounter = 0
 
@@ -143,10 +159,43 @@ class SignalingServer(private val context: Context, private val listener: Server
 
         if (client == null || client.connId != connId) return
 
-        Log.i(TAG, "Device disconnected: $deviceId (${client.deviceType})")
+        Log.i(TAG, "Device disconnected (grace ${GRACE_MS}ms): $deviceId (${client.deviceType})")
+
+        // Capture the state we need for teardown, then defer it. The client
+        // object is left in `clients` (with its subscriptions/sources intact)
+        // so a quick reconnect within the grace window can cancel this.
+        val staleConnId = client.connId
+        val subscriptions = client.subscriptions.toList()
+        val sources = client.sources.toList()
+
+        val future = teardownScheduler.schedule({
+            try {
+                // Only tear down if the device has not reconnected: a reconnect
+                // updates client.connId, so a still-stale connId means it's the
+                // same dropped connection.
+                val c = clients[deviceId]
+                if (c != null && c.connId == staleConnId) {
+                    performTeardown(deviceId, subscriptions, sources)
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "grace teardown error for $deviceId: ${e.message}")
+            }
+        }, GRACE_MS, TimeUnit.MILLISECONDS)
+        pendingTeardown[deviceId] = future
+    }
+
+    private fun cancelGrace(deviceId: String) {
+        pendingTeardown.remove(deviceId)?.cancel(false)
+    }
+
+    private fun performTeardown(deviceId: String, subscriptions: List<String>, sources: List<MediaSource>) {
+        pendingTeardown.remove(deviceId)
+        val client = clients[deviceId] ?: return
+
+        Log.i(TAG, "Grace expired — removing $deviceId")
 
         // Notify publishers this subscriber left
-        for (publisherId in client.subscriptions) {
+        for (publisherId in subscriptions) {
             sendToDevice(publisherId, JSONObject().apply {
                 put("type", "SUBSCRIBER_LEFT")
                 put("payload", JSONObject().apply { put("subscriberId", deviceId) })
@@ -155,7 +204,7 @@ class SignalingServer(private val context: Context, private val listener: Server
         client.subscriptions.clear()
 
         // Remove sources and notify
-        for (source in client.sources) {
+        for (source in sources) {
             broadcastAll(JSONObject().apply {
                 put("type", "SOURCE_REMOVED")
                 put("payload", JSONObject().apply { put("sourceId", source.id) })
@@ -212,6 +261,7 @@ class SignalingServer(private val context: Context, private val listener: Server
             "REQUEST_TALK" -> handleRequestTalk(connId, payload)
             "STOP_TALK" -> handleStopTalk(connId, payload)
             "CAPABILITIES" -> handleCapabilities(connId, payload)
+            "AUDIO_PEAK" -> handleAudioPeak(connId, payload)
             "REMOVE_DEVICE" -> handleRemoveDevice(connId, payload)
             "DOORBELL" -> handleDoorbell(connId, payload)
             "CALL_STATE" -> handleCallState(connId, payload)
@@ -301,6 +351,11 @@ class SignalingServer(private val context: Context, private val listener: Server
             }
         }
 
+        // Cancel any pending grace-period teardown — a reconnect means the
+        // device is back (e.g. an iOS screen lock that released the socket),
+        // so we keep its subscriptions/sources and don't tear down the stream.
+        cancelGrace(deviceId)
+
         // Cancel existing connection for reconnecting device
         val existingClient = clients[deviceId]
         if (existingClient != null && existingClient.connId != connId) {
@@ -314,15 +369,31 @@ class SignalingServer(private val context: Context, private val listener: Server
             deviceConfigs[deviceId] = defaultConfig(deviceType)
         }
 
-        val client = ConnectedClient(
-            connId = connId,
-            deviceId = deviceId,
-            deviceType = deviceType,
-            roomId = roomId,
-            label = label,
-            ip = connIp[connId],
-            connectedAt = System.currentTimeMillis()
-        )
+        // Reuse the existing client object when reconnecting so its
+        // subscriptions/sources survive a brief drop (grace period). A fresh
+        // device (no existing client) gets a new object.
+        val client = if (existingClient != null && existingClient.connId != connId) {
+            // Reconnect within the grace window: preserve subscriptions/sources
+            // by updating the existing client in place (only the mutable fields).
+            existingClient.connId = connId
+            existingClient.label = label
+            existingClient.ip = connIp[connId]
+            existingClient.connectedAt = System.currentTimeMillis()
+            existingClient
+        } else if (existingClient != null) {
+            existingClient.connId = connId
+            existingClient
+        } else {
+            ConnectedClient(
+                connId = connId,
+                deviceId = deviceId,
+                deviceType = deviceType,
+                roomId = roomId,
+                label = label,
+                ip = connIp[connId],
+                connectedAt = System.currentTimeMillis()
+            )
+        }
         clients[deviceId] = client
         connToDevice[connId] = deviceId
 
@@ -755,6 +826,23 @@ class SignalingServer(private val context: Context, private val listener: Server
         Log.i(TAG, "Capabilities reported: ${client.deviceId}")
     }
 
+    private fun handleAudioPeak(connId: String, payload: JSONObject) {
+        val client = getClient(connId) ?: return
+        val levelDb = payload.opt("levelDb")
+        // Relay the audio-level reading to every other device (the base station
+        // renders the dB readout / alert highlight from it). Forwarding to the
+        // native hub layer was removed in v0.9, so this only broadcasts.
+        broadcastAll(JSONObject().apply {
+            put("type", "AUDIO_PEAK")
+            put("payload", JSONObject().apply {
+                put("deviceId", client.deviceId)
+                put("levelDb", levelDb)
+                put("peak", payload.opt("peak"))
+                put("ts", payload.opt("ts") ?: System.currentTimeMillis())
+            })
+        }, excludeDeviceId = client.deviceId)
+    }
+
     private fun handleRemoveDevice(connId: String, payload: JSONObject) {
         val client = getClient(connId) ?: return
         if (client.deviceType !in BASE_TYPES) return sendError(connId, "NOT_ALLOWED", "Only base stations can remove devices")
@@ -990,7 +1078,7 @@ class SignalingServer(private val context: Context, private val listener: Server
     // ─── Data classes ────────────────────────────────────────
 
     private data class ConnectedClient(
-        val connId: String,
+        var connId: String,
         val deviceId: String,
         val deviceType: String,
         val roomId: String,
@@ -998,7 +1086,7 @@ class SignalingServer(private val context: Context, private val listener: Server
         var ip: String? = null,
         val sources: MutableList<MediaSource> = mutableListOf(),
         val subscriptions: MutableList<String> = mutableListOf(),
-        val connectedAt: Long,
+        var connectedAt: Long,
         var lastHeartbeat: Long = System.currentTimeMillis(),
         var capabilities: DeviceCapabilities? = null
     )
@@ -1051,16 +1139,22 @@ class SignalingServer(private val context: Context, private val listener: Server
     }
 }
 
-private suspend fun ApplicationCall.serveFromAssets(assets: AssetManager, assetPath: String) {
-    try {
-        assets.open(assetPath).use { stream ->
-            val bytes = stream.readBytes()
-            respondBytes(bytes, contentType = contentTypeFor(assetPath))
-        }
-    } catch (_: Exception) {
-        respondBytes(ByteArray(0), contentType = ContentType.Text.Plain, status = HttpStatusCode.NotFound)
-    }
-}
+ private suspend fun ApplicationCall.serveFromAssets(assets: AssetManager, assetPath: String) {
+     try {
+         assets.open(assetPath).use { stream ->
+             val bytes = stream.readBytes()
+             // Disable caching so iOS Safari always picks up new client builds
+             // (otherwise it serves a stale base-station.js and "fixes" never
+             // reach the device). Dev-only hub; the production path is the Node server.
+             response.headers.append("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+             response.headers.append("Pragma", "no-cache")
+             response.headers.append("Expires", "0")
+             respondBytes(bytes, contentType = contentTypeFor(assetPath))
+         }
+     } catch (_: Exception) {
+         respondBytes(ByteArray(0), contentType = ContentType.Text.Plain, status = HttpStatusCode.NotFound)
+     }
+ }
 
 private fun contentTypeFor(path: String): ContentType = when {
     path.endsWith(".html") -> ContentType.Text.Html

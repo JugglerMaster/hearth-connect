@@ -83,6 +83,7 @@ Edit `/opt/hearth-pi-agent/config.env`:
 |--------------|----------------------------------------------------------------|
 | `SERVER_URL` | `wss://host:8090` of your Hearth-Connect server. **Leave blank to auto-discover the server via mDNS** on the local network. |
 | `ROOM_ID`    | Room to join (default `default`)                               |
+| `DEVICE_ID`  | Stable per-install identity the agent reports to the server. **Leave blank** — the agent generates a random `pi-xxxxxxxx` id and persists it here on first run. It must stay constant for the life of the install: a changing id makes every restart look like a new device, orphaning subscriptions and duplicating the "Pi Agent" entry on the base station. An explicit `DEVICE_ID` env var overrides this line. |
 | `DEVICE_LABEL` | Name shown in the base station device list                   |
 | `VIDEO_DEVICE` | V4L2 path, e.g. `/dev/video0`; blank = first available      |
 | `AUDIO_DEVICE` | ALSA id, e.g. `hw:1,0`; blank = first available             |

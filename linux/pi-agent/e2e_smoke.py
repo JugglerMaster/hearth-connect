@@ -49,6 +49,23 @@ except Exception:
     pass
 
 
+def _no_verify_ssl():
+    # Match the agent: accept the hub's self-signed cert AND force HTTP/1.1 ALPN.
+    # Ktor/Netty auto-negotiates h2 over TLS; without the http/1.1 ALPN the
+    # websockets client's Upgrade gets reset (connection closed, no HTTP reply),
+    # so the handshake silently fails against the Android hub (and any TLS
+    # server). Required for the harness to work with the tablet's hub.
+    import ssl
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    try:
+        ctx.set_alpn_protocols(['http/1.1'])
+    except Exception:
+        pass
+    return ctx
+
+
 def _load_config_env():
     cfg = {}
     path = os.path.join(_HERE, 'config.env')
@@ -127,7 +144,7 @@ class PiAgentE2ETest(unittest.TestCase):
         import websockets
         got = {'welcome': False, 'capabilities': False, 'offer': False}
         try:
-            async with websockets.connect(SERVER_URL, max_size=None) as ws:
+            async with websockets.connect(SERVER_URL, max_size=None, ssl=_no_verify_ssl()) as ws:
                 base_id = 'e2e-base-' + os.urandom(4).hex()
                 await ws.send(json.dumps({'type': 'JOIN_ROOM', 'payload': {
                     'roomId': ROOM_ID, 'deviceId': base_id,

@@ -351,7 +351,8 @@ let streams = {};
     if (!fsEl) {
       fsActive = true;
       // iOS Safari only supports fullscreen on <video> elements via the native
-      // media API. Try that first; fall back to the Fullscreen API for desktop.
+      // media API — use it, since the native iOS player keeps audio playing
+      // after the screen locks. Fall back to the Fullscreen API for desktop.
       if (monitorVideo.webkitEnterFullscreen) monitorVideo.webkitEnterFullscreen();
       else if (el.requestFullscreen) el.requestFullscreen().catch(function () { fsActive = false; });
       else if (el.webkitRequestFullscreen) el.webkitRequestFullscreen();

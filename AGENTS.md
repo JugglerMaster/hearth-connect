@@ -127,6 +127,35 @@ minimal DOM shim (stub `document`, `window`, `localStorage`, `getUserMedia`,
 examples. Catches JS-level races (e.g. press-and-hold broadcast fast-tap)
 but not real WebRTC media or iOS Safari behavior.
 
+### E2E browser interop (Playwright ↔ Pi agent)
+
+`tests/e2e-browser/e2e-pi-agent-interop.mjs` is the automated WebRTC interop
+test. It spawns the real GStreamer agent (`TEST_SOURCE=1` → videotestsrc/
+audiotestsrc, no camera/mic) against a live server, then loads the real client
+JS (`server/public/js/{webrtc,signaling}.js`) into Chromium and drives it as a
+subscriber: it joins the room, subscribes to the agent's source, answers the
+agent's OFFER, and asserts `RTCPeerConnection` reaches `connected` with a
+received track. This is the only automated check that actually exercises the
+**GStreamer `mid` mismatch fix** (`webrtc.js:_resolveMid`) — if that mapping
+breaks, ICE never connects and the test times out.
+
+Run (server must already be running — Android hub or Node server):
+```bash
+cd tests/e2e-browser && npm i -D playwright && npx playwright install chromium
+SERVER_URL=https://<host>:8090 ROOM_ID=test npm run test:pi-interop
+```
+The Pi agent always connects via `wss` (it forces TLS), so the server must be
+reachable over HTTPS/WSS. For the Node server, run it with `TLS_ENABLED=true`
+(it auto-generates a self-signed cert in `server/certs`). The browser loads
+`/interop-harness.html` from the **server origin** (a tiny page that pulls in
+`signaling.js` + `webrtc.js` only) so the loopback WebSocket is same-origin and
+not blocked by Chromium's Local Network Access check.
+
+Auto-SKIPS (exit 0) when GStreamer, `websockets`, or the server are missing, so
+it is CI-safe. It is a LAN/local test (STUN only, no TURN) — agent and browser
+should run on the same host or same subnet. Diagnostics (agent log tail +
+browser console) print on failure.
+
 ### Pi agent (Python)
 
 `linux/pi-agent/pi-agent.py` is a native GStreamer + WebRTC client (no browser).

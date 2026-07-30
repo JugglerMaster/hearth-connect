@@ -25,69 +25,6 @@
   let audioState = {};           // deviceId → { levelDb, alerting }
   let lastActivity = {};         // peerId → ts of last track activity
 
-  // ─── Audible audio-threshold alert (WebAudio beep) ──────────────
-  // When a source crosses its audio threshold (rising-edge AUDIO_PEAK), play a
-  // short synthesized beep so an operator not watching the screen still hears it.
-  // No media asset needed. Debounced per-device so a noisy room can't machine-gun
-  // the speaker. Toggle persists in localStorage.
-  let alertSoundEnabled = localStorage.getItem('hearth_alertSound') !== 'off';
-  let alertAudioCtx = null;              // created/resumed on first user gesture
-  const alertLastPlayed = {};            // deviceId → ts of last beep
-  const ALERT_DEBOUNCE_MS = 10000;
-
-  function primeAlertAudio() {
-    // iOS/Safari blocks audio until a user gesture — create/resume the context
-    // on the first interaction so later programmatic beeps are allowed.
-    try {
-      const AC = window.AudioContext || window.webkitAudioContext;
-      if (!AC) return;
-      if (!alertAudioCtx) alertAudioCtx = new AC();
-      if (alertAudioCtx.state === 'suspended') alertAudioCtx.resume();
-    } catch (e) { /* audio unavailable — ignore */ }
-  }
-
-  function playAlertSound(deviceId) {
-    if (!alertSoundEnabled) return;
-    const now = Date.now();
-    if (deviceId && alertLastPlayed[deviceId] && now - alertLastPlayed[deviceId] < ALERT_DEBOUNCE_MS) return;
-    if (deviceId) alertLastPlayed[deviceId] = now;
-    try {
-      const AC = window.AudioContext || window.webkitAudioContext;
-      if (!AC) return;
-      if (!alertAudioCtx) alertAudioCtx = new AC();
-      if (alertAudioCtx.state === 'suspended') alertAudioCtx.resume();
-      const ctx = alertAudioCtx;
-      const t0 = ctx.currentTime;
-      const gain = ctx.createGain();
-      gain.connect(ctx.destination);
-      // ~5s alert: three rising two-tone chirps with an audible envelope.
-      const tones = [660, 880, 660, 880, 660, 880];
-      const step = 0.8; // seconds per tone → 6 tones ≈ 4.8s
-      tones.forEach((freq, i) => {
-        const osc = ctx.createOscillator();
-        const g = ctx.createGain();
-        osc.type = 'sine';
-        osc.frequency.value = freq;
-        const start = t0 + i * step;
-        const end = start + step * 0.7;
-        g.gain.setValueAtTime(0.0001, start);
-        g.gain.exponentialRampToValueAtTime(0.25, start + 0.03);
-        g.gain.exponentialRampToValueAtTime(0.0001, end);
-        osc.connect(g);
-        g.connect(gain);
-        osc.start(start);
-        osc.stop(end + 0.02);
-      });
-    } catch (e) {
-      console.error('[base] alert sound failed:', e && e.message);
-    }
-  }
-
-  // Prime audio on the first user interaction anywhere on the page.
-  ['click', 'touchstart', 'keydown'].forEach(evt => {
-    window.addEventListener(evt, primeAlertAudio, { once: true, passive: true });
-  });
-
   // Broadcast state
   let isBroadcasting = false;
   let broadcastSourceId = null;
@@ -156,17 +93,6 @@
   const answerCallBtn = document.getElementById('answerCallBtn');
   const dismissCallBtn = document.getElementById('dismissCallBtn');
   let configDeviceId = null;
-
-  // Alert-sound toggle (global base-station preference).
-  const alertSoundToggle = document.getElementById('alertSoundToggle');
-  if (alertSoundToggle) {
-    alertSoundToggle.checked = alertSoundEnabled;
-    alertSoundToggle.addEventListener('change', () => {
-      alertSoundEnabled = alertSoundToggle.checked;
-      localStorage.setItem('hearth_alertSound', alertSoundEnabled ? 'on' : 'off');
-      if (alertSoundEnabled) { primeAlertAudio(); playAlertSound('__preview__'); }
-    });
-  }
 
   // Talk / mute / call state (per active view)
   let talkingTo = null;       // deviceId we are currently talking to
@@ -563,11 +489,45 @@
     monitorStatus.classList.remove('hidden');
   }
 
+  // For audio-only (or audio-view) sources there is no video track, and
+  // webkitEnterFullscreen() needs a visible video track to present — otherwise
+  // it's a silent no-op and lock-audio never engages. Synthesize a 1fps black
+  // video track alongside the audio so native fullscreen (and thus lock-audio)
+  // works.
+  let _placeholderCanvas = null;
+  function placeholderVideoStream(audioStream) {
+    try {
+      if (!_placeholderCanvas) {
+        _placeholderCanvas = document.createElement('canvas');
+        _placeholderCanvas.width = 2;
+        _placeholderCanvas.height = 2;
+        const c = _placeholderCanvas.getContext('2d');
+        c.fillStyle = '#0a0a0a';
+        c.fillRect(0, 0, 2, 2);
+      }
+      const track = _placeholderCanvas.captureStream(1).getVideoTracks()[0];
+      const out = new MediaStream();
+      audioStream.getAudioTracks().forEach(t => out.addTrack(t));
+      out.addTrack(track);
+      out._hearthPlaceholder = true; // tag so we don't re-swap an already-placeholder stream
+      return out;
+    } catch (e) {
+      console.warn('[fs] placeholder video failed', e);
+      return audioStream;
+    }
+  }
+
   function attachMonitorStream() {
     if (!viewingId) return;
     const stream = streams[viewingId];
     if (!stream) return;
-    monitorVideo.srcObject = stream;
+    // In audio-only view, feed the video element the synthesized BLACK-VIDEO +
+    // audio placeholder. iOS Safari will not emit audio from a <video> whose
+    // MediaStream lacks a video track, so the black canvas track is required to
+    // make the audio actually play — while keeping the camera picture hidden
+    // (black). The 0v 1a readout is derived from viewMode, not this stream, so it
+    // still shows 0v 1a. The placeholder is tagged so fullscreen skips a re-swap.
+    monitorVideo.srcObject = (viewMode === 'audio') ? placeholderVideoStream(stream) : stream;
     applyViewMode();
     ensureAudioGraph();
     connectAudioSource(stream);
@@ -1052,6 +1012,13 @@
     renderDevices();
     attachMonitorStream();
 
+    // Auto-enter native fullscreen on a user-initiated watch. The native iOS
+    // player is the only way audio survives a screen lock (regular tabs are
+    // suspended). The immediate call is inside the watch-tap gesture; we also
+    // arm a retry once the stream is playing (see the 'playing' listener).
+    wantFullscreen = true;
+    enterNativeFullscreen();
+
     // Begin connection-quality polling for this peer.
     if (statsStop) { statsStop(); statsStop = null; }
     statsStop = rtc.startStats(peerId, updateQuality);
@@ -1191,12 +1158,7 @@
     if (!el) return;
     const fsEl = document.fullscreenElement || document.webkitFullscreenElement;
     if (!fsEl) {
-      fsActive = true;
-      // iOS Safari only supports fullscreen on <video> elements via the native
-      // media API. Try that first; fall back to the Fullscreen API for desktop.
-      if (monitorVideo.webkitEnterFullscreen) monitorVideo.webkitEnterFullscreen();
-      else if (el.requestFullscreen) el.requestFullscreen().catch(() => { fsActive = false; });
-      else if (el.webkitRequestFullscreen) el.webkitRequestFullscreen();
+      enterNativeFullscreen();
     } else {
       fsActive = false;
       if (document.exitFullscreen) document.exitFullscreen().catch(() => {});
@@ -1204,6 +1166,65 @@
     }
     renderControlButtons();
   }
+
+  // Enter the native iOS fullscreen player. On iOS 16.4+ the standard
+  // requestFullscreen() API presents the NATIVE player (audio survives a lock);
+  // on older iOS we fall back to webkitEnterFullscreen(). For audio-only/audio
+  // view sources there is no video track, so synthesize a placeholder video
+  // track first — otherwise fullscreen has nothing to present and is a no-op.
+  // Swap the live stream for the synthesized black placeholder (audio-only view
+  // or audio-only source) so native fullscreen shows no camera picture. If the
+  // stream hasn't arrived yet we use a black-ONLY placeholder so fullscreen can
+  // engage immediately; it's swapped for the audio-bearing version when the
+  // stream lands (attachMonitorStream / the 'playing' retry). Swapping srcObject
+  // PAUSES the element, so re-play (unmuted) right away. We only swap when the
+  // current srcObject isn't already a placeholder, which also prevents a
+  // re-swap/re-play loop on every 'playing' event.
+  function applyAudioPlaceholderIfNeeded() {
+    if (!monitorVideo) return;
+    const s = monitorVideo.srcObject;
+    const needPlaceholder = viewMode === 'audio' || (s && s.getVideoTracks().length === 0);
+    if (!needPlaceholder) return;
+    if (s && s._hearthPlaceholder) return; // already a placeholder — don't re-swap
+    monitorVideo.srcObject = placeholderVideoStream(s || new MediaStream());
+    monitorVideo.muted = false; // volume encodes the user's mute; never block audio here
+    const p = monitorVideo.play();
+    if (p && typeof p.catch === 'function') p.catch(() => {});
+  }
+
+  function enterNativeFullscreen() {
+    const el = monitorFeed;
+    if (!el) return;
+    const fsEl = document.fullscreenElement || document.webkitFullscreenElement;
+    if (fsEl) {
+      // Already fullscreen (likely entered before the stream arrived). Just make
+      // sure the placeholder is applied; don't re-request fullscreen.
+      applyAudioPlaceholderIfNeeded();
+      return;
+    }
+    // NOTE: don't set fsActive=true here. requestFullscreen() can fail/reject
+    // (e.g. no media yet), so the button must only turn blue once fullscreen
+    // ACTUALLY engages — syncFsFromDom() flips fsActive from the DOM event.
+    if (monitorVideo) monitorVideo.classList.remove('hidden');
+    // Engage fullscreen immediately. With a black-only placeholder this succeeds
+    // even before the real stream arrives; audio swaps in once it lands.
+    applyAudioPlaceholderIfNeeded();
+    if (monitorVideo && monitorVideo.requestFullscreen) {
+      monitorVideo.requestFullscreen().catch((err) => {
+        console.warn('[fs] requestFullscreen failed, trying webkit', err);
+        if (monitorVideo && monitorVideo.webkitEnterFullscreen) monitorVideo.webkitEnterFullscreen();
+      });
+    } else if (monitorVideo && monitorVideo.webkitEnterFullscreen) {
+      monitorVideo.webkitEnterFullscreen();
+    } else if (el.requestFullscreen) {
+      el.requestFullscreen().catch(() => {});
+    } else if (el.webkitRequestFullscreen) {
+      el.webkitRequestFullscreen();
+    }
+    renderControlButtons();
+  }
+
+
 
   // Keep fsActive in sync if the user leaves fullscreen by other means
   // (swipe/gesture on iOS, ESC on desktop) so the icon never gets stuck.
@@ -1224,8 +1245,13 @@
   // we fall back to the manual resume button. We also retry on the video's own
   // "ready" events (canplay/loadeddata/playing) so that if the stream was
   // still buffering when FS ended, playback resumes as soon as it's ready.
-  const monitorResumeBtn = document.getElementById('monitorResumeBtn');
-  let resumeArmed = false;
+   const monitorResumeBtn = document.getElementById('monitorResumeBtn');
+   let resumeArmed = false;
+   // Set when the user taps Watch; we try to enter native fullscreen immediately
+   // (inside the gesture) and again once the stream is actually playing, since
+   // the Watch tap fires before srcObject exists and iOS may reject the early
+   // call. Native fullscreen is what lets audio survive a screen lock.
+   let wantFullscreen = false;
 
   function showResumeIfPaused() {
     if (!monitorResumeBtn) return;
@@ -1243,12 +1269,35 @@
     }
   }
 
+  // iOS suspends WebRTC *audio* when the tab is locked/backgrounded, and on
+  // return to foreground the audio track stays muted even though video resumes.
+  // Kick it: re-enable the track and re-bind the stream to the <video> element
+  // so the OS audio session re-attaches. (Video flickers for a frame; fine.)
+  function resumeAudioPlayback() {
+    const v = monitorVideo;
+    if (!v || !v.srcObject) return;
+    v.muted = false;
+    const s = v.srcObject;
+    try { s.getAudioTracks().forEach(t => { t.enabled = false; }); } catch (e) {}
+    try { s.getAudioTracks().forEach(t => { t.enabled = true; }); } catch (e) {}
+    try {
+      v.srcObject = null;
+      v.srcObject = s;
+    } catch (e) {}
+    const p = v.play();
+    if (p && typeof p.catch === 'function') p.catch(() => {});
+  }
+
   // Called on every fullscreen-exit path. Arms auto-resume and takes an
   // immediate shot while any user-gesture window is still open.
   function armAutoResume() {
     if (!monitorVideo || !monitorVideo.srcObject) return;
+    // Restore the audio-only hidden state (we revealed monitorVideo to let
+    // fullscreen engage); harmless in video mode.
+    applyViewMode();
     resumeArmed = true;
     attemptResume();
+    resumeAudioPlayback();
   }
 
   // "Ready" events: if we're armed and the video is still paused (buffering
@@ -1273,6 +1322,13 @@
     monitorVideo.addEventListener('playing', () => {
       resumeArmed = false;
       if (monitorResumeBtn) monitorResumeBtn.classList.add('hidden');
+      // Retry entering native fullscreen now that a stream is playing. This call
+      // is outside the user gesture so iOS may ignore it, but when it works the
+      // audio keeps playing through a subsequent screen lock.
+      if (wantFullscreen) {
+        enterNativeFullscreen();
+        wantFullscreen = false;
+      }
     });
     // Retry auto-resume once the stream is ready to play after FS exit.
     monitorVideo.addEventListener('canplay', onMediaReady);
@@ -1284,10 +1340,12 @@
   document.addEventListener('webkitfullscreenchange', () => {
     if (!(document.fullscreenElement || document.webkitFullscreenElement)) armAutoResume();
   });
-  // The <video> also fires its own fullscreen end event under iOS's native path.
-  document.addEventListener('DOMContentLoaded', () => {
-    if (monitorVideo) monitorVideo.addEventListener('webkitendfullscreen', armAutoResume);
-  });
+  // The <video> fires its own end-fullscreen event under iOS's native media
+  // player path. This script runs at the end of <body>, so by the time we
+  // reach here DOMContentLoaded has already fired — registering the listener
+  // inside a late-bound DOMContentLoaded handler would never attach. Bind it
+  // directly instead.
+  if (monitorVideo) monitorVideo.addEventListener('webkitendfullscreen', armAutoResume);
 
   function showHome() {
     monitorFeed.classList.add('hidden');
@@ -1575,8 +1633,10 @@
         showMonitorStatus(null);
         monitorError.classList.add('hidden');
       }
-      // Reflect received tracks in the incoming debug readout.
-      const v = stream.getVideoTracks().length;
+      // Reflect received tracks in the incoming debug readout. In audio-only
+      // view we intentionally don't render/subscribe-display the video track,
+      // so report 0v (even though the underlying source may carry video).
+      const v = (viewMode === 'audio') ? 0 : stream.getVideoTracks().length;
       const a = stream.getAudioTracks().length;
       rxDbgState.tracks = (v || a) ? (v + 'v ' + a + 'a') : '--';
       renderRxDebug();
@@ -1620,6 +1680,17 @@
   // ─── Signaling ──
 
   function init() {
+    // Visible build stamp so we can confirm the device is actually running the
+    // deployed client (not a stale cached/Home-Screen copy). If you don't see
+    // "BUILD 20260727-3" in the bottom-right, you're on old code — hard refresh.
+    try {
+      const stamp = document.createElement('div');
+      stamp.textContent = 'BUILD 20260727-3';
+      stamp.style.cssText = 'position:fixed;bottom:2px;right:4px;font-size:9px;' +
+        'color:#9a9a9a;opacity:.6;z-index:99999;pointer-events:none;';
+      document.body.appendChild(stamp);
+    } catch (e) {}
+
     localStorage.setItem('hearth_baseDeviceId', deviceId);
     sig.deviceId = deviceId;
     sig.deviceType = 'base';
@@ -1655,6 +1726,9 @@
       const iceState = pc ? pc.iceConnectionState : null;
       const connState = pc ? pc.connectionState : null;
       console.log('[view] visibilitychange → visible, ice:', iceState, 'conn:', connState);
+      // iOS suspends WebRTC audio on lock/background even though video resumes.
+      // Always kick the audio track back to life on returning to foreground.
+      resumeAudioPlayback();
       if (!pc || iceState === 'failed' || iceState === 'disconnected' || connState === 'failed') {
         console.log('[view] stale connection detected after foreground, recovering');
         recovering = false;
@@ -1792,13 +1866,10 @@
     });
 
     sig.on('audioPeak', (data) => {
-      const wasAlerting = audioState[data.deviceId] && audioState[data.deviceId].alerting;
       audioState[data.deviceId] = {
         levelDb: data.levelDb,
         alerting: !!data.peak,
       };
-      // Rising edge only (peak:true and not already alerting) → audible beep.
-      if (data.peak && !wasAlerting) playAlertSound(data.deviceId);
       // Update the dB readout + alert highlight in place. Do NOT call
       // renderDevices() here — it rebuilds the whole device list and would
       // destroy a <select> (display/audio dropdown) that the operator is

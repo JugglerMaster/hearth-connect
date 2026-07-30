@@ -12,6 +12,8 @@ Run from this directory:
 
 import importlib.util
 import os
+import shutil
+import tempfile
 import unittest
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -1111,6 +1113,77 @@ class TestFullRaceScenario(unittest.TestCase):
         s2 = _MockWebrtc()
         s.on_negotiation_needed(s2)
         self.assertEqual(len(agent._enqueued), 1)  # still just 1
+
+
+class TestDeviceIdResolution(unittest.TestCase):
+    """The stable per-install device id must resolve from a fixed precedence and
+    persist so reconnects are not seen as a new device by the server."""
+
+    def setUp(self):
+        # Each test gets its own temp install dir + isolated CONFIG_FILE.
+        self.tmp = tempfile.mkdtemp()
+        self.cfg = os.path.join(self.tmp, 'config.env')
+        self._orig_cfg = pa.CONFIG_FILE
+        self._orig_env = os.environ.get('DEVICE_ID')
+        pa.CONFIG_FILE = self.cfg
+
+    def tearDown(self):
+        pa.CONFIG_FILE = self._orig_cfg
+        if self._orig_env is None:
+            os.environ.pop('DEVICE_ID', None)
+        else:
+            os.environ['DEVICE_ID'] = self._orig_env
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _write_cfg(self, text):
+        with open(self.cfg, 'w') as f:
+            f.write(text)
+
+    def _agent(self):
+        # Agent.__init__ only reads config (no GStreamer needed).
+        return pa.Agent()
+
+    def test_env_var_wins(self):
+        os.environ['DEVICE_ID'] = 'pi-from-env'
+        self._write_cfg('DEVICE_ID=pi-from-file\n')
+        self.assertEqual(self._agent().device_id, 'pi-from-env')
+
+    def test_config_env_wins_over_legacy_file(self):
+        os.environ.pop('DEVICE_ID', None)
+        self._write_cfg('DEVICE_ID=pi-from-config\n')
+        # legacy device_id file should be ignored in favor of config.env
+        with open(os.path.join(self.tmp, 'device_id'), 'w') as f:
+            f.write('pi-legacy\n')
+        self.assertEqual(self._agent().device_id, 'pi-from-config')
+
+    def test_legacy_file_migrated_into_config_env(self):
+        os.environ.pop('DEVICE_ID', None)
+        self._write_cfg('SERVER_URL=\n')  # no DEVICE_ID line
+        with open(os.path.join(self.tmp, 'device_id'), 'w') as f:
+            f.write('pi-legacy\n')
+        agent = self._agent()
+        self.assertEqual(agent.device_id, 'pi-legacy')
+        # It should have been written into config.env too.
+        with open(self.cfg) as f:
+            self.assertIn('DEVICE_ID=pi-legacy', f.read())
+
+    def test_generated_id_persisted_to_config_env_and_file(self):
+        os.environ.pop('DEVICE_ID', None)
+        self._write_cfg('SERVER_URL=\nROOM_ID=default\n')
+        agent = self._agent()
+        self.assertTrue(agent.device_id.startswith('pi-'))
+        with open(self.cfg) as f:
+            self.assertIn('DEVICE_ID=' + agent.device_id, f.read())
+        with open(os.path.join(self.tmp, 'device_id')) as f:
+            self.assertEqual(f.read().strip(), agent.device_id)
+
+    def test_generated_id_is_stable_across_restarts(self):
+        os.environ.pop('DEVICE_ID', None)
+        self._write_cfg('SERVER_URL=\n')
+        first = self._agent().device_id
+        # Second construction (simulating a restart) must reuse the same id.
+        second = self._agent().device_id
+        self.assertEqual(first, second)
 
 
 if __name__ == '__main__':

@@ -22,6 +22,12 @@
   let publishedType = null;
   let subscriberCount = 0;
   const subscribers = new Set();
+  // Linger state: keep a send PC alive for a grace after a viewer leaves
+  // (subscriberLeft) so a screen-locked viewer — whose WebSocket drops the
+  // instant iOS locks — keeps receiving audio through the lock. The viewer's
+  // native-fullscreen media session keeps audio alive as long as RTP arrives.
+  const STALE_GRACE_MS = 600000; // 10 minutes
+  const staleTimers = new Map(); // subscriberId -> setTimeout handle
   let wakeLock = null;
   let cameraStarted = false;
 
@@ -761,10 +767,21 @@
     });
 
     sig.on('subscriberJoined', (data) => {
+      const peerId = data.subscriberId;
+      // Re-subscribe after a screen-lock: cancel the stale teardown and reuse
+      // the still-live PC (re-offer to the viewer's new peer connection) so the
+      // audio resumes seamlessly. Don't double-count the subscriber.
+      if (staleTimers.has(peerId)) {
+        clearTimeout(staleTimers.get(peerId));
+        staleTimers.delete(peerId);
+        subscribers.add(peerId);
+        console.log('[kiosk] re-subscribe from', peerId, '— reusing live PC');
+        if (rtc.localStream) offerToSubscriber(peerId);
+        return;
+      }
       subscriberCount++;
       debugSubs.textContent = 'subs:' + subscriberCount;
       logEvent('subJoined:' + data.subscriberId.slice(-4));
-      const peerId = data.subscriberId;
       subscribers.add(peerId);
       if (!rtc.localStream) {
         logEvent('NO-LOCALSTREAM');
@@ -778,8 +795,17 @@
       subscriberCount = Math.max(0, subscriberCount - 1);
       debugSubs.textContent = 'subs:' + subscriberCount;
       console.log('[kiosk] subscriberLeft from', data.subscriberId, 'total:', subscriberCount);
-      subscribers.delete(data.subscriberId);
-      rtc.closePeerConnection(data.subscriberId);
+      const sid = data.subscriberId;
+      subscribers.delete(sid);
+      // Linger: do NOT close the send PC immediately. A viewer's WebSocket drops
+      // the instant the iOS screen locks; keep RTP flowing so the audio keeps
+      // playing through the lock. Tear down after the grace if they don't return.
+      if (staleTimers.has(sid)) clearTimeout(staleTimers.get(sid));
+      staleTimers.set(sid, setTimeout(() => {
+        staleTimers.delete(sid);
+        rtc.closePeerConnection(sid);
+        console.log('[kiosk] stale subscriber', sid, 'grace expired — closing PC');
+      }, STALE_GRACE_MS));
     });
 
     // Handle display/audio config from base station
