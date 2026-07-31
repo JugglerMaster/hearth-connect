@@ -1362,10 +1362,14 @@ class Agent:
             log.warning('could not persist device label: %s', e)
 
     async def _discover_server_via_mdns(self):
-        """Query mDNS for a Hearth-Connect server. Updates WS_URL on success."""
+        """Query mDNS for a Hearth-Connect server. Updates WS_URL on success.
+
+        Runs even when SERVER_URL is already configured — if the configured
+        server is unreachable (wrong IP after a network change, etc.), mDNS
+        discovery finds the real one on the LAN and overrides WS_URL so the
+        agent can still connect once it has internet.
+        """
         global WS_URL
-        if WS_URL:
-            return  # already configured
         try:
             from mdns_discover import discover_server
             log.info('mDNS: searching for Hearth-Connect server on LAN...')
@@ -1916,7 +1920,16 @@ class Agent:
             await self._discover_server_via_mdns()
             self._mdns_attempted = True
 
+        from captive_portal import wifi_configured_event
+
         while True:
+            # If WiFi was just provisioned via the captive portal, fall back to
+            # mDNS discovery now (the configured SERVER_URL may be stale/wrong).
+            if wifi_configured_event.is_set():
+                wifi_configured_event.clear()
+                await self._discover_server_via_mdns()
+                self._consecutive_failures = 0
+
             if not WS_URL:
                 log.warning('no SERVER_URL — retrying discovery in %ds', self.reconnect_delay)
                 await asyncio.sleep(self.reconnect_delay)
@@ -1956,40 +1969,55 @@ class Agent:
             except Exception as e:
                 log.warning('connection lost: %s', e)
                 self._consecutive_failures += 1
-                # After 3 consecutive failures, try mDNS re-discovery in case
-                # the server moved to a new IP.
+                # After 3 consecutive failures, fall back to mDNS discovery in case
+                # the configured SERVER_URL is stale/unreachable (e.g. wrong IP
+                # after the network changed). The discovered URL overrides WS_URL.
                 if self._consecutive_failures >= 3:
                     log.info('consecutive failures >= 3 — attempting mDNS re-discovery')
-                    self._mdns_attempted = False
+                    await self._discover_server_via_mdns()
                     self._consecutive_failures = 0
             await asyncio.sleep(self.reconnect_delay)
             self.reconnect_delay = min(self.reconnect_delay * 2, 30)
 
 
 def main():
-    from captive_portal import check_wifi_connected, setup_hotspot
+    from captive_portal import check_wifi_connected, setup_hotspot, has_internet
     from captive_portal import CaptivePortal, get_device_name
 
     hotspot_active = False
 
-    # Check WiFi for up to 60 seconds before giving up.
-    if not WS_URL:
-        log.info('checking WiFi connectivity...')
+    # The hotspot (captive portal) runs whenever the device has no usable
+    # internet, regardless of whether SERVER_URL is configured. FORCE_HOTSPOT=1
+    # forces it on unconditionally — useful for debugging the AP itself.
+    force = os.environ.get('FORCE_HOTSPOT', '').strip().lower() in ('1', 'true', 'yes')
+
+    if force:
+        log.info('FORCE_HOTSPOT set — starting captive portal immediately')
+        start_hotspot = True
+    else:
+        # Poll for internet for up to 60s before giving up.
+        log.info('checking internet connectivity...')
+        online = False
         for i in range(60):
-            if check_wifi_connected():
-                log.info('WiFi connected')
+            if has_internet():
+                online = True
                 break
             if i == 0:
-                log.info('no WiFi detected — starting captive portal in %ds', 60)
+                log.info('no internet detected — will start captive portal if still unavailable')
             time.sleep(1)
+        if online:
+            log.info('internet available')
+            start_hotspot = False
         else:
-            # WiFi not available after 60s — set up hotspot
-            log.info('WiFi unavailable — setting up hotspot')
-            device_name = HOTSPOT_NAME or get_device_name()
-            portal = CaptivePortal()
-            portal.start()
-            setup_hotspot(device_name)
-            hotspot_active = True
+            log.info('no internet — setting up hotspot')
+            start_hotspot = True
+
+    if start_hotspot:
+        device_name = HOTSPOT_NAME or get_device_name()
+        portal = CaptivePortal()
+        portal.start()
+        setup_hotspot(device_name)
+        hotspot_active = True
 
     agent = Agent()
     try:

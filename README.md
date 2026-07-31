@@ -85,6 +85,24 @@ HTML5 video intercom / baby monitor system. Self-hosted. Runs on iPads/iPhones (
 - **Monitor display modes** — `blank` / `self` (own camera preview) / `base` (base's FaceTalk feed)
 - **iOS silent-switch safe audio** — monitor audio routed through an unmuted video element
 
+### iOS Background Audio (Screen Locked)
+
+By default iOS suspends Safari/WKWebView the moment the screen locks, killing the
+WebRTC audio stream. To keep monitoring with the screen off:
+
+- **Recommended: Brave browser (iOS)** — enable **Background Audio**
+  (Settings → Media → Background Audio) and open `base-station.html` from Brave.
+  With that toggle on, the remote audio track keeps playing after the screen
+  locks, so the base station works as a locked-screen baby monitor with no
+  native app, sideloading, or dev account. This is now the recommended method
+  for iOS devices to stream with the screen locked.
+- **Limitation:** only *audio* survives lock — video cannot render to a dark
+  screen and resumes on unlock. Background microphone/talkback is still
+  restricted, so press-to-talk back to a camera will not function while locked.
+- **Alternative:** a native Swift/`libwebrtc` app using the `audio` background
+  mode achieves the same audio-while-locked result, but requires building and
+  sideloading. Brave's toggle covers the same case without that overhead.
+
 ---
 
 ## Quick Start
@@ -133,6 +151,22 @@ docker compose up -d
 
 - Ports: `8090` (HTTPS), `8091` (HTTP → HTTPS redirect)
 - Certs in `docker/certs/` — install `ca.crt` profile on each iOS device
+
+### Remote Access (Tailscale) — Recommended
+
+For accessing the base station/monitors **away from the home LAN** (e.g. while
+traveling), run the self-hosted server behind **[Tailscale](https://tailscale.com)**
+— a zero-config mesh VPN. Install Tailscale on the server host and on each iOS
+device, then point `SERVER_URL` at the server's Tailscale IP
+(`https://<server-tailscale-ip>:8090`). Because Tailscale is an always-on,
+persistent virtual network:
+
+- The iOS device reaches the server from anywhere without port-forwarding or
+  exposing the server to the public internet.
+- It pairs well with the locked-screen Brave setup above — the audio monitor
+  stays connected over the VPN the same as on the local network.
+
+Self-signed CA certs still apply — install `ca.crt` on each iOS device once.
 
 ## Development
 
@@ -203,6 +237,7 @@ hearth-connect/
 ### Scaling & Platforms
 - [ ] Integrate **mediasoup** or **LiveKit** as optional SFU for 5+ cameras
 - [ ] iOS native app (Swift/Capacitor) for background WebRTC + push notifications
+  _(note: Brave's Background Audio toggle already covers locked-screen audio — see iOS Background Audio section)_
 - [ ] Desktop client (Electron or Tauri) for base station
 
 ### Recording & Polish

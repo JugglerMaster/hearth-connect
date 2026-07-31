@@ -12,10 +12,11 @@ The agent continues running and detects WiFi via the monitor loop in pi-agent.py
 
 import json
 import logging
+import os
 import re
 import subprocess
 import threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import HTTPServer, BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 log = logging.getLogger('hearth-pi-agent')
@@ -24,9 +25,18 @@ HOTSPOT_IP = '192.168.4.1'
 HOTSPOT_SUBNET = '24'
 HOTSPOT_RANGE = '192.168.4.10,192.168.4.200'
 
+# Set by _configure_wifi once the user has just provisioned WiFi via the portal,
+# so the agent's connect loop can immediately fall back to mDNS discovery
+# (instead of retrying a possibly-stale SERVER_URL).
+wifi_configured_event = threading.Event()
+
 
 def check_wifi_connected():
-    """Check if WiFi is connected and has an IP address."""
+    """Check if WiFi is connected (as a *client* station) and has an IP address.
+
+    The agent's own hotspot connection ('hearth-hotspot', AP mode) is excluded —
+    otherwise the WiFi monitor would see the AP as "connected" and tear it down.
+    """
     try:
         # Check for an active WiFi connection with an IP
         out = subprocess.check_output(
@@ -36,6 +46,8 @@ def check_wifi_connected():
         for line in out.strip().split('\n'):
             parts = line.split(':')
             if len(parts) >= 4 and parts[1] == 'wifi' and parts[2] == 'connected':
+                if parts[3] == 'hearth-hotspot':
+                    continue
                 # Check if this device has an IP
                 iface = parts[0]
                 ip = subprocess.check_output(
@@ -47,6 +59,50 @@ def check_wifi_connected():
         return False
     except Exception:
         return False
+
+
+def has_internet(timeout=3):
+    """Return True if the device can reach the internet (or the configured server).
+
+    Prefers the configured SERVER_URL host so a LAN-only deployment still counts
+    as "online", then falls back to public DNS endpoints.
+    """
+    import socket
+    hosts = []
+    srv = os.environ.get('SERVER_URL', '').strip().rstrip('/')
+    if srv:
+        try:
+            from urllib.parse import urlparse
+            h = urlparse(srv).hostname
+            if h:
+                port = 443 if srv.startswith('wss') else 80
+                hosts.append((h, port))
+        except Exception:
+            pass
+    hosts += [('8.8.8.8', 53), ('1.1.1.1', 53), ('8.8.4.4', 53)]
+    for host, port in hosts:
+        try:
+            with socket.create_connection((host, port), timeout=timeout):
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def get_wifi_interface():
+    """Return the first WiFi (wlan*) interface, falling back to 'wlan0'."""
+    try:
+        out = subprocess.check_output(
+            ['nmcli', '-t', '-f', 'DEVICE,TYPE', 'device'],
+            text=True, timeout=5
+        )
+        for line in out.strip().split('\n'):
+            parts = line.split(':')
+            if len(parts) >= 2 and parts[1] == 'wifi' and parts[0].startswith('wlan'):
+                return parts[0]
+    except Exception:
+        pass
+    return 'wlan0'
 
 
 def get_device_name():
@@ -99,68 +155,79 @@ def scan_networks():
 def setup_hotspot(device_name):
     """Create an open WiFi hotspot using NetworkManager."""
     ssid = device_name
-    log.info('setting up hotspot SSID=%s', ssid)
+    iface = get_wifi_interface()
+    log.info('setting up hotspot SSID=%s on %s', ssid, iface)
 
-    # Create the connection (open, no password)
+    # Remove any stale hotspot connection from a previous run.
+    subprocess.run(['sudo', '-n', 'nmcli', 'connection', 'delete', 'hearth-hotspot'],
+                   capture_output=True, timeout=10)
+
+    # Create the connection (open, no password). The agent runs as a non-root
+    # user, so nmcli needs sudo (same as the dnsmasq call below).
+    # NOTE: use ipv4.method=manual (static IP) and let OUR dnsmasq (started in
+    # _setup_captive_dns) handle DHCP + captive DNS. Using ipv4.method=shared
+    # makes NetworkManager launch its OWN dnsmasq, which collides with ours and
+    # causes the connection to fail with 'ip-config-unavailable'.
     subprocess.run([
-        'nmcli', 'connection', 'add',
+        'sudo', '-n', 'nmcli', 'connection', 'add',
         'type', 'wifi',
         'con-name', 'hearth-hotspot',
-        'ifname', 'wlan1',
+        'ifname', iface,
         'wifi.ssid', ssid,
         'wifi.mode', 'ap',
         'wifi.band', 'bg',
         'connection.autoconnect', 'no',
-        'ipv4.method', 'shared',
+        'ipv4.method', 'manual',
         'ipv4.addresses', f'{HOTSPOT_IP}/{HOTSPOT_SUBNET}',
+        'ipv4.never-default', 'yes',
     ], check=True, timeout=10)
 
     # Activate the hotspot
-    subprocess.run(['nmcli', 'connection', 'up', 'hearth-hotspot'],
+    subprocess.run(['sudo', '-n', 'nmcli', 'connection', 'up', 'hearth-hotspot'],
                    check=True, timeout=15)
 
     # Configure dnsmasq for captive portal DNS
-    _setup_captive_dns()
+    _setup_captive_dns(iface)
 
     log.info('hotspot active: %s (open, no password)', ssid)
 
 
-def _setup_captive_dns():
-    """Configure dnsmasq for captive portal DNS + DHCP on wlan1."""
+def _setup_captive_dns(iface='wlan0'):
+    """Configure dnsmasq for captive portal DNS + DHCP on the hotspot interface."""
     import os
 
     # Stop any existing dnsmasq
-    subprocess.run(['sudo', 'killall', 'dnsmasq'], capture_output=True)
+    subprocess.run(['sudo', '-n', 'killall', 'dnsmasq'], capture_output=True)
 
-    config = f"""# Hearth-Connect captive portal dnsmasq config
-interface=wlan1
+    config = f'''# Hearth-Connect captive portal dnsmasq config
+interface={iface}
 bind-interfaces
 dhcp-range={HOTSPOT_RANGE},255.255.255.0,12h
 dhcp-option=option:router,{HOTSPOT_IP}
 dhcp-option=option:dns-server,{HOTSPOT_IP}
 address=/#/{HOTSPOT_IP}
-"""
-    conf_path = '/tmp/hearth-dnsmasq.conf'
+'''
+    conf_path = '/opt/hearth-pi-agent/hearth-dnsmasq.conf'
     with open(conf_path, 'w') as f:
         f.write(config)
 
     subprocess.Popen(
-        ['sudo', 'dnsmasq', f'--conf-file={conf_path}'],
+        ['sudo', '-n', 'dnsmasq', f'--conf-file={conf_path}'],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
-    log.info('captive DNS started on wlan1')
+    log.info('captive DNS started on %s', iface)
 
 
 def teardown_hotspot():
     """Tear down the hotspot and captive DNS."""
     log.info('tearing down hotspot')
-    subprocess.run(['sudo', 'killall', 'dnsmasq'], capture_output=True)
+    subprocess.run(['sudo', '-n', 'killall', 'dnsmasq'], capture_output=True)
     # Tolerate if the connection was already removed (e.g. by the portal's
     # _configure_wifi after user submitted credentials).
-    subprocess.run(['nmcli', 'connection', 'down', 'hearth-hotspot'],
+    subprocess.run(['sudo', '-n', 'nmcli', 'connection', 'down', 'hearth-hotspot'],
                    capture_output=True, timeout=10)
-    subprocess.run(['nmcli', 'connection', 'delete', 'hearth-hotspot'],
+    subprocess.run(['sudo', '-n', 'nmcli', 'connection', 'delete', 'hearth-hotspot'],
                    capture_output=True, timeout=10)
 
 
@@ -437,25 +504,30 @@ class PortalHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = urlparse(self.path).path
 
+        # OS captive-portal probes. IMPORTANT: returning the platform's
+        # "success"/"online" signal here tells the device it has internet and
+        # suppresses the sign-in sheet. To *trigger* the captive portal we must
+        # return the portal page (non-success content) instead, so the OS
+        # detects a captive network and shows it.
+
         # Apple captive portal detection
         if path == '/hotspot-detect.html':
-            self._send(200, 'text/html',
-                       '<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>')
+            self._send(200, 'text/html', PORTAL_HTML)
             return
 
-        # Android captive portal detection
+        # Android / Chrome captive portal detection
         if '/generate_204' in path or path == '/gen_204':
-            self._send(204, 'text/plain', '')
+            self._send(200, 'text/html', PORTAL_HTML)
             return
 
         # Microsoft captive portal detection
         if '/connecttest.txt' in path or '/ncsi.txt' in path or '/redirect' in path:
-            self._send(200, 'text/plain', 'Microsoft Connect Test')
+            self._send(200, 'text/html', PORTAL_HTML)
             return
 
         # Firefox captive portal detection
         if '/canonical.html' in path or path == '/success.txt':
-            self._send(200, 'text/plain', 'success')
+            self._send(200, 'text/html', PORTAL_HTML)
             return
 
         # Network scan endpoint
@@ -517,43 +589,43 @@ def _configure_wifi(ssid, password):
         if existing:
             # Update existing connection
             subprocess.run([
-                'nmcli', 'connection', 'modify', ssid,
+                'sudo', '-n', 'nmcli', 'connection', 'modify', ssid,
                 'wifi.ssid', ssid,
-                'wifi.key-mgmt', 'wpa-psk' if password else 'none',
+                'wifi-sec.key-mgmt', 'wpa-psk' if password else 'none',
             ], check=True, timeout=10)
             if password:
                 subprocess.run([
-                    'nmcli', 'connection', 'modify', ssid,
+                    'sudo', '-n', 'nmcli', 'connection', 'modify', ssid,
                     'wifi-sec.psk', password,
                 ], check=True, timeout=10)
             # Ensure it autoconnects
             subprocess.run([
-                'nmcli', 'connection', 'modify', ssid,
+                'sudo', '-n', 'nmcli', 'connection', 'modify', ssid,
                 'connection.autoconnect', 'yes',
             ], check=True, timeout=5)
         else:
             # Create new connection
             cmd = [
-                'nmcli', 'connection', 'add',
+                'sudo', '-n', 'nmcli', 'connection', 'add',
                 'type', 'wifi',
                 'con-name', ssid,
                 'wifi.ssid', ssid,
-                'wifi.key-mgmt', 'wpa-psk' if password else 'none',
+                'wifi-sec.key-mgmt', 'wpa-psk' if password else 'none',
                 'connection.autoconnect', 'yes',
             ]
             subprocess.run(cmd, check=True, timeout=10)
             if password:
                 subprocess.run([
-                    'nmcli', 'connection', 'modify', ssid,
+                    'sudo', '-n', 'nmcli', 'connection', 'modify', ssid,
                     'wifi-sec.psk', password,
                 ], check=True, timeout=10)
 
-        # Tear down the hotspot first so wlan1 is freed
+        # Tear down the hotspot first so the WiFi interface is freed
         teardown_hotspot()
 
         # Connect to the new WiFi network
         result = subprocess.run(
-            ['nmcli', 'connection', 'up', ssid],
+            ['sudo', '-n', 'nmcli', 'connection', 'up', ssid],
             capture_output=True, text=True, timeout=30
         )
         if result.returncode != 0:
@@ -562,6 +634,8 @@ def _configure_wifi(ssid, password):
             setup_hotspot(get_device_name())
         else:
             log.info('connected to %s', ssid)
+            # Signal the agent to fall back to mDNS discovery now that WiFi is up.
+            wifi_configured_event.set()
     except Exception as e:
         log.error('WiFi config failed: %s', e)
         try:
@@ -578,8 +652,12 @@ class CaptivePortal:
         self._thread = None
 
     def start(self):
-        """Start the HTTP server on port 80 in a daemon thread."""
-        self._server = HTTPServer(('0.0.0.0', 80), PortalHandler)
+        """Start the HTTP server on port 80 in a daemon thread.
+
+        Uses ThreadingHTTPServer so concurrent requests from a phone (captive
+        probes + page assets) don't block each other and time out.
+        """
+        self._server = ThreadingHTTPServer(('0.0.0.0', 80), PortalHandler)
         self._thread = threading.Thread(target=self._server.serve_forever,
                                         daemon=True)
         self._thread.start()

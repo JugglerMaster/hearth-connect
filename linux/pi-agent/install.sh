@@ -99,6 +99,22 @@ else
   echo "      sudo cp /opt/hearth-pi-agent/ca.pem /usr/local/share/ca-certificates/hearth-ca.crt && sudo update-ca-certificates"
 fi
 
+# ─── Passwordless sudo for the agent (hotspot / WiFi management) ───
+# The agent runs as a non-root user but must run nmcli/dnsmasq/killall to
+# create the captive-portal hotspot and configure WiFi. The systemd service has
+# no TTY, so sudo cannot prompt for a password — grant passwordless sudo for
+# just those binaries. Without this, hotspot/portal setup fails in production.
+NMCLI_BIN="$(command -v nmcli 2>/dev/null || echo /usr/bin/nmcli)"
+DNSMASQ_BIN="$(command -v dnsmasq 2>/dev/null || echo /usr/sbin/dnsmasq)"
+KILLALL_BIN="$(command -v killall 2>/dev/null || echo /usr/bin/killall)"
+SUDOERS_FILE=/etc/sudoers.d/hearth-pi-agent
+echo "Creating sudoers drop-in at $SUDOERS_FILE for user '$AGENT_USER'..."
+sudo tee "$SUDOERS_FILE" >/dev/null <<EOF
+# Hearth-Connect Pi Agent: passwordless sudo for network/hotspot management
+$AGENT_USER ALL=(root) NOPASSWD: $NMCLI_BIN, $DNSMASQ_BIN, $KILLALL_BIN
+EOF
+sudo chmod 0440 "$SUDOERS_FILE"
+
 # ─── Prompt for the server URL (used by the agent to connect) ───
 # Precedence: $SERVER_URL env/arg > user prompt > blank (auto-discover via mDNS).
 # We never read the installed config.env as a prompt default — a stale IP or
