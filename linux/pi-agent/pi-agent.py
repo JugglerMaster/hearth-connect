@@ -1894,14 +1894,24 @@ class Agent:
                 log.warning('device refresh failed: %s', e)
 
     async def _wifi_monitor(self):
-        """Poll WiFi connectivity every 10s; tear down hotspot once connected."""
-        from captive_portal import check_wifi_connected, teardown_hotspot
+        """Poll WiFi connectivity every 10s. Tear the hotspot down once a station
+        WiFi is connected. If the hotspot has been up 10 min with no internet,
+        try to bring up a saved WiFi connection to recover connectivity."""
+        from captive_portal import (check_wifi_connected, teardown_hotspot,
+                                    has_internet, connect_saved_wifi)
+        elapsed = 0
         while True:
             await asyncio.sleep(10)
+            elapsed += 10
             if check_wifi_connected():
                 log.info('WiFi detected — tearing down hotspot')
                 teardown_hotspot()
                 return
+            if elapsed >= 600 and not has_internet():
+                # Hotspot has been up 10 min with no internet: try a saved WiFi.
+                log.info('hotspot up 10 min with no internet — trying saved WiFi')
+                await asyncio.to_thread(connect_saved_wifi)
+                elapsed = 0  # re-attempt recovery every 10 min
 
     async def run(self, hotspot_active=False):
         self.loop = asyncio.get_event_loop()
@@ -2003,13 +2013,28 @@ def main():
                 online = True
                 break
             if i == 0:
-                log.info('no internet detected — will start captive portal if still unavailable')
+                log.info('no internet detected — will evaluate hotspot need')
             time.sleep(1)
         if online:
             log.info('internet available')
             start_hotspot = False
+        elif check_wifi_connected():
+            # A station WiFi is already connected but has no internet. Guard against
+            # opening the hotspot: hold off for 5 minutes in case the link comes
+            # up, and only then fall back to the captive portal.
+            log.info('WiFi connected but no internet — waiting 5 min before hotspot')
+            start_hotspot = False
+            for _ in range(30):  # 30 * 10s = 5 min
+                time.sleep(10)
+                if has_internet():
+                    log.info('internet available (deferred)')
+                    break
+            else:
+                # Loop finished without breaking — still no internet.
+                log.info('still no internet after 5 min — setting up hotspot')
+                start_hotspot = True
         else:
-            log.info('no internet — setting up hotspot')
+            log.info('no internet and no station WiFi — setting up hotspot')
             start_hotspot = True
 
     if start_hotspot:

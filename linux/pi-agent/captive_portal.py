@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import re
+import socket
 import subprocess
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -106,7 +107,16 @@ def get_wifi_interface():
 
 
 def get_device_name():
-    """Get a human-readable device name for the hotspot SSID."""
+    """Get the hotspot SSID. Uses the device hostname (e.g. pivideo1) so the AP
+    is recognizable on the network; falls back to the board model only if the
+    hostname is unset/generic, and finally to a static name."""
+    try:
+        name = socket.gethostname()
+        if name and name.lower() not in ('localhost', 'localhost.localdomain', '(none)', ''):
+            return name
+    except Exception:
+        pass
+    # Fallback: human-readable board model.
     try:
         with open('/proc/device-tree/model', 'r') as f:
             model = f.read().strip().rstrip('\x00')
@@ -118,6 +128,31 @@ def get_device_name():
     except Exception:
         pass
     return 'Hearth Pi'
+
+
+def connect_saved_wifi():
+    """Try to bring up any saved (non-hotspot) WiFi connection, to recover
+    internet when the hotspot has been up with no connectivity. Returns True if a
+    saved connection was activated."""
+    try:
+        out = subprocess.check_output(
+            ['nmcli', '-t', '-f', 'NAME,TYPE', 'connection', 'show'],
+            text=True, timeout=5)
+        for line in out.strip().split('\n'):
+            parts = line.split(':')
+            if (len(parts) >= 2 and parts[1] == '802-11-wireless'
+                    and parts[0] != 'hearth-hotspot'):
+                log.info('trying saved WiFi connection: %s', parts[0])
+                r = subprocess.run(
+                    ['sudo', '-n', 'nmcli', 'connection', 'up', parts[0]],
+                    capture_output=True, text=True, timeout=30)
+                if r.returncode == 0:
+                    log.info('activated saved WiFi: %s', parts[0])
+                    return True
+                log.warning('saved WiFi %s failed: %s', parts[0], r.stderr.strip())
+    except Exception as e:
+        log.warning('saved WiFi connect error: %s', e)
+    return False
 
 
 def scan_networks():
