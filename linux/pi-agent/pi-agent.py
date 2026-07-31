@@ -1991,8 +1991,8 @@ class Agent:
 
 
 def main():
-    from captive_portal import check_wifi_connected, setup_hotspot, has_internet
-    from captive_portal import CaptivePortal, get_device_name
+    from captive_portal import (check_wifi_connected, setup_hotspot, has_internet,
+                                CaptivePortal, get_device_name, _do_scan)
 
     hotspot_active = False
 
@@ -2039,6 +2039,15 @@ def main():
 
     if start_hotspot:
         device_name = HOTSPOT_NAME or get_device_name()
+        # Scan for nearby WiFi *before* bringing up the AP, while the radio is
+        # still in station mode. This populates the cached network list so the
+        # captive portal can show available networks without dropping the phone's
+        # connection later.
+        log.info('scanning for nearby WiFi before starting hotspot')
+        try:
+            _do_scan()
+        except Exception as e:
+            log.warning('startup scan failed: %s', e)
         portal = CaptivePortal()
         portal.start()
         setup_hotspot(device_name)

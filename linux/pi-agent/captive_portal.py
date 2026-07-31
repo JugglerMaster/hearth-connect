@@ -17,6 +17,7 @@ import re
 import socket
 import subprocess
 import threading
+import time
 from http.server import HTTPServer, BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
@@ -155,36 +156,94 @@ def connect_saved_wifi():
     return False
 
 
-def scan_networks():
-    """Scan for available WiFi networks using nmcli."""
+# Cached scan results. The Pi has a single WiFi radio; while the hotspot AP is
+# up it cannot scan for other networks, so we scan once (at startup, before the
+# AP is brought up, and on demand) and serve the cached list to the portal.
+scan_cache = []
+scan_cache_ts = 0.0
+_scan_in_progress = False
+
+
+def _is_hotspot_active():
     try:
-        subprocess.run(['nmcli', 'device', 'wifi', 'rescan'],
-                       timeout=10, capture_output=True)
         out = subprocess.check_output(
-            ['nmcli', '-t', '-f', 'SSID,SIGNAL,SECURITY', 'device', 'wifi', 'list'],
-            text=True, timeout=10
-        )
-        networks = []
-        seen = set()
-        for line in out.strip().split('\n'):
-            if not line:
-                continue
-            parts = line.split(':')
-            if len(parts) >= 3:
-                ssid = parts[0]
-                if ssid and ssid not in seen and ssid != '':
-                    seen.add(ssid)
-                    networks.append({
-                        'ssid': ssid,
-                        'signal': int(parts[1]) if parts[1].isdigit() else 0,
-                        'security': parts[2] if parts[2] else 'Open',
-                    })
-        # Sort by signal strength
-        networks.sort(key=lambda n: n['signal'], reverse=True)
-        return networks
+            ['nmcli', '-t', '-f', 'NAME', 'connection', 'show', '--active'],
+            text=True, timeout=5)
+        return 'hearth-hotspot' in out.split()
+    except Exception:
+        return False
+
+
+def _do_scan():
+    """Perform a WiFi scan. If the hotspot AP is currently up, drop it first so
+    the radio can scan as a station, then restore the AP. Results are cached."""
+    global scan_cache, scan_cache_ts, _scan_in_progress
+    _scan_in_progress = True
+    restore = False
+    try:
+        if _is_hotspot_active():
+            log.info('hotspot active — dropping AP to scan for networks')
+            subprocess.run(['sudo', '-n', 'nmcli', 'connection', 'down', 'hearth-hotspot'],
+                           capture_output=True, timeout=10)
+            restore = True
+            time.sleep(2)
+        try:
+            subprocess.run(['nmcli', 'device', 'wifi', 'rescan'],
+                           timeout=10, capture_output=True)
+            # The rescan is async — give it a few seconds before listing.
+            time.sleep(4)
+            out = subprocess.check_output(
+                ['nmcli', '-t', '-f', 'SSID,SIGNAL,SECURITY', 'device', 'wifi', 'list'],
+                text=True, timeout=10)
+            networks = []
+            seen = set()
+            for line in out.strip().split('\n'):
+                if not line:
+                    continue
+                parts = line.split(':')
+                if len(parts) >= 3:
+                    ssid = parts[0]
+                    if ssid and ssid not in seen and ssid != '':
+                        seen.add(ssid)
+                        try:
+                            signal = int(parts[1]) if parts[1].isdigit() else 0
+                        except ValueError:
+                            signal = 0
+                        networks.append({
+                            'ssid': ssid,
+                            'signal': signal,
+                            'security': parts[2] if parts[2] else 'Open',
+                        })
+            networks.sort(key=lambda n: n['signal'], reverse=True)
+            scan_cache = networks
+            log.info('scanned %d WiFi networks', len(networks))
+        finally:
+            if restore:
+                log.info('restoring hotspot AP after scan')
+                subprocess.run(['sudo', '-n', 'nmcli', 'connection', 'up', 'hearth-hotspot'],
+                               capture_output=True, timeout=15)
+                # Make sure the captive DNS is still serving on the restored AP.
+                try:
+                    _setup_captive_dns(get_wifi_interface())
+                except Exception:
+                    pass
     except Exception as e:
         log.warning('WiFi scan failed: %s', e)
-        return []
+    finally:
+        scan_cache_ts = time.time()
+        _scan_in_progress = False
+
+
+def scan_networks():
+    """Return cached nearby WiFi networks. If the cache is stale/empty, start a
+    background scan (which temporarily drops the AP when it's up) and return the
+    current cache. The caller should poll /scan to pick up the refreshed list."""
+    if _scan_in_progress:
+        return scan_cache
+    if scan_cache and (time.time() - scan_cache_ts) < 45:
+        return scan_cache
+    threading.Thread(target=_do_scan, daemon=True).start()
+    return scan_cache
 
 
 def setup_hotspot(device_name):
@@ -413,33 +472,43 @@ PORTAL_HTML = """\
 <script>
 let selectedSecurity = '';
 
+function renderNetworks(networks) {
+  const list = document.getElementById('network-list');
+  list.innerHTML = '';
+  for (const net of networks) {
+    const item = document.createElement('div');
+    item.className = 'network-item';
+    item.onclick = () => selectNetwork(net.ssid, net.security);
+    const lock = net.security && net.security !== 'Open' ? '<span class="network-lock">🔒</span>' : '';
+    item.innerHTML = `
+      <div>
+        <span class="network-name">${escHtml(net.ssid)}</span>${lock}
+      </div>
+      <span class="network-signal">${net.signal}%</span>
+    `;
+    list.appendChild(item);
+  }
+}
+
+// Scanning briefly drops the WiFi connection (the AP must come down so the radio
+// can scan as a station). Poll /scan and retry across the drop so the list fills in.
 async function scanNetworks() {
   const list = document.getElementById('network-list');
-  list.innerHTML = '<p style="color:#86868b;font-size:14px;padding:8px 0">Scanning...</p>';
-  try {
-    const res = await fetch('/scan');
-    const networks = await res.json();
-    if (networks.length === 0) {
-      list.innerHTML = '<p style="color:#86868b;font-size:14px;padding:8px 0">No networks found. Tap Refresh.</p>';
-      return;
+  list.innerHTML = '<p style="color:#86868b;font-size:14px;padding:8px 0">Scanning… your WiFi may disconnect for a few seconds.</p>';
+  for (let attempt = 0; attempt < 12; attempt++) {
+    try {
+      const res = await fetch('/scan');
+      const networks = await res.json();
+      if (networks.length > 0) {
+        renderNetworks(networks);
+        return;
+      }
+    } catch (e) {
+      // Connection dropped during the scan — keep retrying.
     }
-    list.innerHTML = '';
-    for (const net of networks) {
-      const item = document.createElement('div');
-      item.className = 'network-item';
-      item.onclick = () => selectNetwork(net.ssid, net.security);
-      const lock = net.security && net.security !== 'Open' ? '<span class="network-lock">🔒</span>' : '';
-      item.innerHTML = `
-        <div>
-          <span class="network-name">${escHtml(net.ssid)}</span>${lock}
-        </div>
-        <span class="network-signal">${net.signal}%</span>
-      `;
-      list.appendChild(item);
-    }
-  } catch(e) {
-    list.innerHTML = '<p style="color:#ff3b30;font-size:14px;padding:8px 0">Scan failed. Tap Refresh.</p>';
+    await new Promise(r => setTimeout(r, 1500));
   }
+  list.innerHTML = '<p style="color:#86868b;font-size:14px;padding:8px 0">No networks found. Tap Refresh.</p>';
 }
 
 function selectNetwork(ssid, security) {
