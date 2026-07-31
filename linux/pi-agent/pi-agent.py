@@ -607,6 +607,7 @@ class MonitorSession:
         self._closing = False  # set during close() to prevent regression rebuilds on a dead session
         self.rxvol = None
         self._making_offer = False
+        self._answering = False  # True while we are answering a renegotiation OFFER
         self._last_offer_ts = 0.0
         self._pipeline_gen = 0  # bumped by build(); stale offers from old gens are discarded
         self._mid_map = {}
@@ -749,6 +750,13 @@ class MonitorSession:
         # OFFERs. Require a minimum gap between offers.
         if self._closing:
             log.debug('on-negotiation-needed ignored — session %s is closing',
+                      self.subscriber_id)
+            return
+        if self._answering:
+            # We are answering a renegotiation OFFER from the base station
+            # (e.g. it added a talkback track). Don't fire a competing OFFER
+            # back — that causes glare and the talkback audio never connects.
+            log.debug('on-negotiation-needed ignored — answering re-offer for %s',
                       self.subscriber_id)
             return
         now = time.time()
@@ -935,6 +943,53 @@ class MonitorSession:
         promise = Gst.Promise.new_with_change_func(self.on_remote_set)
         self.webrtc.emit('set-remote-description', answer, promise)
         self._making_offer = False
+
+    def set_remote_offer(self, sdp_text):
+        """Answer a renegotiation OFFER from the base station (e.g. it added a
+        talkback audio track).
+
+        The monitor PC is normally the offerer, but the browser answerer can
+        re-offer when it adds/removes a track. If we silently ignore that OFFER
+        (as the old code did), the new m-line is never negotiated and the
+        talkback audio never reaches the Pi's speaker.
+        """
+        if self._closing:
+            return
+        _ret, sdp = GstSdp.SDPMessage.new()
+        GstSdp.sdp_message_parse_buffer(sdp_text.encode(), sdp)
+        offer = GstWebRTC.WebRTCSessionDescription.new(GstWebRTC.WebRTCSDPType.OFFER, sdp)
+        self._mid_map = self._parse_mids(sdp_text)
+        log.info('monitor session %s answering renegotiation OFFER', self.subscriber_id)
+        self._answering = True
+        promise = Gst.Promise.new_with_change_func(self.on_remote_offer_set)
+        self.webrtc.emit('set-remote-description', offer, promise)
+
+    def on_remote_offer_set(self, promise):
+        promise.wait()
+        try:
+            apromise = Gst.Promise.new_with_change_func(self.on_answer_created)
+            self.webrtc.emit('create-answer', None, apromise)
+        except Exception as e:
+            log.warning('monitor session %s create-answer emit failed: %s',
+                        self.subscriber_id, e)
+            self._answering = False
+
+    def on_answer_created(self, promise):
+        try:
+            promise.wait()
+            reply = promise.get_reply()
+            answer = reply.get_value('answer')
+            if answer is None:
+                log.error('monitor session %s answer is None', self.subscriber_id)
+                return
+            promise2 = Gst.Promise.new_with_change_func(self.on_local_description_set)
+            self.webrtc.emit('set-local-description', answer, promise2)
+            text = answer.sdp.as_text()
+            self.agent.enqueue_ws({'type': 'ANSWER', 'payload': {
+                'to': self.subscriber_id, 'sdp': {'type': 'answer', 'sdp': text}}})
+            log.info('monitor session %s ANSWER sent for renegotiation', self.subscriber_id)
+        finally:
+            self._answering = False
 
     def add_ice(self, cand, mline, mid):
         # Browsers send the candidate as a JSON dict (RTCPeerConnection
@@ -1265,6 +1320,7 @@ class Agent:
         self._audio_peak_suppressed = False  # set True on first UNKNOWN_TYPE from server
         self._mdns_attempted = False  # only try mDNS once per startup unless re-triggered
         self._label_persisted = False  # persist device_label on first WELCOME
+        self._label_changed = False    # base station renamed the device
 
     def _load_device_id(self):
         """Return a stable per-install device id.
@@ -1344,7 +1400,9 @@ class Agent:
             if os.path.exists(label_file):
                 with open(label_file) as f:
                     existing = f.read().strip()
-                if existing:
+                # Ignore a stale cached "Pi Agent" (the old shipped default) so a
+                # blank DEVICE_LABEL correctly falls through to the hostname.
+                if existing and existing.lower() != 'pi agent':
                     return existing
         except Exception:
             pass
@@ -1605,9 +1663,13 @@ class Agent:
                     self.audio_monitor_sessions[frm] = sess
                 sess.set_remote_offer(p['sdp']['sdp'])
             else:
-                # The Pi is the offerer on the monitor PC; the base never offers
-                # there. Ignore (a renegotiation offer would need answerer logic).
-                log.debug('ignoring non-broadcast OFFER from %s', frm)
+                # The Pi is normally the offerer on the monitor PC. But the base
+                # station renegotiates (e.g. addTalkback adds a mic track) by
+                # sending a re-offer; answer it or the new m-line never connects.
+                if frm in self.sessions:
+                    self.sessions[frm].set_remote_offer(p['sdp']['sdp'])
+                else:
+                    log.debug('ignoring non-broadcast OFFER from %s', frm)
         elif t == 'ANSWER':
             # Only the monitor PC (offerer) receives an ANSWER. The broadcast PC
             # is the answerer, so it never gets one — ignore broadcast ANSWERs.
@@ -1785,6 +1847,18 @@ class Agent:
         }})
 
     def apply_config(self):
+        # Device label: the base station can rename the device. When it does,
+        # adopt the new name and persist it to config.env so it survives a
+        # restart and is used for things like the hotspot SSID.
+        new_label = (self.config.get('label') or '').strip()
+        if new_label and new_label != self.device_label:
+            log.info('device label changed via config: %s -> %s',
+                     self.device_label, new_label)
+            self.device_label = new_label
+            self._label_changed = True
+            self._persist_device_label(new_label)
+            self.persist_env()
+
         # Re-apply speaker volume live to any active receive chains.
         for s in self.sessions.values():
             s.apply_rx_volume()
@@ -1857,8 +1931,9 @@ class Agent:
         """Write base-station-driven settings back to the env file so they
         survive a restart. The values persisted are exactly the ones the base
         station can change live: VIDEO_DEVICE, AUDIO_DEVICE, RESOLUTION,
-        FRAMERATE. Any other env vars (SERVER_URL, ROOM_ID, SPEAKER_DEVICE,
-        AUDIO_SINK, MAX_SUBSCRIBERS, TEST_SOURCE, …) are left untouched.
+        FRAMERATE, and (when the device has been renamed) DEVICE_LABEL. Any
+        other env vars (SERVER_URL, ROOM_ID, SPEAKER_DEVICE, AUDIO_SINK,
+        MAX_SUBSCRIBERS, TEST_SOURCE, …) are left untouched.
         Recreates the file from defaults if it is missing."""
         try:
             lines = []
@@ -1872,11 +1947,16 @@ class Agent:
                 if key in ('VIDEO_DEVICE', 'AUDIO_DEVICE', 'RESOLUTION', 'FRAMERATE'):
                     dropped.add(key)
                     continue  # drop old value; re-emit below
+                if key == 'DEVICE_LABEL' and self._label_changed:
+                    continue  # re-emit below with the new name
                 out.append(line)
             out.append('VIDEO_DEVICE=' + str(self._last_video_device))
             out.append('AUDIO_DEVICE=' + str(self._last_audio_device))
             out.append('RESOLUTION=' + str(self.resolution))
             out.append('FRAMERATE=' + str(self.framerate))
+            if self._label_changed:
+                out.append('DEVICE_LABEL=' + self.device_label)
+                self._label_changed = False
             os.makedirs(os.path.dirname(CONFIG_FILE) or '.', exist_ok=True)
             with open(CONFIG_FILE, 'w') as f:
                 f.write('\n'.join(out) + '\n')

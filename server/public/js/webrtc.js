@@ -23,6 +23,11 @@ class WebRTCManager {
     this.pendingCandidates = new Map();
     // peerId → { makingOffer, ignoreOffer, isPolite, connected }
     this.pcMeta = new Map();
+    // peerId → RTCRtpSender pre-negotiated for talkback (sendrecv audio
+    // transceiver added at subscribe time). Enabling talkback then just
+    // replaceTrack()s this sender, which does NOT trigger renegotiation — so
+    // the live monitor connection never drops its ICE.
+    this.talkbackSenders = new Map();
 
     this.iceServers = {
       iceServers: [
@@ -133,6 +138,7 @@ class WebRTCManager {
 
     // Perfect-negotiation: the only driver of offer/answer flow.
     pc.onnegotiationneeded = async () => {
+      if (pc._suppressNegotiation) return;
       try {
         meta.makingOffer = true;
         await pc.setLocalDescription();
@@ -167,6 +173,27 @@ class WebRTCManager {
 
     if (this.localStream && direction === 'send') {
       this.addTracksToPeer(pc);
+    }
+
+    // Pre-negotiate a send-capable audio transceiver on monitor (recv)
+    // subscriptions so talkback can be toggled with replaceTrack() instead of
+    // addTrack(). addTrack() forces a full SDP renegotiation, which restarts ICE
+    // and drops the live feed; replaceTrack() does not. The sender starts with
+    // no track (sends nothing) until talkback is enabled.
+    if (direction === 'recv') {
+      // The base is the answerer for this PC; any negotiation is driven by the
+      // remote OFFER or by replaceTrack(), never by a local offer we initiate.
+      // Keep negotiation suppressed so the pre-added transceiver doesn't fire a
+      // spurious re-offer that would glare with the Pi's offer.
+      pc._suppressNegotiation = true;
+      try {
+        const t = pc.addTransceiver('audio', { direction: 'sendrecv' });
+        try { t.sender.replaceTrack(null); } catch (e) { /* null track is fine */ }
+        this.talkbackSenders.set(peerId, t.sender);
+      } catch (e) {
+        console.warn('[webrtc] pre-negotiate talkback transceiver failed for', peerId, e);
+        this.talkbackSenders.delete(peerId);
+      }
     }
 
     return pc;
@@ -608,6 +635,19 @@ class WebRTCManager {
         pc = this.createPeerConnection(targetPeerId, 'recv', false);
       }
 
+      // Preferred path: a sendrecv audio transceiver was pre-negotiated at
+      // subscribe time. Swapping the track via replaceTrack() does NOT fire
+      // onnegotiationneeded, so the live monitor ICE is never restarted.
+      const sender = this.talkbackSenders.get(targetPeerId);
+      if (sender) {
+        const track = stream.getAudioTracks()[0];
+        await sender.replaceTrack(track);
+        track.enabled = true;
+        console.log('[webrtc] talkback enabled via replaceTrack for', targetPeerId);
+        return stream;
+      }
+
+      // Fallback (no pre-negotiated sender): addTrack() forces a renegotiation.
       let added = false;
       for (const track of stream.getAudioTracks()) {
         if (!pc.getSenders().some(s => s.track === track)) {
@@ -618,8 +658,6 @@ class WebRTCManager {
       if (!added) {
         console.log('[webrtc] talkback track already present for', targetPeerId);
       }
-      // addTrack() triggers onnegotiationneeded → renegotiation. Nothing else
-      // to do; the SDP exchange happens automatically.
       return stream;
     } catch (err) {
       console.error('enableTalkback failed:', err);
@@ -628,19 +666,26 @@ class WebRTCManager {
   }
 
   disableTalkback(targetPeerId) {
-    if (this.additionalAudioStream) {
-      const pc = this.peerConnections.get(targetPeerId);
+    const sender = this.talkbackSenders.get(targetPeerId);
+    const pc = this.peerConnections.get(targetPeerId);
+    if (sender && pc) {
+      // Drop the mic from the pre-negotiated sender without renegotiating.
+      try { sender.replaceTrack(null); } catch (e) { console.error('replaceTrack(null) failed', e); }
+      console.log('[webrtc] talkback disabled via replaceTrack for', targetPeerId);
+    } else if (this.additionalAudioStream) {
+      // Fallback path: remove the track (triggers renegotiation).
       if (pc) {
         for (const track of this.additionalAudioStream.getAudioTracks()) {
-          const sender = pc.getSenders().find(s => s.track === track);
-          if (sender) {
-            try { pc.removeTrack(sender); } catch (e) { console.error('removeTalkback failed', e); }
+          const s = pc.getSenders().find(x => x.track === track);
+          if (s) {
+            try { pc.removeTrack(s); } catch (e) { console.error('removeTalkback failed', e); }
           }
         }
       }
+    }
+    if (this.additionalAudioStream) {
       this.additionalAudioStream.getTracks().forEach(t => t.stop());
       this.additionalAudioStream = null;
-      // removeTrack() triggers onnegotiationneeded → renegotiation to drop audio.
     }
   }
 

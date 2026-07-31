@@ -13,6 +13,7 @@ Run from this directory:
 import importlib.util
 import os
 import shutil
+import socket
 import tempfile
 import unittest
 
@@ -809,6 +810,7 @@ def _make_session(agent=None, **overrides):
         _closing=False,
         rxvol=None,
         _making_offer=False,
+        _answering=False,
         _last_offer_ts=0.0,
         _pipeline_gen=0,
         pipeline=None,
@@ -823,6 +825,10 @@ def _make_session(agent=None, **overrides):
     s.on_offer_created = pa.MonitorSession.on_offer_created.__get__(s)
     s._parse_mids = pa.MonitorSession._parse_mids.__get__(s)
     s.on_local_description_set = pa.MonitorSession.on_local_description_set.__get__(s)
+    s.on_negotiation_needed = pa.MonitorSession.on_negotiation_needed.__get__(s)
+    s.set_remote_offer = pa.MonitorSession.set_remote_offer.__get__(s)
+    s.on_remote_offer_set = pa.MonitorSession.on_remote_offer_set.__get__(s)
+    s.on_answer_created = pa.MonitorSession.on_answer_created.__get__(s)
     return s
 
 
@@ -1184,6 +1190,213 @@ class TestDeviceIdResolution(unittest.TestCase):
         # Second construction (simulating a restart) must reuse the same id.
         second = self._agent().device_id
         self.assertEqual(first, second)
+
+
+class TestTalkbackRenegotiation(unittest.TestCase):
+    """Regression: a renegotiation OFFER from the base (addTalkback) must be
+    answered, not ignored, or talkback audio never reaches the Pi speaker."""
+
+    def test_on_negotiation_needed_bails_while_answering(self):
+        import unittest.mock as mock
+        agent = _MockAgent()
+        s = _make_session(agent=agent)
+        s._answering = True
+        webrtc = _MockWebrtc()
+        with mock.patch.object(pa, 'Gst', _MockGst):
+            s.on_negotiation_needed(webrtc)
+        # No competing offer emitted while answering a re-offer.
+        self.assertEqual(len(webrtc._emitted), 0)
+
+    def test_set_remote_offer_answers_renegotiation(self):
+        import unittest.mock as mock
+
+        class _MockSdpMsg:
+            @staticmethod
+            def new():
+                return (None, _MockSdpMsg())
+
+        class _MockGstSdp:
+            SDPMessage = _MockSdpMsg
+            sdp_message_parse_buffer = staticmethod(lambda *a, **k: None)
+
+        class _MockWebRTC:
+            class WebRTCSDPType:
+                OFFER = 'offer'
+                ANSWER = 'answer'
+            class WebRTCSessionDescription:
+                @staticmethod
+                def new(t, sdp):
+                    return ('desc', t, sdp)
+            @staticmethod
+            def WebRTCSessionDescription_new(t, sdp):
+                return ('desc', t, sdp)
+
+        class _FiringPromise:
+            """Promise whose wait() synchronously invokes the change func."""
+            def __init__(self, reply=None):
+                self._cb = None
+                self._reply = reply
+                self._fired = False
+            @staticmethod
+            def new_with_change_func(cb):
+                p = _FiringPromise()
+                p._cb = cb
+                return p
+            def wait(self):
+                if self._fired:
+                    return
+                self._fired = True
+                if self._cb:
+                    self._cb(self)
+            def get_reply(self):
+                class _Answer:
+                    sdp = type('S', (), {'as_text': lambda self: 'v=0\r\n'})()
+                return type('R', (), {'get_value': lambda self, k: _Answer()})()
+
+        class _TestGst:
+            State = _MockGst.State
+            Promise = _FiringPromise
+            @staticmethod
+            def parse_launch(s):
+                return _MockPipeline()
+
+        s = _make_session(agent=_MockAgent())
+
+        class _RenegWebrtc(_MockWebrtc):
+            # Emulating GStreamer: completing set-remote-description fires the
+            # promise's change func (on_remote_offer_set), which emits
+            # create-answer, whose promise then fires on_answer_created.
+            def emit(self, sig, *args):
+                super().emit(sig, *args)
+                if sig == 'set-remote-description':
+                    args[1].wait()
+                elif sig == 'create-answer':
+                    args[1].wait()
+
+        s.webrtc = _RenegWebrtc()
+        s._mid_map = {}
+        sdp_text = 'v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=mid:audio1\r\n'
+
+        with mock.patch.object(pa, 'Gst', _TestGst), \
+             mock.patch.object(pa, 'GstSdp', _MockGstSdp), \
+             mock.patch.object(pa, 'GstWebRTC', _MockWebRTC):
+            s.set_remote_offer(sdp_text)
+            # The OFFER is applied as remote description (only happens when we
+            # are answering a renegotiation), and the mid map is parsed.
+            self.assertEqual(s._mid_map.get(0), 'audio1')
+            self.assertTrue(any(e[0] == 'set-remote-description'
+                                for e in s.webrtc._emitted))
+            # create-answer is emitted during the set-remote-description handler.
+            answer_emits = [e for e in s.webrtc._emitted if e[0] == 'create-answer']
+            self.assertEqual(len(answer_emits), 1)
+            # set-local-description must follow once the answer is created.
+            self.assertTrue(any(e[0] == 'set-local-description'
+                                for e in s.webrtc._emitted))
+        # ANSWER must be enqueued back to the base station.
+        answers = [m for m in s.agent._enqueued if m['type'] == 'ANSWER']
+        self.assertEqual(len(answers), 1)
+        self.assertEqual(answers[0]['payload']['to'], 'test-sub')
+        self.assertFalse(s._answering)
+
+
+class TestConfigLabelPersistence(unittest.TestCase):
+    """Base-station rename must persist to the Pi's config.env DEVICE_LABEL.
+
+    These drive the REAL Agent.apply_config() / persist_env() / _load_device_label()
+    against an isolated temp config.env (never touching /opt/hearth-pi-agent), so
+    the test asserts the same code path the live agent runs when it receives a
+    CONFIG_UPDATED message from the server.
+    """
+    _counter = 0
+
+    def _load_agent(self, config_text, device_label_env=None, cache_label=None):
+        """Import a fresh copy of the agent module with CONFIG_FILE pointed at a
+        temp config.env, and construct an Agent from it. Returns (agent, cfg_path).
+        `cache_label` optionally seeds the persisted device_label cache file so
+        _load_device_label's precedence can be exercised.
+        """
+        TestConfigLabelPersistence._counter += 1
+        d = tempfile.mkdtemp(prefix='piagent_cfg_')
+        cfg = os.path.join(d, 'config.env')
+        with open(cfg, 'w') as f:
+            f.write(config_text)
+        if cache_label is not None:
+            with open(os.path.join(d, 'device_label'), 'w') as f:
+                f.write(cache_label)
+        saved = os.environ.get('CONFIG_FILE')
+        saved_label = os.environ.get('DEVICE_LABEL')
+        os.environ['CONFIG_FILE'] = cfg
+        if device_label_env is not None:
+            os.environ['DEVICE_LABEL'] = device_label_env
+        elif 'DEVICE_LABEL' in os.environ:
+            del os.environ['DEVICE_LABEL']
+        try:
+            name = 'pi_agent_cfg_%d' % TestConfigLabelPersistence._counter
+            spec = importlib.util.spec_from_file_location(
+                name, os.path.join(_HERE, 'pi-agent.py'))
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            agent = mod.Agent()
+            # apply_config -> publish_source -> enqueue_ws would schedule an
+            # unawaited coroutine outside the agent's event loop; neuter it.
+            agent.enqueue_ws = lambda msg: None
+            return agent, cfg, d
+        finally:
+            os.environ['CONFIG_FILE'] = saved if saved is not None else ''
+            if saved is None and 'CONFIG_FILE' in os.environ:
+                del os.environ['CONFIG_FILE']
+            if saved_label is not None:
+                os.environ['DEVICE_LABEL'] = saved_label
+            elif 'DEVICE_LABEL' in os.environ:
+                del os.environ['DEVICE_LABEL']
+
+    def test_rename_persists_to_config_env(self):
+        agent, cfg, d = self._load_agent(
+            "SERVER_URL=\nROOM_ID=default\nDEVICE_LABEL=\nDEVICE_ID=pi-test\n"
+            "RESOLUTION=480p\nFRAMERATE=30\n")
+        agent.device_label = 'pivideo1'          # simulate hostname default
+        agent.config = {'label': 'Nursery Cam'}  # base station rename
+        agent.apply_config()
+        with open(cfg) as f:
+            content = f.read()
+        self.assertIn('DEVICE_LABEL=Nursery Cam', content)
+        cache = os.path.join(d, 'device_label')
+        self.assertTrue(os.path.exists(cache))
+        with open(cache) as f:
+            self.assertEqual(f.read().strip(), 'Nursery Cam')
+
+    def test_rename_is_noop_when_unchanged(self):
+        agent, cfg, d = self._load_agent(
+            "SERVER_URL=\nROOM_ID=default\nDEVICE_LABEL=\nDEVICE_ID=pi-test\n")
+        agent.device_label = 'pivideo1'
+        agent.config = {'label': 'pivideo1'}     # same as current -> no write
+        agent.apply_config()
+        with open(cfg) as f:
+            content = f.read()
+        # Blank line stays; a concrete DEVICE_LABEL=<name> must NOT be written.
+        self.assertNotIn('DEVICE_LABEL=pivideo1', content)
+        self.assertNotIn('DEVICE_LABEL=Nursery', content)
+
+    def test_load_label_explicit_env_wins(self):
+        agent, cfg, d = self._load_agent(
+            "DEVICE_LABEL=\nDEVICE_ID=pi-test\n", device_label_env='FromEnv')
+        self.assertEqual(agent.device_label, 'FromEnv')
+
+    def test_load_label_defaults_to_hostname(self):
+        agent, cfg, d = self._load_agent(
+            "DEVICE_LABEL=\nDEVICE_ID=pi-test\n")
+        self.assertEqual(agent.device_label, socket.gethostname())
+
+    def test_load_label_ignores_stale_pi_agent_cache(self):
+        # A legacy cached "Pi Agent" must not override the hostname default.
+        agent, cfg, d = self._load_agent(
+            "DEVICE_LABEL=\nDEVICE_ID=pi-test\n", cache_label='Pi Agent')
+        self.assertEqual(agent.device_label, socket.gethostname())
+
+    def test_load_label_uses_legitimate_cache(self):
+        agent, cfg, d = self._load_agent(
+            "DEVICE_LABEL=\nDEVICE_ID=pi-test\n", cache_label='CachedName')
+        self.assertEqual(agent.device_label, 'CachedName')
 
 
 if __name__ == '__main__':
