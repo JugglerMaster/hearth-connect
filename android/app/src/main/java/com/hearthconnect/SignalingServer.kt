@@ -449,6 +449,7 @@ class SignalingServer(private val context: Context, private val listener: Server
                         put("deviceId", otherId)
                         put("videoDevices", otherClient.capabilities!!.videoDevices)
                         put("audioDevices", otherClient.capabilities!!.audioDevices)
+                        put("audioOutputDevices", otherClient.capabilities!!.audioOutputDevices)
                     })
                 })
             }
@@ -604,7 +605,13 @@ class SignalingServer(private val context: Context, private val listener: Server
 
     private fun handleSubscribeBroadcast(connId: String, payload: JSONObject) {
         val client = getClient(connId) ?: return sendError(connId, "NOT_IN_ROOM", "Join a room first")
-        if (client.deviceType !in BASE_TYPES) return sendError(connId, "NOT_ALLOWED", "Only kiosks and rooms can subscribe to broadcasts")
+        // Any device may receive broadcasts (cameras/monitors included), unless it
+        // has opted out via the broadcastDisabled toggle. This mirrors the
+        // client-side check in pi-agent (SOURCE_ADDED -> broadcastDisabled).
+        val devCfg = deviceConfigs[client.deviceId]
+        if (devCfg != null && devCfg.optBoolean("broadcastDisabled", false)) {
+            return sendError(connId, "NOT_ALLOWED", "Broadcasts are disabled for this device")
+        }
 
         val publisherId = payload.optString("publisherId", "")
         if (publisherId.isEmpty()) return
@@ -619,7 +626,7 @@ class SignalingServer(private val context: Context, private val listener: Server
             })
         })
 
-        Log.i(TAG, "Kiosk ${client.deviceId} subscribed to broadcast from $publisherId")
+        Log.i(TAG, "${client.deviceType} ${client.deviceId} subscribed to broadcast from $publisherId")
     }
 
     private fun handleUnsubscribeBroadcast(connId: String, payload: JSONObject) {
@@ -809,9 +816,11 @@ class SignalingServer(private val context: Context, private val listener: Server
 
         val videoDevices = payload.optJSONArray("videoDevices") ?: JSONArray()
         val audioDevices = payload.optJSONArray("audioDevices") ?: JSONArray()
+        val audioOutputDevices = payload.optJSONArray("audioOutputDevices") ?: JSONArray()
         client.capabilities = DeviceCapabilities(
             videoDevices = videoDevices,
-            audioDevices = audioDevices
+            audioDevices = audioDevices,
+            audioOutputDevices = audioOutputDevices
         )
 
         broadcastAll(JSONObject().apply {
@@ -820,10 +829,11 @@ class SignalingServer(private val context: Context, private val listener: Server
                 put("deviceId", client.deviceId)
                 put("videoDevices", videoDevices)
                 put("audioDevices", audioDevices)
+                put("audioOutputDevices", audioOutputDevices)
             })
         }, excludeDeviceId = client.deviceId)
 
-        Log.i(TAG, "Capabilities reported: ${client.deviceId}")
+        Log.i(TAG, "Capabilities reported: ${client.deviceId} (${videoDevices.length()}v ${audioDevices.length()}a ${audioOutputDevices.length()}out)")
     }
 
     private fun handleAudioPeak(connId: String, payload: JSONObject) {
@@ -1093,7 +1103,8 @@ class SignalingServer(private val context: Context, private val listener: Server
 
     private data class DeviceCapabilities(
         val videoDevices: JSONArray,
-        val audioDevices: JSONArray
+        val audioDevices: JSONArray,
+        val audioOutputDevices: JSONArray = JSONArray()
     )
 
     companion object {

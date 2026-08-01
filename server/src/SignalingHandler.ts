@@ -693,17 +693,18 @@ export class SignalingHandler {
 
     const videoDevices = (payload.videoDevices as DeviceCapabilities['videoDevices']) || [];
     const audioDevices = (payload.audioDevices as DeviceCapabilities['audioDevices']) || [];
-    const capabilities: DeviceCapabilities = { videoDevices, audioDevices };
+    const audioOutputDevices = (payload.audioOutputDevices as DeviceCapabilities['audioDevices']) || [];
+    const capabilities: DeviceCapabilities = { videoDevices, audioDevices, audioOutputDevices };
 
     this.channels.setCapabilities(client.deviceId, capabilities);
 
     // Relay to all other clients (base stations render source pickers from this)
     this.channels.broadcastAll({
       type: 'CAPABILITIES',
-      payload: { deviceId: client.deviceId, videoDevices, audioDevices },
+      payload: { deviceId: client.deviceId, videoDevices, audioDevices, audioOutputDevices },
     }, client.deviceId);
 
-    console.log(`Capabilities reported: ${client.deviceId} (${videoDevices.length}v ${audioDevices.length}a)`);
+    console.log(`Capabilities reported: ${client.deviceId} (${videoDevices.length}v ${audioDevices.length}a ${audioOutputDevices.length}out)`);
   }
 
   private handleAudioPeak(

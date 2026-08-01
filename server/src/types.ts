@@ -58,6 +58,7 @@ export interface MediaDeviceDescriptor {
 export interface DeviceCapabilities {
   videoDevices: MediaDeviceDescriptor[];
   audioDevices: MediaDeviceDescriptor[];
+  audioOutputDevices?: MediaDeviceDescriptor[];
 }
 
 export interface DeviceRecord {

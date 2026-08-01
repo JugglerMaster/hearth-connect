@@ -58,6 +58,7 @@ DEFAULT_FRAMERATE = int(os.environ.get('FRAMERATE', '24'))
 # install scripts). Used to persist base-station-driven config changes. If
 # unset or missing, the agent recreates it from defaults.
 CONFIG_FILE = os.environ.get('CONFIG_FILE', '/opt/hearth-pi-agent/config.env')
+CONFIG_PERSIST_FILE = os.environ.get('CONFIG_PERSIST_FILE', '/opt/hearth-pi-agent/config.json')
 
 def _read_env_value(key):
     """Read a KEY=VALUE entry from the env file (CONFIG_FILE).
@@ -372,6 +373,24 @@ def parse_arecord_devices(stdout):
     return devices
 
 
+def parse_aplay_devices(stdout):
+    """Parse `aplay -l` output into [{id,label}] — playback (speaker) devices.
+
+    Mirrors parse_arecord_devices but for output. Used to populate the base
+    station's "Speaker Output" selector so the operator can route talkback /
+    announcement audio to the physically-connected output (e.g. the analog/RCA
+    jack) instead of whatever the default ALSA device resolves to (often HDMI
+    with no speakers)."""
+    devices = []
+    for line in (stdout or '').splitlines():
+        if line.startswith('card '):
+            parts = line.split(':')
+            name = parts[1].strip() if len(parts) > 1 else line
+            card = line.split()[1].rstrip(':')
+            devices.append({'id': 'hw:' + card + ',0', 'label': name})
+    return devices
+
+
 def alsa_channels(device):
     """Detect native channel count for an ALSA device (e.g. 'hw:2,0').
 
@@ -539,12 +558,36 @@ def monitor_pipeline_str(has_video, has_audio, width, height, framerate,
     return ' '.join(parts)
 
 
+def _parse_mids(sdp_text):
+    """Build mline_index→sdpMid mapping from an SDP string.
+
+    GStreamer webrtcbin uses mids like ``video0``/``audio1`` (not bare
+    ``"0"``/``"1"``).  Firefox 127+ enforces strict transceiver mid
+    matching on addIceCandidate, so each candidate *must* carry the exact
+    mid string from the SDP it belongs to.
+    """
+    mid_map = {}
+    mline_idx = -1
+    for line in sdp_text.splitlines():
+        if line.startswith('m='):
+            mline_idx += 1
+        elif line.startswith('a=mid:') and mline_idx >= 0:
+            mid_map[mline_idx] = line[6:]
+    return mid_map
+
+
 def broadcast_pipeline_str(stun=STUN):
     """Build the broadcast (recvonly) webrtcbin launch string (pure)."""
     return 'webrtcbin name=wb stun-server=' + stun
 
 
-def audio_sink_str():
+def audio_sink_str(speaker_device=None):
+    # Precedence: explicit per-device config (speakerDevice) > AUDIO_SINK env >
+    # SPEAKER_DEVICE env > default ALSA device. The default often resolves to
+    # HDMI (no speakers) on a Pi, so letting the operator pick the analog/RCA
+    # jack via config is what makes talkback audible.
+    if speaker_device:
+        return 'alsasink device=' + speaker_device
     if AUDIO_SINK:
         return AUDIO_SINK
     if SPEAKER_DEVICE:
@@ -552,17 +595,35 @@ def audio_sink_str():
     return 'alsasink'
 
 
-def make_audio_recv_chain(pipeline, volume, mute):
+def _sdp_audio_dirs(sdp_text):
+    """Return the m=audio lines and their direction (sendrecv/only) from an SDP."""
+    out = []
+    in_audio = False
+    for line in sdp_text.splitlines():
+        if line.startswith('m=audio'):
+            in_audio = True
+            out.append(line)
+        elif line.startswith('m='):
+            in_audio = False
+        elif in_audio and line.startswith('a=') and any(
+                d in line for d in ('sendrecv', 'sendonly', 'recvonly', 'inactive')):
+            out.append(line)
+    return out
+
+
+def make_audio_recv_chain(pipeline, volume, mute, sink=None):
     """Build an RTP-Opus -> ALSA receive chain and add it to a running pipeline.
 
     Returns (bin, rxvol_element). The volume element is pre-set so the chain is
-    safe to link before any samples arrive.
+    safe to link before any samples arrive. `sink` overrides the ALSA device
+    (e.g. a specific speaker output chosen in base-station settings).
     """
     chain = Gst.parse_bin_from_description(
         'queue ! rtpopusdepay ! opusdec ! audioconvert ! audioresample ! '
-        'volume name=rxvol ! ' + audio_sink_str(), True)
+        'volume name=rxvol ! ' + (sink or audio_sink_str()), True)
     pipeline.add(chain)
     chain.set_state(Gst.State.PLAYING)
+    log.info('audio recv chain built (sink=%s)', sink or audio_sink_str())
     rxvol = chain.get_by_name('rxvol')
     rxvol.set_property('volume', volume)
     rxvol.set_property('mute', mute)
@@ -606,6 +667,8 @@ class MonitorSession:
         self._had_audio_while_playing = False  # track if we had audio in PLAYING state
         self._closing = False  # set during close() to prevent regression rebuilds on a dead session
         self.rxvol = None
+        self.rxchain = None  # the audio receive bin, so we can rebuild it live
+        self._audio_recv_pad = None  # webrtcbin recv pad feeding rxchain
         self._making_offer = False
         self._answering = False  # True while we are answering a renegotiation OFFER
         self._last_offer_ts = 0.0
@@ -690,12 +753,17 @@ class MonitorSession:
         # monitor PC is sendonly, so no recv video pad is expected here.)
         caps = pad.get_current_caps()
         if not caps:
+            log.warning('on_pad_added (monitor): pad %s has no caps yet — skipping', pad)
             return
         st = caps.get_structure(0)
         media = st.get_string('media')
+        log.info('on_pad_added (monitor): media=%s enc=%s', media, st.get_string('encoding-name'))
         if media == 'audio' or 'OPUS' in (st.get_string('encoding-name') or ''):
             chain, self.rxvol = make_audio_recv_chain(
-                self.pipeline, self.agent.speaker_volume(), self._initial_mute())
+                self.pipeline, self.agent.speaker_volume(), self._initial_mute(),
+                audio_sink_str(self.agent.config.get('speakerDevice')))
+            self.rxchain = chain
+            self._audio_recv_pad = pad
             try:
                 pad.link(chain.get_static_pad('sink'))
             except Exception as e:
@@ -713,21 +781,10 @@ class MonitorSession:
         return not (self.agent.talkback_active or self.agent.config.get('audioMode') == 'base')
 
     def _parse_mids(self, sdp_text):
-        """Build mline_index→sdpMid mapping from an SDP string.
-
-        GStreamer webrtcbin uses mids like ``video0``/``audio1`` (not bare
-        ``"0"``/``"1"``).  Firefox 127+ enforces strict transceiver mid
-        matching on addIceCandidate, so each candidate *must* carry the exact
-        mid string from the SDP it belongs to.
-        """
-        mid_map = {}
-        mline_idx = -1
-        for line in sdp_text.splitlines():
-            if line.startswith('m='):
-                mline_idx += 1
-            elif line.startswith('a=mid:') and mline_idx >= 0:
-                mid_map[mline_idx] = line[6:]
-        return mid_map
+        # Thin wrapper so broadcast/listen-in sessions (which aren't subclasses)
+        # can share the module-level _parse_mids helper, and so the unit tests
+        # that bind MonitorSession._parse_mids still work.
+        return _parse_mids(sdp_text)
 
     def set_talkback(self, active):
         self.talkback_active = active
@@ -739,6 +796,41 @@ class MonitorSession:
         self.rxvol.set_property('volume', self.agent.speaker_volume())
         allowed = self.agent.talkback_active or self.agent.config.get('audioMode') == 'base'
         self.rxvol.set_property('mute', not allowed)
+
+    def rebuild_audio_sink(self):
+        """Swap the speaker output device live (no WebRTC renegotiation).
+
+        Tear down the existing RTP-Opus→ALSA receive bin and rebuild it against
+        the newly-selected speaker device, relinking the same webrtcbin recv
+        pad. Called when the operator changes `speakerDevice` in base-station
+        settings. The video/send pipeline is untouched, so the monitor feed
+        keeps playing while only the talkback/announcement output reroutes.
+        """
+        if not self.rxchain or not self._audio_recv_pad:
+            # No receive chain yet (talkback pad hasn't appeared). The next
+            # on_pad_added will pick up the new device automatically.
+            return
+        log.info('rebuilding audio sink for %s -> device %s',
+                 self.subscriber_id, self.agent.config.get('speakerDevice') or 'default')
+        try:
+            sinkpad = self.rxchain.get_static_pad('sink')
+            try:
+                self._audio_recv_pad.unlink(sinkpad)
+            except Exception:
+                pass
+            self.rxchain.set_state(Gst.State.NULL)
+            self.pipeline.remove(self.rxchain)
+        except Exception as e:
+            log.warning('audio sink teardown failed: %s', e)
+        chain, self.rxvol = make_audio_recv_chain(
+            self.pipeline, self.agent.speaker_volume(), self._initial_mute(),
+            audio_sink_str(self.agent.config.get('speakerDevice')))
+        self.rxchain = chain
+        try:
+            self._audio_recv_pad.link(chain.get_static_pad('sink'))
+        except Exception as e:
+            log.warning('audio recv relink failed: %s', e)
+        self.apply_rx_volume()
 
     def on_negotiation_needed(self, element):
         # set-local-description re-triggers on-negotiation-needed, which would
@@ -801,7 +893,7 @@ class MonitorSession:
             promise2 = Gst.Promise.new_with_change_func(self.on_local_description_set)
             self.webrtc.emit('set-local-description', offer, promise2)
             text = offer.sdp.as_text()
-            self._mid_map = self._parse_mids(text)
+            self._mid_map = _parse_mids(text)
             # Log the number of m= lines to verify video+audio are in the offer
             m_lines = [l for l in text.splitlines() if l.startswith('m=')]
             m_types = []
@@ -937,6 +1029,7 @@ class MonitorSession:
 
     def set_remote_answer(self, sdp_text):
         # GStreamer >= 1.20 returns (SDPResult, message) from SDPMessage.new().
+        log.info('RX ANSWER audio-dir: %s', _sdp_audio_dirs(sdp_text))
         _ret, sdp = GstSdp.SDPMessage.new()
         GstSdp.sdp_message_parse_buffer(sdp_text.encode(), sdp)
         answer = GstWebRTC.WebRTCSessionDescription.new(GstWebRTC.WebRTCSDPType.ANSWER, sdp)
@@ -955,10 +1048,11 @@ class MonitorSession:
         """
         if self._closing:
             return
+        log.info('RX RENEG-OFFER audio-dir: %s', _sdp_audio_dirs(sdp_text))
         _ret, sdp = GstSdp.SDPMessage.new()
         GstSdp.sdp_message_parse_buffer(sdp_text.encode(), sdp)
         offer = GstWebRTC.WebRTCSessionDescription.new(GstWebRTC.WebRTCSDPType.OFFER, sdp)
-        self._mid_map = self._parse_mids(sdp_text)
+        self._mid_map = _parse_mids(sdp_text)
         log.info('monitor session %s answering renegotiation OFFER', self.subscriber_id)
         self._answering = True
         promise = Gst.Promise.new_with_change_func(self.on_remote_offer_set)
@@ -1014,6 +1108,11 @@ class MonitorSession:
 
     def on_remote_set(self, promise):
         promise.wait()
+        try:
+            apromise = Gst.Promise.new_with_change_func(self.on_answer_created)
+            self.webrtc.emit('create-answer', None, apromise)
+        except Exception as e:
+            log.warning('create-answer emit failed: %s', e)
 
     def close(self):
         if self.pipeline:
@@ -1042,14 +1141,28 @@ class BroadcastSession:
         self.agent = agent
         self.publisher_id = publisher_id
         self.rxvol = None
+        self.rxchain = None
+        self._audio_recv_pad = None
         self._remote_set = False
+        self._mid_map = {}
         self.build()
 
     def build(self):
         log.info('broadcast session from %s', self.publisher_id)
-        self.pipeline_str = broadcast_pipeline_str(STUN)
-        self.pipeline = Gst.parse_launch(self.pipeline_str)
-        self.webrtc = self.pipeline.get_by_name('wb')
+        # Build the webrtcbin element programmatically rather than via
+        # parse_launch: a single unlinked element string ("webrtcbin name=wb
+        # stun-server=...") parses but get_by_name('wb') then returns None
+        # (GStreamer parse quirk), which made every .connect() below crash with
+        # 'NoneType' has no attribute 'connect' and the broadcast answer was
+        # never produced.
+        self.pipeline = Gst.Pipeline.new('broadcast-%s' % self.publisher_id)
+        self.webrtc = Gst.ElementFactory.make('webrtcbin', 'wb')
+        if self.webrtc is None:
+            log.error('broadcast: webrtcbin element unavailable')
+            return
+        if STUN:
+            self.webrtc.set_property('stun-server', STUN)
+        self.pipeline.add(self.webrtc)
         self.webrtc.connect('on-negotiation-needed', self.on_negotiation_needed)
         self.webrtc.connect('on-ice-candidate', self.on_ice_candidate)
         self.webrtc.connect('pad-added', self.on_pad_added)
@@ -1061,13 +1174,18 @@ class BroadcastSession:
     def on_pad_added(self, element, pad):
         caps = pad.get_current_caps()
         if not caps:
+            log.warning('on_pad_added (broadcast): pad %s has no caps yet — skipping', pad)
             return
         st = caps.get_structure(0)
         media = st.get_string('media')
+        log.info('on_pad_added (broadcast): media=%s enc=%s', media, st.get_string('encoding-name'))
         try:
             if media == 'audio' or 'OPUS' in (st.get_string('encoding-name') or ''):
                 chain, self.rxvol = make_audio_recv_chain(
-                    self.pipeline, self.agent.speaker_volume(), False)  # announcements always play
+                    self.pipeline, self.agent.speaker_volume(), False,
+                    audio_sink_str(self.agent.config.get('speakerDevice')))
+                self.rxchain = chain
+                self._audio_recv_pad = pad
                 pad.link(chain.get_static_pad('sink'))
             elif media == 'video':
                 chain = make_video_recv_chain(self.pipeline)
@@ -1075,10 +1193,44 @@ class BroadcastSession:
         except Exception as e:
             log.warning('broadcast recv link failed: %s', e)
 
+    def rebuild_audio_sink(self):
+        """Swap the speaker output device live for this broadcast session."""
+        if not self.rxchain or not self._audio_recv_pad:
+            return
+        log.info('rebuilding broadcast audio sink -> device %s',
+                 self.agent.config.get('speakerDevice') or 'default')
+        try:
+            sinkpad = self.rxchain.get_static_pad('sink')
+            try:
+                self._audio_recv_pad.unlink(sinkpad)
+            except Exception:
+                pass
+            self.rxchain.set_state(Gst.State.NULL)
+            self.pipeline.remove(self.rxchain)
+        except Exception as e:
+            log.warning('broadcast audio sink teardown failed: %s', e)
+        chain, self.rxvol = make_audio_recv_chain(
+            self.pipeline, self.agent.speaker_volume(), False,
+            audio_sink_str(self.agent.config.get('speakerDevice')))
+        self.rxchain = chain
+        try:
+            self._audio_recv_pad.link(chain.get_static_pad('sink'))
+        except Exception as e:
+            log.warning('broadcast audio recv relink failed: %s', e)
+
+    def on_remote_set(self, promise):
+        # Answerer: just satisfy the set-remote-description change func. The
+        # answer is generated by on_negotiation_needed (fired once the remote
+        # offer is applied). Without this method, set_remote_offer references a
+        # non-existent callback and the broadcast answer is never produced.
+        promise.wait()
+        log.info('broadcast on_remote_set fired (answerer)')
+
     def on_negotiation_needed(self, element):
         # We are the answerer: only create an answer once the remote offer is set.
         if not self._remote_set:
             return
+        log.info('broadcast on_negotiation_needed — creating answer')
         # 'create-answer' takes a different signature than 'create-offer' in
         # some GStreamer versions, so guard both call styles.
         try:
@@ -1101,12 +1253,21 @@ class BroadcastSession:
     def on_local_description_set(self, promise):
         promise.wait()
 
-    def on_ice_candidate(self, element, cand):
+    def on_ice_candidate(self, element, mline_index, candidate):
+        # GStreamer >= 1.20 emits (element, mline_index:int, candidate:str).
+        # Older bindings passed a WebRTCICECandidate object instead; handle both.
+        if isinstance(candidate, str):
+            cand_str = candidate
+            mid = self._mid_map.get(mline_index)
+        else:
+            cand_str = candidate.candidate
+            mline_index = candidate.sdpMLineIndex
+            mid = candidate.sdpMid
         self.agent.enqueue_ws({'type': 'ICE_CANDIDATE', 'payload': {
             'to': self.publisher_id,
-            'candidate': cand.candidate,
-            'sdpMLineIndex': cand.sdpMLineIndex,
-            'sdpMid': cand.sdpMid,
+            'candidate': cand_str,
+            'sdpMLineIndex': mline_index,
+            'sdpMid': mid,
             'isBroadcast': True,
         }})
 
@@ -1118,6 +1279,7 @@ class BroadcastSession:
         _ret, sdp = GstSdp.SDPMessage.new()
         GstSdp.sdp_message_parse_buffer(sdp_text.encode(), sdp)
         offer = GstWebRTC.WebRTCSessionDescription.new(GstWebRTC.WebRTCSDPType.OFFER, sdp)
+        self._mid_map = _parse_mids(sdp_text)
         self._remote_set = True
         promise = Gst.Promise.new_with_change_func(self.on_remote_set)
         self.webrtc.emit('set-remote-description', offer, promise)
@@ -1145,6 +1307,11 @@ class BroadcastSession:
 
     def on_remote_set(self, promise):
         promise.wait()
+        try:
+            apromise = Gst.Promise.new_with_change_func(self.on_answer_created)
+            self.webrtc.emit('create-answer', None, apromise)
+        except Exception as e:
+            log.warning('create-answer emit failed: %s', e)
 
     def close(self):
         if self.pipeline:
@@ -1166,7 +1333,10 @@ class AudioMonitorSession:
         self.agent = agent
         self.publisher_id = publisher_id
         self.rxvol = None
+        self.rxchain = None
+        self._audio_recv_pad = None
         self._remote_set = False
+        self._mid_map = {}
         self.build()
 
     def _volume(self):
@@ -1180,9 +1350,16 @@ class AudioMonitorSession:
 
     def build(self):
         log.info('audio-monitor session listening to %s', self.publisher_id)
-        self.pipeline_str = broadcast_pipeline_str(STUN)
-        self.pipeline = Gst.parse_launch(self.pipeline_str)
-        self.webrtc = self.pipeline.get_by_name('wb')
+        # Same get_by_name('wb') parse quirk as BroadcastSession — build the
+        # webrtcbin element programmatically so the recv pipeline is usable.
+        self.pipeline = Gst.Pipeline.new('audio-monitor-%s' % self.publisher_id)
+        self.webrtc = Gst.ElementFactory.make('webrtcbin', 'wb')
+        if self.webrtc is None:
+            log.error('audio-monitor: webrtcbin element unavailable')
+            return
+        if STUN:
+            self.webrtc.set_property('stun-server', STUN)
+        self.pipeline.add(self.webrtc)
         self.webrtc.connect('on-negotiation-needed', self.on_negotiation_needed)
         self.webrtc.connect('on-ice-candidate', self.on_ice_candidate)
         self.webrtc.connect('pad-added', self.on_pad_added)
@@ -1200,7 +1377,10 @@ class AudioMonitorSession:
         try:
             if media == 'audio' or 'OPUS' in (st.get_string('encoding-name') or ''):
                 chain, self.rxvol = make_audio_recv_chain(
-                    self.pipeline, self._volume(), False)  # listen-in always plays
+                    self.pipeline, self._volume(), False,
+                    audio_sink_str(self.agent.config.get('speakerDevice')))
+                self.rxchain = chain
+                self._audio_recv_pad = pad
                 pad.link(chain.get_static_pad('sink'))
             elif media == 'video':
                 # Headless: drop video without decoding — audio only.
@@ -1208,6 +1388,31 @@ class AudioMonitorSession:
                 pad.link(chain.get_static_pad('sink'))
         except Exception as e:
             log.warning('audio-monitor recv link failed: %s', e)
+
+    def rebuild_audio_sink(self):
+        """Swap the speaker output device live for this listen-in session."""
+        if not self.rxchain or not self._audio_recv_pad:
+            return
+        log.info('rebuilding audio-monitor sink -> device %s',
+                 self.agent.config.get('speakerDevice') or 'default')
+        try:
+            sinkpad = self.rxchain.get_static_pad('sink')
+            try:
+                self._audio_recv_pad.unlink(sinkpad)
+            except Exception:
+                pass
+            self.rxchain.set_state(Gst.State.NULL)
+            self.pipeline.remove(self.rxchain)
+        except Exception as e:
+            log.warning('audio-monitor sink teardown failed: %s', e)
+        chain, self.rxvol = make_audio_recv_chain(
+            self.pipeline, self._volume(), False,
+            audio_sink_str(self.agent.config.get('speakerDevice')))
+        self.rxchain = chain
+        try:
+            self._audio_recv_pad.link(chain.get_static_pad('sink'))
+        except Exception as e:
+            log.warning('audio-monitor recv relink failed: %s', e)
 
     def on_negotiation_needed(self, element):
         if not self._remote_set:
@@ -1231,12 +1436,21 @@ class AudioMonitorSession:
     def on_local_description_set(self, promise):
         promise.wait()
 
-    def on_ice_candidate(self, element, cand):
+    def on_ice_candidate(self, element, mline_index, candidate):
+        # GStreamer >= 1.20 emits (element, mline_index:int, candidate:str).
+        # Older bindings passed a WebRTCICECandidate object instead; handle both.
+        if isinstance(candidate, str):
+            cand_str = candidate
+            mid = self._mid_map.get(mline_index)
+        else:
+            cand_str = candidate.candidate
+            mline_index = candidate.sdpMLineIndex
+            mid = candidate.sdpMid
         self.agent.enqueue_ws({'type': 'ICE_CANDIDATE', 'payload': {
             'to': self.publisher_id,
-            'candidate': cand.candidate,
-            'sdpMLineIndex': cand.sdpMLineIndex,
-            'sdpMid': cand.sdpMid,
+            'candidate': cand_str,
+            'sdpMLineIndex': mline_index,
+            'sdpMid': mid,
         }})
 
     def on_bus_message(self, bus, message):
@@ -1246,6 +1460,7 @@ class AudioMonitorSession:
         _ret, sdp = GstSdp.SDPMessage.new()
         GstSdp.sdp_message_parse_buffer(sdp_text.encode(), sdp)
         offer = GstWebRTC.WebRTCSessionDescription.new(GstWebRTC.WebRTCSDPType.OFFER, sdp)
+        self._mid_map = _parse_mids(sdp_text)
         self._remote_set = True
         promise = Gst.Promise.new_with_change_func(self.on_remote_set)
         self.webrtc.emit('set-remote-description', offer, promise)
@@ -1288,6 +1503,7 @@ class Agent:
         self.device_id_file = _os.path.join(id_dir, 'device_id')
         self.device_id = self._load_device_id()
         self.device_label = self._load_device_label()
+        self.config = self._load_persisted_config()
         self.ws = None
         self.has_video = False
         self.has_audio = False
@@ -1419,6 +1635,28 @@ class Agent:
         except Exception as e:
             log.warning('could not persist device label: %s', e)
 
+    def _load_persisted_config(self):
+        """Load previously-persisted operator config (e.g. speakerDevice) so
+        settings survive agent restarts. Returns a dict (possibly empty)."""
+        try:
+            if os.path.exists(CONFIG_PERSIST_FILE):
+                with open(CONFIG_PERSIST_FILE) as f:
+                    return json.load(f)
+        except Exception as e:
+            log.warning('could not load persisted config: %s', e)
+        return {}
+
+    def _persist_config(self):
+        """Persist the current operator config to disk."""
+        try:
+            d = os.path.dirname(CONFIG_PERSIST_FILE) or '.'
+            os.makedirs(d, exist_ok=True)
+            with open(CONFIG_PERSIST_FILE, 'w') as f:
+                json.dump(self.config, f)
+            log.info('persisted config to %s: %s', CONFIG_PERSIST_FILE, self.config)
+        except Exception as e:
+            log.warning('could not persist config: %s', e)
+
     async def _discover_server_via_mdns(self):
         """Query mDNS for a Hearth-Connect server. Updates WS_URL on success.
 
@@ -1523,6 +1761,7 @@ class Agent:
     def enumerate_devices(self):
         self.video_devices = []
         self.audio_devices = []
+        self.audio_output_devices = []
         try:
             out = subprocess.run(['v4l2-ctl', '--list-devices'], capture_output=True, text=True, timeout=10)
             self.video_devices = parse_v4l2_devices(out.stdout)
@@ -1533,6 +1772,11 @@ class Agent:
             self.audio_devices = parse_arecord_devices(out.stdout)
         except Exception as e:
             log.warning('arecord -l failed: %s', e)
+        try:
+            out = subprocess.run(['aplay', '-l'], capture_output=True, text=True, timeout=10)
+            self.audio_output_devices = parse_aplay_devices(out.stdout)
+        except Exception as e:
+            log.warning('aplay -l failed: %s', e)
         self.has_video = bool(self.video_devices)
         self.has_audio = bool(self.audio_devices)
 
@@ -1570,12 +1814,14 @@ class Agent:
         return source_type(self.has_video, self.has_audio)
 
     def send_capabilities(self):
-        log.info('send_capabilities: v=%d a=%d (%s)',
-                 len(self.video_devices), len(self.audio_devices), self.device_id)
+        log.info('send_capabilities: v=%d a=%d out=%d (%s)',
+                 len(self.video_devices), len(self.audio_devices),
+                 len(self.audio_output_devices), self.device_id)
         self.enqueue_ws({'type': 'CAPABILITIES', 'payload': {
             'deviceId': self.device_id,
             'videoDevices': self.video_devices,
             'audioDevices': self.audio_devices,
+            'audioOutputDevices': self.audio_output_devices,
         }})
 
     async def handle_message(self, msg):
@@ -1592,7 +1838,8 @@ class Agent:
             if server_dev and server_dev != self.device_id:
                 log.warning('server WELCOME deviceId %r differs from local %r '
                             '— keeping local stable id', server_dev, self.device_id)
-            self.config = p.get('config', {}) or {}
+            self.config.update(p.get('config', {}) or {})
+            self._persist_config()
             if not self._label_persisted:
                 self._persist_device_label(self.device_label)
                 self._label_persisted = True
@@ -1738,6 +1985,7 @@ class Agent:
                 self.reconcile_audio_monitor()
         elif t == 'CONFIG_UPDATED':
             self.config = p.get('config', {}) or {}
+            self._persist_config()
             self.apply_config()
         elif t == 'ERROR':
             log.warning('server error: %s', p)
@@ -1867,6 +2115,22 @@ class Agent:
                 s.rxvol.set_property('volume', self.speaker_volume())
         for s in self.audio_monitor_sessions.values():
             s.apply_volume()
+
+        # Speaker output device change: reroute every active receive chain to
+        # the newly-selected ALSA device (talkback, broadcasts, listen-in) live,
+        # without tearing down the WebRTC session.
+        new_speaker = self.config.get('speakerDevice') or None
+        if new_speaker != getattr(self, '_last_speaker_device', None):
+            log.info('speakerDevice changed: %s -> %s',
+                     getattr(self, '_last_speaker_device', None), new_speaker)
+            self._last_speaker_device = new_speaker
+            for s in self.sessions.values():
+                s.rebuild_audio_sink()
+            for s in self.broadcast_sessions.values():
+                s.rebuild_audio_sink()
+            for s in self.audio_monitor_sessions.values():
+                s.rebuild_audio_sink()
+            self.persist_env()
 
         # Listen-in target may have changed (enabled/disabled or new source id).
         self.reconcile_audio_monitor()

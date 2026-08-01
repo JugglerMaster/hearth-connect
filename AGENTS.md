@@ -117,6 +117,13 @@ hearth-connect/
 > **Note:** `android/app/src/main/assets/public` is a symlink to `server/public/`. Edits to
 > `server/public/` automatically apply to both the Node server and the Android hub — no
 > separate copy step needed.
+>
+> **Build gotcha:** Gradle does NOT reliably detect changes that arrive through this symlink
+> (it reports the asset task as "up-to-date" and ships stale JS/HTML). Always run
+> `./gradlew clean assembleDebug` (not just `assembleDebug`) when you change anything under
+> `server/public/`, then `adb install -r` + force-stop/restart the hub. Verify the change
+> landed by extracting the asset from the APK (`unzip -p app-debug.apk assets/public/js/<file>`),
+> NOT by grepping the dex (JS assets are not compiled into the dex).
 
 ## Client-Side Verification (ad-hoc)
 

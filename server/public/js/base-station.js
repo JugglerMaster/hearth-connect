@@ -32,6 +32,7 @@
   let broadcastVideoTrack = null;
   let broadcastAudioTrack = null;
   let broadcastSubscribers = new Set(); // kioskIds receiving our broadcast
+  let broadcastCloseTimer = null;       // deferred teardown so quick holds connect
 
   // Simple "Broadcast Message" (audio-only announcement to all kiosks).
   let isAnnouncing = false;
@@ -906,35 +907,43 @@
     console.log('[base] Announce started:', announceSourceId);
   }
 
-  function stopAnnounce() {
-    announceHolding = false;
-    announceGen++;            // invalidate any in-flight startAnnounce
-    currentAnnounceGen = announceGen;
-    isAnnouncing = false;
-    if (announceSourceId) {
-      sig.unbroadcastSource(announceSourceId);
-      announceSourceId = null;
+    function stopAnnounce() {
+      announceHolding = false;
+      announceGen++;            // invalidate any in-flight startAnnounce
+      currentAnnounceGen = announceGen;
+      isAnnouncing = false;
+      if (announceSourceId) {
+        sig.unbroadcastSource(announceSourceId);
+        announceSourceId = null;
+      }
+      // Keep the broadcast stream + peer connections alive for a short grace
+      // window after release. A broadcast opens a brand-new PeerConnection
+      // (cold ICE/DTLS), which takes ~1-2s to connect — far longer than a
+      // renegotiation on an existing monitor PC. Tearing down immediately on
+      // release would drop the connection before audio ever reaches the
+      // listener, so we defer the teardown to let the handshake finish.
+      const subs = Array.from(broadcastSubscribers);
+      broadcastSubscribers.clear();
+      if (broadcastCloseTimer) clearTimeout(broadcastCloseTimer);
+      broadcastCloseTimer = setTimeout(() => {
+        subs.forEach(kioskId => rtc.closeBroadcastPeerConnection(kioskId));
+        if (announceStream) {
+          announceStream.getTracks().forEach(t => t.stop());
+          announceStream = null;
+        }
+        broadcastCloseTimer = null;
+      }, 8000);
+      const status = document.getElementById('broadcastStatus');
+      if (status) { status.textContent = 'Broadcast ending…'; status.classList.remove('hidden'); }
+      const btn = document.getElementById('toggleBroadcastButton');
+      if (btn) {
+        btn.classList.remove('btn-danger');
+        btn.classList.add('btn-primary');
+        btn.textContent = '📢 Hold to Broadcast';
+      }
+      showToast('Broadcast stopping…');
+      console.log('[base] Announce stopped (grace teardown in 8s)');
     }
-    // Tear down the per-kiosk broadcast peer connections we opened.
-    broadcastSubscribers.forEach(kioskId => {
-      rtc.closeBroadcastPeerConnection(kioskId);
-    });
-    broadcastSubscribers.clear();
-    if (announceStream) {
-      announceStream.getTracks().forEach(t => t.stop());
-      announceStream = null;
-    }
-    const status = document.getElementById('broadcastStatus');
-    if (status) status.classList.add('hidden');
-    const btn = document.getElementById('toggleBroadcastButton');
-    if (btn) {
-      btn.classList.remove('btn-danger');
-      btn.classList.add('btn-primary');
-      btn.textContent = '📢 Hold to Broadcast';
-    }
-    showToast('Broadcast stopped');
-    console.log('[base] Announce stopped');
-  }
 
   // ─── Grid View Functions ────────────────────────────────
 
@@ -1011,13 +1020,6 @@
     showMonitor();
     renderDevices();
     attachMonitorStream();
-
-    // Auto-enter native fullscreen on a user-initiated watch. The native iOS
-    // player is the only way audio survives a screen lock (regular tabs are
-    // suspended). The immediate call is inside the watch-tap gesture; we also
-    // arm a retry once the stream is playing (see the 'playing' listener).
-    wantFullscreen = true;
-    enterNativeFullscreen();
 
     // Begin connection-quality polling for this peer.
     if (statsStop) { statsStop(); statsStop = null; }
@@ -1251,7 +1253,6 @@
    // (inside the gesture) and again once the stream is actually playing, since
    // the Watch tap fires before srcObject exists and iOS may reject the early
    // call. Native fullscreen is what lets audio survive a screen lock.
-   let wantFullscreen = false;
 
   function showResumeIfPaused() {
     if (!monitorResumeBtn) return;
@@ -1322,13 +1323,6 @@
     monitorVideo.addEventListener('playing', () => {
       resumeArmed = false;
       if (monitorResumeBtn) monitorResumeBtn.classList.add('hidden');
-      // Retry entering native fullscreen now that a stream is playing. This call
-      // is outside the user gesture so iOS may ignore it, but when it works the
-      // audio keeps playing through a subsequent screen lock.
-      if (wantFullscreen) {
-        enterNativeFullscreen();
-        wantFullscreen = false;
-      }
     });
     // Retry auto-resume once the stream is ready to play after FS exit.
     monitorVideo.addEventListener('canplay', onMediaReady);
@@ -1528,6 +1522,21 @@
         </div>`;
     }
 
+    let speakerOutputRow = '';
+    if (caps && caps.audioOutputDevices && caps.audioOutputDevices.length) {
+      const opts = caps.audioOutputDevices.map(a =>
+        `<option value="${a.id}" ${cfg.speakerDevice === a.id ? 'selected' : ''}>${a.label || a.id}</option>`
+      ).join('');
+      speakerOutputRow = `
+        <div class="config-row">
+          <label>Speaker Output</label>
+          <select id="cfg-speakerDevice" title="Which ALSA output plays talkback / announcements (e.g. the analog/RCA jack instead of HDMI)">
+            <option value="">Default (system)</option>
+            ${opts}
+          </select>
+        </div>`;
+    }
+
     const alertEnabled = cfg.audioAlertEnabled !== false; // default on
     const alertThreshold = (cfg.audioAlertThresholdDb != null) ? cfg.audioAlertThresholdDb : -40;
     const hasAudioCap = hasAudio(sourceTypeFor(device.id)) ||
@@ -1540,6 +1549,7 @@
       </div>
       ${cameraRow}
       ${audioSourceRow}
+      ${speakerOutputRow}
       <div class="config-row">
         <label>Resolution</label>
         <select id="cfg-resolution">
@@ -1601,6 +1611,10 @@
       }
       if (caps && caps.audioDevices && caps.audioDevices.length) {
         payload.audioDevice = document.getElementById('cfg-audioDevice').value;
+      }
+      if (caps && caps.audioOutputDevices && caps.audioOutputDevices.length) {
+        const sel = document.getElementById('cfg-speakerDevice');
+        payload.speakerDevice = sel ? sel.value : '';
       }
       if (hasAudioCap) {
         payload.audioAlertEnabled = document.getElementById('cfg-audioAlert').classList.contains('active');
@@ -1842,8 +1856,12 @@
       const pc = rtc.createBroadcastPeerConnection(kioskId);
       // Add our broadcast tracks — onnegotiationneeded (perfect negotiation)
       // fires automatically and sends the offer, so no explicit offer call.
+      // Guard against re-adding tracks: during the announce grace window the
+      // broadcast PC is reused, so the same tracks may already be on senders.
       outStream.getTracks().forEach(track => {
-        pc.addTrack(track, outStream);
+        if (!pc.getSenders().some(s => s.track === track)) {
+          pc.addTrack(track, outStream);
+        }
       });
       const t = outStream.getTracks();
       ftDbgState.tracks = t.filter(x => x.kind === 'video').length + 'v ' +
@@ -1855,6 +1873,7 @@
       capabilitiesByDevice[data.deviceId] = {
         videoDevices: data.videoDevices || [],
         audioDevices: data.audioDevices || [],
+        audioOutputDevices: data.audioOutputDevices || [],
       };
       renderDevices();
     });
