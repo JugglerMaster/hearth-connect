@@ -530,12 +530,14 @@ def monitor_pipeline_str(has_video, has_audio, width, height, framerate,
             parts.append(
                 '{src} ! video/x-raw,width={w},height={h},framerate={fr}/1 '
                 '! videoconvert ! video/x-raw,format=I420 '
-                '! {enc} {enc_opts} ! rtph264pay config-interval=-1 ! queue ! wb.'.format(
+                '! {enc} {enc_opts} ! rtph264pay config-interval=-1 '
+                '! queue max-size-time=500000000 max-size-bytes=1048576 leaky=downstream ! wb.'.format(
                     src=src, w=width, h=height, fr=framerate, enc=enc, enc_opts=enc_opts))
         else:
             parts.append(
                 '{src} {dev} ! videoconvert ! video/x-raw,format=I420,width={w},height={h},framerate={fr}/1 '
-                '! {enc} {enc_opts} ! rtph264pay config-interval=-1 ! queue ! wb.'.format(
+                '! {enc} {enc_opts} ! rtph264pay config-interval=-1 '
+                '! queue max-size-time=500000000 max-size-bytes=1048576 leaky=downstream ! wb.'.format(
                     src=src, dev=dev, w=width, h=height, fr=framerate, enc=enc, enc_opts=enc_opts))
     if has_audio:
         if test_source:
@@ -544,17 +546,28 @@ def monitor_pipeline_str(has_video, has_audio, width, height, framerate,
         else:
             src = 'alsasrc'
             dev = ('device=' + audio_device) if audio_device else ''
+        # provide-clock=false: don't let the ALSA device's (drifting) clock be the
+        # pipeline master. USB/PCI audio clocks tick off true wall-clock, which
+        # makes RTP timestamps drift vs NTP and forces the receiver's jitter
+        # buffer to grow monotonically -> ever-increasing mic-audio latency. Using
+        # the system clock keeps RTP time stable so the receiver stops creeping.
+        # The queue is bounded + leaky=downstream so transient Pi CPU/network
+        # pressure drops a frame (brief stutter) instead of silently accumulating
+        # delay.
+        _audio_src = '{src} {dev} provide-clock=false'.format(src=src, dev=dev)
         if audio_channels > 0:
             parts.append(
-                '{src} {dev} ! capsfilter caps=audio/x-raw,channels={ch} '
+                '{src} ! capsfilter caps=audio/x-raw,channels={ch} '
                 '! audioconvert ! audioresample ! capsfilter caps=audio/x-raw,channels=1 '
-                '! level ! opusenc ! rtpopuspay ! queue ! wb.'.format(
-                    src=src, dev=dev, ch=audio_channels))
+                '! level ! opusenc ! rtpopuspay '
+                '! queue max-size-time=500000000 max-size-bytes=1048576 leaky=downstream ! wb.'.format(
+                    src=_audio_src, dev=dev, ch=audio_channels))
         else:
             parts.append(
-                '{src} {dev} ! audioconvert ! audioresample ! capsfilter caps=audio/x-raw,channels=1 '
-                '! level ! opusenc ! rtpopuspay ! queue ! wb.'.format(
-                    src=src, dev=dev))
+                '{src} ! audioconvert ! audioresample ! capsfilter caps=audio/x-raw,channels=1 '
+                '! level ! opusenc ! rtpopuspay '
+                '! queue max-size-time=500000000 max-size-bytes=1048576 leaky=downstream ! wb.'.format(
+                    src=_audio_src, dev=dev))
     return ' '.join(parts)
 
 
@@ -1970,6 +1983,13 @@ class Agent:
                 # can pick a listen-in target (e.g. 'auto' or a late-arriving one).
                 self.room_sources[src['id']] = src
                 self.reconcile_audio_monitor()
+        elif t == 'PLAY_CLIP':
+            # Record-then-play announcement (plan 18). The WAV is already on the
+            # server; just fetch and play it. No peer connection required.
+            if self.config.get('broadcastDisabled'):
+                log.info('broadcasts disabled — ignoring PLAY_CLIP %s', p.get('clipId'))
+                return
+            self._play_clip(p)
         elif t == 'SOURCE_REMOVED':
             sid = p.get('sourceId')
             for pub, src in list(self.broadcast_sources.items()):
@@ -2057,6 +2077,79 @@ class Agent:
         self.audio_monitor_pub = None
         self.room_sources.clear()
         self.talkback_active = False
+
+    def _play_clip(self, payload):
+        """Fetch a recorded announcement WAV and play it locally (plan 18).
+
+        Runs a GStreamer playbin via gst-launch so resampling is handled for us
+        (the clip is 16 kHz; most Pi ALSA sinks aren't). Falls back to aplay if
+        gst-launch is unavailable. Fire-and-forget: playback isn't awaited.
+        """
+        import subprocess
+        import tempfile
+        import threading
+        import urllib.request
+
+        clip_id = payload.get('clipId', '')
+        rel_url = payload.get('url', '')
+        if not clip_id or not rel_url:
+            log.warning('PLAY_CLIP missing clipId/url — ignoring')
+            return
+        base = WS_URL.replace('wss://', 'https://').replace('ws://', 'http://')
+        url = base.rstrip('/') + rel_url
+        try:
+            resp = urllib.request.urlopen(url, context=_no_verify_ssl(), timeout=15)
+            data = resp.read()
+        except Exception as e:
+            log.error('PLAY_CLIP download failed for %s: %s', clip_id, e)
+            return
+        if not data:
+            log.warning('PLAY_CLIP empty body for %s', clip_id)
+            return
+
+        vol = float(self.config.get('speakerVolume', 0.5))
+        sink = audio_sink_str(self.config.get('speakerDevice') or None)
+        tmp = tempfile.NamedTemporaryFile(prefix='hearth-clip-', suffix='.wav',
+                                          delete=False)
+        tmp.write(data)
+        tmp.close()
+        path = tmp.name
+
+        # gst-launch needs the audio-sink as a single pipeline token; the sink
+        # string ('alsasink device=...') is already space-separated correctly.
+        cmd = ['gst-launch-1.0', '-q',
+               'filesrc', 'location=' + path,
+               '!', 'wavparse', '!', 'audioconvert', '!', 'audioresample',
+               '!', 'volume', 'volume=' + repr(vol),
+               '!', sink]
+
+        def _cleanup(proc):
+            proc.wait()
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+        try:
+            proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.DEVNULL)
+        except FileNotFoundError:
+            # No gst-launch — last-ditch aplay (may fail on non-native rates).
+            log.warning('gst-launch-1.0 not found — falling back to aplay')
+            try:
+                proc = subprocess.Popen(['aplay', '-q', path],
+                                        stdout=subprocess.DEVNULL,
+                                        stderr=subprocess.DEVNULL)
+            except FileNotFoundError:
+                log.error('no audio player available for PLAY_CLIP %s', clip_id)
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+                return
+        threading.Thread(target=_cleanup, args=(proc,), daemon=True).start()
+        log.info('PLAY_CLIP %s playing (%.1fs, vol=%.2f)',
+                 clip_id, (payload.get('durationMs') or 0) / 1000.0, vol)
 
     def reconcile_audio_monitor(self):
         """Subscribe/unsubscribe the headless audio-only listen-in (plan 15).
