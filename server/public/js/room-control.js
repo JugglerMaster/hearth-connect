@@ -1244,6 +1244,26 @@ let streams = {};
       }
     });
 
+    // Record-then-play announcement (plan 18) — see camera.js for the rationale.
+    // Reuses the already-unlocked <audio id="remoteAudio"> element.
+    sig.on('playClip', function (data) {
+      if (!data || !data.url) return;
+      if (currentConfig.broadcastDisabled) return;
+      if (!remoteAudio) return;
+      try {
+        remoteAudio.srcObject = null;
+        remoteAudio.src = data.url;
+        var vol = (currentConfig.speakerVolume != null) ? currentConfig.speakerVolume : 0.5;
+        remoteAudio.volume = Math.max(0, Math.min(1, vol));
+        remoteAudio.muted = false;
+        remoteAudio.onended = function () {
+          remoteAudio.onended = null;
+          try { remoteAudio.removeAttribute('src'); remoteAudio.load(); } catch (e) {}
+        };
+        remoteAudio.play().catch(function () {});
+      } catch (e) {}
+    });
+
     sig.on('sourceRemoved', function (data) {
       // Check if removed source was a broadcast we were receiving
       if (broadcastPeerId) {

@@ -12,6 +12,7 @@ import Bonjour from 'bonjour-service';
 import { ConfigManager } from './ConfigManager';
 import { ChannelManager } from './ChannelManager';
 import { SignalingHandler } from './SignalingHandler';
+import { ClipStore } from './ClipStore';
 import { Transport } from './types';
 
 // ─── Config ────────────────────────────────────────────────
@@ -28,7 +29,8 @@ const MDNS_ENABLED = process.env.MDNS_DISABLED !== 'true'; // enabled by default
 const configManager = new ConfigManager(path.join(DATA_DIR, 'config.json'));
 const channelManager = new ChannelManager();
 channelManager.clearRecentlySeen();
-const signalingHandler = new SignalingHandler(channelManager, configManager);
+const clipStore = new ClipStore();
+const signalingHandler = new SignalingHandler(channelManager, configManager, clipStore);
 
 // ─── Express App ───────────────────────────────────────────
 
@@ -63,6 +65,49 @@ app.post('/api/server-url', (_req, res) => {
   }).catch(() => {
     res.json({ serverUrl, dataUrl: null });
   });
+});
+
+// ─── Broadcast clips (plan 18) ─────────────────────────────
+// The base station records an announcement and uploads the WAV once; every
+// endpoint then fetches it by URL instead of negotiating a peer connection.
+
+app.post(
+  '/api/clip',
+  express.raw({ type: 'audio/wav', limit: ClipStore.MAX_BYTES }),
+  (req, res) => {
+    const body = req.body as Buffer;
+    if (!Buffer.isBuffer(body) || body.length === 0) {
+      res.status(400).json({ error: 'empty clip body' });
+      return;
+    }
+    const clip = clipStore.add({
+      id: randomUUID(),
+      from: String(req.query.from || ''),
+      label: String(req.query.label || 'Base Station'),
+      targetDeviceId: undefined,
+      bytes: body,
+      durationMs: parseInt(String(req.query.durationMs || '0'), 10) || 0,
+    });
+    console.log(`Clip uploaded: ${clip.id} (${body.length} bytes, ${clip.durationMs}ms) from ${clip.from}`);
+    res.json({ clipId: clip.id, url: `/clip/${clip.id}.wav`, durationMs: clip.durationMs });
+  }
+);
+
+app.get('/clip/:id.wav', (req, res) => {
+  // Express strips the literal ".wav" into the param name, so the id param is
+  // just the uuid. Accept a trailing .wav defensively for direct fetches.
+  const id = String(req.params['id'] || '').replace(/\.wav$/, '');
+  const clip = clipStore.get(id);
+  if (!clip) {
+    res.status(404).end();
+    return;
+  }
+  res.setHeader('Content-Type', 'audio/wav');
+  res.setHeader('Content-Length', String(clip.bytes.length));
+  // Endpoints (Sonos in particular) re-fetch on retry; caching a clip that
+  // expires in 5 minutes would only serve staleness.
+  res.setHeader('Cache-Control', 'no-store');
+  res.end(clip.bytes);
 });
 
 

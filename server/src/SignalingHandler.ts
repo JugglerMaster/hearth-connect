@@ -1,5 +1,6 @@
 import { ChannelManager } from './ChannelManager';
 import { ConfigManager } from './ConfigManager';
+import { ClipStore } from './ClipStore';
 import {
   Message,
   ConnectedClient,
@@ -15,7 +16,8 @@ import {
 export class SignalingHandler {
   constructor(
     private channels: ChannelManager,
-    private config: ConfigManager
+    private config: ConfigManager,
+    private clips?: ClipStore
   ) {}
 
   handle(transport: Transport, raw: string): void {
@@ -125,6 +127,9 @@ export class SignalingHandler {
         break;
       case 'UNSUBSCRIBE_BROADCAST':
         this.handleUnsubscribeBroadcast(transport, msg.payload);
+        break;
+      case 'BROADCAST_CLIP':
+        this.handleBroadcastClip(transport, msg.payload);
         break;
       case 'OFFER':
         this.handleRelay(transport, msg, 'OFFER');
@@ -566,6 +571,80 @@ export class SignalingHandler {
         isBroadcasting: false,
       });
     }
+  }
+
+  /**
+   * Record-then-play announcement fan-out (plan 18).
+   *
+   * The base has already uploaded the WAV to /api/clip; this just tells the
+   * targeted endpoints to fetch and play it. No peer connection, no ICE, so
+   * none of the cold-handshake timing problems of handleBroadcastSource apply.
+   */
+  private handleBroadcastClip(
+    transport: Transport,
+    payload: Record<string, unknown>
+  ): void {
+    const client = this.channels.getClientByConnId(transport.connId);
+    if (!client) {
+      this.sendError(transport, 'NOT_IN_ROOM', 'Join a room first');
+      return;
+    }
+
+    if (client.deviceType !== 'base') {
+      this.sendError(transport, 'NOT_ALLOWED', 'Only base stations can broadcast');
+      return;
+    }
+
+    const clipId = payload.clipId as string;
+    if (!clipId) {
+      this.sendError(transport, 'INVALID_PARAMS', 'clipId required');
+      return;
+    }
+
+    const clip = this.clips?.get(clipId);
+    if (!clip) {
+      this.sendError(transport, 'NOT_FOUND', 'Clip expired or not found');
+      return;
+    }
+
+    // Same 'all' normalization as handleBroadcastSource: the base's dropdown
+    // default is the literal string 'all', which must not be matched against a
+    // device that happens to be named 'all'.
+    const rawTarget = (payload.targetDeviceId as string) || undefined;
+    const targetDeviceId = rawTarget && rawTarget !== 'all' ? rawTarget : undefined;
+
+    const device = this.config.getDevice(client.deviceId);
+    const label = (device?.config?.label as string) || 'Base Station';
+
+    const candidates = targetDeviceId
+      ? this.channels.getClientsInRoom(client.roomId).filter(c => c.deviceId === targetDeviceId)
+      : this.channels.getClientsInRoom(client.roomId).filter(c => c.deviceId !== client.deviceId);
+
+    let delivered = 0;
+    for (const target of candidates) {
+      // Only playback endpoints get announcements; other bases do not.
+      if (target.deviceType !== 'kiosk' && target.deviceType !== 'room') continue;
+      // Authoritative opt-out check — same posture as handleSubscribeBroadcast,
+      // we do not trust the endpoint to silence itself.
+      const stored = this.config.getDevice(target.deviceId);
+      if (stored?.config?.broadcastDisabled === true) continue;
+
+      this.channels.sendTo(target.deviceId, {
+        type: 'PLAY_CLIP',
+        payload: {
+          clipId: clip.id,
+          url: `/clip/${clip.id}.wav`,
+          durationMs: clip.durationMs,
+          from: client.deviceId,
+          label,
+        },
+      });
+      delivered++;
+    }
+
+    console.log(
+      `Clip broadcast ${clipId} by ${client.deviceId} → ${targetDeviceId || 'all'} (${delivered} endpoints)`
+    );
   }
 
   private handleSubscribeBroadcast(

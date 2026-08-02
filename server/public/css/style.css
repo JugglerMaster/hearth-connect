@@ -619,12 +619,22 @@ input[type="text"]:focus {
   gap: 2px;
 }
 
-.btn-row {
+ .btn-row {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
   justify-content: flex-end;
 }
+
+ /* Network Speakers panel (plan 19) */
+ .speaker-panel .speaker-item { border-color: #6a4cff44; }
+ .speaker-item .speaker-controls { margin-top: 8px; display: flex; flex-direction: column; gap: 8px; }
+ .speaker-item .vol-row { display: flex; align-items: center; gap: 8px; }
+ .speaker-item .vol-row label { min-width: 48px; color: var(--text-muted); font-size: 0.85rem; }
+ .speaker-item .vol-row input[type=range] { flex: 1; }
+ .speaker-item .sonos-vol-val { min-width: 38px; text-align: right; font-variant-numeric: tabular-nums; }
+ .speaker-item .btn-row { justify-content: flex-start; align-items: center; }
+ .speaker-item .toggle-label { color: var(--text-muted); font-size: 0.85rem; margin-right: auto; }
 
 .qr-code-img {
   width: 180px;

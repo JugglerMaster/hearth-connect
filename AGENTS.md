@@ -30,6 +30,11 @@ HTML5 video intercom / baby monitor system. Runs on iPads/iPhones via Safari. Se
 - A Room contains multiple MediaSources (one per publisher device)
 - Subscribers independently subscribe to sources
 - Server is a matchmaker only — no media passes through it
+  - **Exception (recorded audio only):** the Android hub may push a recorded
+    `PLAY_CLIP` announcement to a discovered Sonos/UPnP speaker (plan 19). This
+    is a one-shot WAV + UPnP push, not a live WebRTC stream, so the "avoid an
+    SFU / media burden" rationale does not apply. Live WebRTC (FaceTalk /
+    talkback) still never touches the server.
 
 ### Base Station as Control Hub
 - Camera devices are thin clients: no settings UI, just status display

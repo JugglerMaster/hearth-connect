@@ -14,9 +14,11 @@ import io.ktor.server.engine.applicationEngineEnvironment
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.engine.sslConnector
 import io.ktor.server.netty.Netty
+import io.ktor.server.request.receiveStream
 import io.ktor.server.response.respondBytes
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.get
+import io.ktor.server.routing.post
 import io.ktor.server.routing.routing
 import io.ktor.server.websocket.WebSockets
 import io.ktor.server.websocket.webSocket
@@ -25,7 +27,10 @@ import io.ktor.websocket.Frame
 import io.ktor.websocket.WebSocketSession
 import io.ktor.websocket.close
 import io.ktor.websocket.readText
+import kotlin.concurrent.thread
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.consumeEach
+import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -61,6 +66,13 @@ class SignalingServer(private val context: Context, private val listener: Server
     private val pendingTeardown = ConcurrentHashMap<String, java.util.concurrent.ScheduledFuture<*>>()
     private val deviceConfigs = ConcurrentHashMap<String, JSONObject>()    // deviceId → config
     private var connIdCounter = 0
+
+    // ─── Recorded broadcast clips (plan 18) ────────────────
+    // Announcements are transient: held in memory, never persisted. A restart
+    // must not be able to resurrect a stale announcement, and this avoids
+    // writing to the tablet's flash on every broadcast.
+    private val clips = LinkedHashMap<String, Clip>()
+    private var clipCounter = 0
 
     fun start(port: Int = HubService.PORT) {
         val keyStoreFile = File(context.filesDir, KEYSTORE_FILE)
@@ -113,6 +125,61 @@ class SignalingServer(private val context: Context, private val listener: Server
                         call.respondText("https://${lanIp()}:$port")
                     }
 
+                    // ─── Broadcast clips (plan 18) ───────────────────
+                    // The base uploads a recorded announcement once; endpoints
+                    // fetch it by URL instead of negotiating a peer connection.
+                    post("/api/clip") {
+                        try {
+                            // receiveStream() + readBounded() are blocking I/O and
+                            // must not run on Ktor's Netty event-loop thread.
+                            val bytes = withContext(Dispatchers.IO) {
+                                call.receiveStream().readBounded(CLIP_MAX_BYTES)
+                            }
+                            if (bytes.isEmpty()) {
+                                call.respondText(
+                                    """{"error":"empty clip body"}""",
+                                    ContentType.Application.Json,
+                                    HttpStatusCode.BadRequest
+                                )
+                                return@post
+                            }
+                            val q = call.request.queryParameters
+                            val clip = addClip(
+                                from = q["from"] ?: "",
+                                label = q["label"] ?: "Base Station",
+                                bytes = bytes,
+                                durationMs = q["durationMs"]?.toIntOrNull() ?: 0
+                            )
+                            Log.i(TAG, "Clip uploaded: ${clip.id} (${bytes.size} bytes, ${clip.durationMs}ms) from ${clip.from}")
+                            call.respondText(
+                                JSONObject().apply {
+                                    put("clipId", clip.id)
+                                    put("url", "/clip/${clip.id}.wav")
+                                    put("durationMs", clip.durationMs)
+                                }.toString(),
+                                ContentType.Application.Json
+                            )
+                        } catch (e: Exception) {
+                            Log.e(TAG, "api/clip FAILED", e)
+                            call.respondText(
+                                JSONObject().apply { put("error", e.message ?: e.toString()) }.toString(),
+                                ContentType.Application.Json,
+                                HttpStatusCode.InternalServerError
+                            )
+                        }
+                    }
+
+                    get("/clip/{file}") {
+                        val id = (call.parameters["file"] ?: "").removeSuffix(".wav")
+                        val clip = getClip(id)
+                        if (clip == null) {
+                            call.respondText("", ContentType.Text.Plain, HttpStatusCode.NotFound)
+                        } else {
+                            call.response.headers.append("Cache-Control", "no-store")
+                            call.respondBytes(clip.bytes, ContentType("audio", "wav"))
+                        }
+                    }
+
                     get("/css/{file}") {
                         call.serveFromAssets(assets, "public/css/${call.parameters["file"]}")
                     }
@@ -140,6 +207,12 @@ class SignalingServer(private val context: Context, private val listener: Server
         }
 
         engine = embeddedServer(Netty, env).also { it.start(wait = false) }
+        // Plan 19: discover Sonos / UPnP renderers on the LAN so recorded
+        // announcements (PLAY_CLIP) can be pushed to them. Discovered speakers
+        // are published to clients as first-class "sonos" room devices.
+        SonosManager.onUpdate = { speakers -> syncSonosDevices(speakers) }
+        SonosManager.startDiscovery()
+        syncSonosDevices(SonosManager.speakers)
     }
 
     fun stop() {
@@ -247,6 +320,7 @@ class SignalingServer(private val context: Context, private val listener: Server
             "SUBSCRIBE_SOURCE" -> handleSubscribeSource(connId, payload)
             "UNSUBSCRIBE_SOURCE" -> handleUnsubscribeSource(connId, payload)
             "BROADCAST_SOURCE" -> handleBroadcastSource(connId, payload)
+            "BROADCAST_CLIP" -> handleBroadcastClip(connId, payload)
             "UNBROADCAST_SOURCE" -> handleUnbroadcastSource(connId, payload)
             "SUBSCRIBE_BROADCAST" -> handleSubscribeBroadcast(connId, payload)
             "UNSUBSCRIBE_BROADCAST" -> handleUnsubscribeBroadcast(connId, payload)
@@ -263,6 +337,7 @@ class SignalingServer(private val context: Context, private val listener: Server
             "CAPABILITIES" -> handleCapabilities(connId, payload)
             "AUDIO_PEAK" -> handleAudioPeak(connId, payload)
             "REMOVE_DEVICE" -> handleRemoveDevice(connId, payload)
+            "TEST_SPEAKER" -> handleTestSpeaker(connId, payload)
             "DOORBELL" -> handleDoorbell(connId, payload)
             "CALL_STATE" -> handleCallState(connId, payload)
             "PAIR_DEVICE" -> handlePairDevice(connId, payload)
@@ -590,6 +665,215 @@ class SignalingServer(private val context: Context, private val listener: Server
             if (targetDeviceId != null) " → $targetDeviceId" else " → all")
     }
 
+    // ─── Broadcast clips (plan 18) ─────────────────────────
+
+    @Synchronized
+    private fun addClip(from: String, label: String, bytes: ByteArray, durationMs: Int): Clip {
+        val clip = Clip(
+            id = "clip-${++clipCounter}-${System.currentTimeMillis()}",
+            from = from,
+            label = label,
+            bytes = bytes,
+            durationMs = durationMs,
+            createdAt = System.currentTimeMillis()
+        )
+        clips[clip.id] = clip
+        // Evict expired first, then trim to the cap. LinkedHashMap preserves
+        // insertion order so the head is always the oldest.
+        val cutoff = System.currentTimeMillis() - CLIP_TTL_MS
+        clips.entries.removeAll { it.value.createdAt < cutoff }
+        while (clips.size > CLIP_MAX_COUNT) {
+            val oldest = clips.keys.firstOrNull() ?: break
+            clips.remove(oldest)
+        }
+        return clip
+    }
+
+    @Synchronized
+    private fun getClip(id: String): Clip? {
+        val clip = clips[id] ?: return null
+        if (System.currentTimeMillis() - clip.createdAt > CLIP_TTL_MS) {
+            clips.remove(id)
+            return null
+        }
+        return clip
+    }
+
+    /**
+     * Record-then-play announcement fan-out (plan 18).
+     *
+     * The WAV is already uploaded; this only tells endpoints to fetch and play
+     * it. No peer connection, so none of handleBroadcastSource's cold-handshake
+     * timing issues apply.
+     */
+    private fun handleBroadcastClip(connId: String, payload: JSONObject) {
+        val client = getClient(connId) ?: return sendError(connId, "NOT_IN_ROOM", "Join a room first")
+        if (client.deviceType !in BASE_TYPES) return sendError(connId, "NOT_ALLOWED", "Only base stations can broadcast")
+
+        val clipId = payload.optString("clipId", "")
+        if (clipId.isEmpty()) return sendError(connId, "INVALID_PARAMS", "clipId required")
+        val clip = getClip(clipId) ?: return sendError(connId, "NOT_FOUND", "Clip expired or not found")
+
+        // Same 'all' normalization as handleBroadcastSource — a device literally
+        // named "all" must not be matched as a target.
+        val rawTarget = payload.optString("targetDeviceId", "")
+        val targetDeviceId = if (rawTarget.isNotEmpty() && rawTarget != "all") rawTarget else null
+
+        val label = deviceConfigs[client.deviceId]?.optString("label")?.takeIf { it.isNotEmpty() }
+            ?: "Base Station"
+
+        val msg = JSONObject().apply {
+            put("type", "PLAY_CLIP")
+            put("payload", JSONObject().apply {
+                put("clipId", clip.id)
+                put("url", "/clip/${clip.id}.wav")
+                put("durationMs", clip.durationMs)
+                put("from", client.deviceId)
+                put("label", label)
+            })
+        }
+
+        var delivered = 0
+        val isSonosTarget = targetDeviceId != null && targetDeviceId.startsWith("sonos://")
+        val targets = if (isSonosTarget) {
+            emptyList()
+        } else if (targetDeviceId != null) {
+            clients.values.filter { it.deviceId == targetDeviceId }
+        } else {
+            clients.values.filter { it.deviceId != client.deviceId }
+        }
+        for (target in targets) {
+            // Authoritative opt-out check: never trust the endpoint to silence
+            // itself (mirrors handleSubscribeBroadcast).
+            val cfg = deviceConfigs[target.deviceId]
+            if (cfg != null && cfg.optBoolean("broadcastDisabled", false)) continue
+            sendToDevice(target.deviceId, msg)
+            delivered++
+        }
+
+        // Plan 19: route the recorded clip to discovered Sonos/UPnP speakers.
+        // This is the explicit exception to the "server is a matchmaker only"
+        // rule — recorded audio only (re-hosted WAV + UPnP AVTransport), never
+        // live WebRTC. A Sonos chosen in the "Send to" list is an explicit
+        // target; "all" fans out to every Sonos that allows broadcasts.
+        val sonosTargets: List<String> = when {
+            isSonosTarget -> listOf(targetDeviceId!!)
+            targetDeviceId == null -> recentlySeen.keys.filter { recentlySeen[it]?.type == "sonos" }
+                .filter { deviceConfigs[it]?.optBoolean("allowBroadcasts", true) ?: true }
+            else -> emptyList()
+        }
+        for (sid in sonosTargets) {
+            val sp = SonosManager.speakerById(sid)
+            if (sp != null) {
+                val vol = deviceConfigs[sid]?.optDouble("volume", 0.5) ?: 0.5
+                // Run on a background thread: playClipOnSpeaker blocks ~15s
+                // (it holds the HTTP server open until the clip finishes), and
+                // the WS dispatch thread must stay free for other messages.
+                thread(isDaemon = true) { SonosManager.playClipOnSpeaker(context, sp, clip.bytes, vol, clip.durationMs) }
+                delivered++
+            } else {
+                Log.w(TAG, "PLAY_CLIP sonos target $sid not among discovered Sonos")
+            }
+        }
+
+        Log.i(TAG, "Clip broadcast $clipId by ${client.deviceId} → ${targetDeviceId ?: "all"} ($delivered endpoints)")
+    }
+
+    // ─── Plan 19: Sonos / UPnP network speakers ─────────────
+
+    // Publish discovered Sonos as first-class room devices so the base station
+    // can list, configure (volume / allow-broadcasts), and target them.
+    private fun syncSonosDevices(speakers: List<SonosManager.SonosSpeaker>) {
+        val discoveredIds = speakers.map { it.id }.toSet()
+        val knownIds = recentlySeen.keys.filter { recentlySeen[it]?.type == "sonos" }.toSet()
+        val changed = discoveredIds != knownIds
+
+        for (sp in speakers) {
+            if (deviceConfigs[sp.id] == null) {
+                deviceConfigs[sp.id] = JSONObject().apply {
+                    put("volume", 0.5)
+                    put("allowBroadcasts", true)
+                    put("label", sp.label)
+                }
+            } else {
+                deviceConfigs[sp.id]?.put("label", sp.label)
+            }
+            recentlySeen[sp.id] = RecentlySeenEntry(
+                id = sp.id, label = sp.label, type = "sonos",
+                lastSeenAt = System.currentTimeMillis(), online = true, ip = sp.ip
+            )
+        }
+        // Speakers no longer discovered are kept (config persists) but marked
+        // offline so the UI can surface them as unavailable.
+        for (id in knownIds) {
+            if (id !in discoveredIds) recentlySeen[id]?.online = false
+        }
+
+        if (changed) {
+            for (sp in speakers) {
+                broadcastDeviceStatus(sp.id, "online", "sonos", sp.label, sp.ip)
+            }
+            for (id in knownIds) {
+                if (id !in discoveredIds) {
+                    val lbl = deviceConfigs[id]?.optString("label", id) ?: id
+                    broadcastDeviceStatus(id, "offline", "sonos", lbl, null)
+                }
+            }
+            Log.i(TAG, "Sonos device set synced: ${discoveredIds.joinToString()}")
+        }
+    }
+
+    private fun broadcastDeviceStatus(deviceId: String, status: String, type: String, label: String, ip: String?) {
+        broadcastAll(JSONObject().apply {
+            put("type", "DEVICE_STATUS")
+            put("payload", JSONObject().apply {
+                put("deviceId", deviceId)
+                put("status", status)
+                put("type", type)
+                put("label", label)
+                put("lastSeenAt", System.currentTimeMillis())
+                put("config", deviceConfigs[deviceId] ?: JSONObject())
+                if (ip != null) put("ip", ip)
+            })
+        })
+    }
+
+    private fun handleTestSpeaker(connId: String, payload: JSONObject) {
+        val client = getClient(connId) ?: return
+        if (client.deviceType !in BASE_TYPES) return sendError(connId, "NOT_ALLOWED", "Only base stations can test speakers")
+        val id = payload.optString("deviceId", "")
+        val sp = SonosManager.speakerById(id)
+        if (sp == null) return sendError(connId, "NOT_FOUND", "Speaker not discovered")
+        val vol = deviceConfigs[id]?.optDouble("volume", 0.5) ?: 0.5
+        val wav = makeBeepWav(440.0, 1000)
+        thread(isDaemon = true) { SonosManager.playClipOnSpeaker(context, sp, wav, vol, 1000) }
+        Log.i(TAG, "Test tone sent to Sonos ${sp.label}")
+    }
+
+    private fun makeBeepWav(freq: Double, durationMs: Int): ByteArray {
+        val sampleRate = 44100
+        val n = (sampleRate * durationMs / 1000)
+        val baos = java.io.ByteArrayOutputStream()
+        val dataLen = n * 2
+        fun u16(v: Int) { baos.write(v and 0xff); baos.write((v ushr 8) and 0xff) }
+        fun u32(v: Int) { baos.write(v and 0xff); baos.write((v ushr 8) and 0xff); baos.write((v ushr 16) and 0xff); baos.write((v ushr 24) and 0xff) }
+        fun str(s: String) { for (c in s) baos.write(c.code) }
+        str("RIFF"); u32(36 + dataLen); str("WAVE")
+        str("fmt "); u32(16); u16(1); u16(1); u32(sampleRate); u32(sampleRate * 2); u16(2); u16(16)
+        str("data"); u32(dataLen)
+        for (i in 0 until n) {
+            val t = i.toDouble() / sampleRate
+            val env = when {
+                i < n * 0.1 -> i.toDouble() / (n * 0.1)
+                i > n * 0.9 -> (n - i).toDouble() / (n * 0.1)
+                else -> 1.0
+            }
+            val s = (Math.sin(2 * Math.PI * freq * t) * 32767 * 0.6 * env).toInt().coerceIn(-32768, 32767)
+            u16(s and 0xffff)
+        }
+        return baos.toByteArray()
+    }
+
     private fun handleUnbroadcastSource(connId: String, payload: JSONObject) {
         val client = getClient(connId) ?: return
         val sourceId = payload.optString("sourceId", "")
@@ -720,7 +1004,7 @@ class SignalingServer(private val context: Context, private val listener: Server
             put("payload", JSONObject().apply {
                 put("deviceId", targetDeviceId)
                 put("status", "online")
-                put("type", target?.deviceType ?: "kiosk")
+                put("type", target?.deviceType ?: recentlySeen[targetDeviceId]?.type ?: "kiosk")
                 put("label", if (newLabel.isNotEmpty()) newLabel else (target?.label ?: targetDeviceId))
                 put("lastSeenAt", System.currentTimeMillis())
                 put("config", fullConfig)
@@ -822,6 +1106,11 @@ class SignalingServer(private val context: Context, private val listener: Server
             audioDevices = audioDevices,
             audioOutputDevices = audioOutputDevices
         )
+
+        // Note: Sonos/UPnP speakers are NOT injected here. They are published as
+        // first-class "sonos" room devices (see syncSonosDevices) so they appear
+        // in their own speaker panel and as broadcast targets — not as a kiosk's
+        // local audio output.
 
         broadcastAll(JSONObject().apply {
             put("type", "CAPABILITIES")
@@ -1107,6 +1396,20 @@ class SignalingServer(private val context: Context, private val listener: Server
         val audioOutputDevices: JSONArray = JSONArray()
     )
 
+    /**
+     * A recorded announcement awaiting playback (plan 18). Deliberately a
+     * plain class, not a data class — a data class holding a ByteArray gets
+     * identity-based equals/hashCode, which is a trap nobody needs here.
+     */
+    private class Clip(
+        val id: String,
+        val from: String,
+        val label: String,
+        val bytes: ByteArray,
+        val durationMs: Int,
+        val createdAt: Long
+    )
+
     companion object {
         private const val TAG = "HearthSignaling"
         private const val KEYSTORE_ALIAS = "hearthconnect"
@@ -1115,6 +1418,12 @@ class SignalingServer(private val context: Context, private val listener: Server
         private const val RECENT_SEEN_WINDOW = 24 * 60 * 60 * 1000L // 24 hours
         private val VALID_SOURCE_TYPES = setOf("video+audio", "video-only", "audio-only", "none")
         private val BASE_TYPES = setOf("base", "room")
+
+        // Broadcast clip bounds (plan 18). MAX_BYTES is ~60s of 16kHz mono
+        // 16-bit PCM, which is the cap the base station records to.
+        const val CLIP_MAX_BYTES = 2 * 1024 * 1024
+        private const val CLIP_TTL_MS = 5 * 60 * 1000L
+        private const val CLIP_MAX_COUNT = 20
 
         private fun defaultConfig(type: String): JSONObject {
             return when (type) {
@@ -1175,4 +1484,28 @@ private fun contentTypeFor(path: String): ContentType = when {
     path.endsWith(".json") -> ContentType.Application.Json
     path.endsWith(".png") -> ContentType.Image.PNG
     else -> ContentType.Application.OctetStream
+}
+
+/**
+ * Read an upload bounded to [max] bytes. Unlike `InputStream.readBytes()`,
+ * which on a malformed/oversized request would buffer the whole body into
+ * memory, this stops at [max] and discards the rest. The clip upload cap is
+ * generous (2 MB ≈ 60s) but we must never let a runaway request OOM the hub.
+ */
+private fun java.io.InputStream.readBounded(max: Int): ByteArray {
+    val buf = java.io.ByteArrayOutputStream(minOf(max, 8192).coerceAtLeast(1024))
+    val chunk = ByteArray(8192)
+    var total = 0
+    while (total < max) {
+        val n = read(chunk, 0, minOf(chunk.size, max - total))
+        if (n < 0) break
+        buf.write(chunk, 0, n)
+        total += n
+    }
+    // Drain anything beyond the cap so the connection can close cleanly.
+    if (total >= max) {
+        val sink = ByteArray(8192)
+        while (read(sink) >= 0) { /* discard */ }
+    }
+    return buf.toByteArray()
 }

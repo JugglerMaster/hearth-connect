@@ -1,5 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
+    <!-- Plan 19: the hub pushes recorded announcements to LAN Sonos/UPnP
+         speakers over plain HTTP (Sonos rejects the self-signed cert), so
+         cleartext must be permitted for non-localhost hosts. The localhost
+         domain-config below keeps HTTPS-to-self trusted via the app cert. -->
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
     <domain-config cleartextTrafficPermitted="false">
         <domain includeSubdomains="false">127.0.0.1</domain>
         <domain includeSubdomains="false">localhost</domain>

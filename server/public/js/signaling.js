@@ -194,6 +194,10 @@ class SignalingClient {
         this.emit('sourceRemoved', msg.payload);
         break;
 
+      case 'PLAY_CLIP':
+        this.emit('playClip', msg.payload);
+        break;
+
       case 'SUBSCRIBER_JOINED':
         this.emit('subscriberJoined', msg.payload);
         break;
@@ -403,6 +407,12 @@ class SignalingClient {
 
   unsubscribeBroadcast(publisherId) {
     this.send('UNSUBSCRIBE_BROADCAST', { publisherId });
+  }
+
+  // Record-then-play announcement (plan 18). The WAV is uploaded to /api/clip
+  // over HTTP first; this only tells the server which endpoints should play it.
+  broadcastClip(clipId, targetDeviceId) {
+    this.send('BROADCAST_CLIP', { clipId, targetDeviceId });
   }
 
   setDisplayConfig(targetDeviceId, displayMode) {

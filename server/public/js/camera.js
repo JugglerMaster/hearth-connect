@@ -852,6 +852,44 @@
       }
     });
 
+    // Record-then-play announcement (plan 18). No peer connection: the server
+    // hands us a URL and we play it through the SAME <audio id="remoteAudio">
+    // element used for talkback. That element has already been played inside a
+    // user gesture (applyRemoteAudio during enableCamera), so iOS lets this
+    // autoplay without a fresh gesture.
+    sig.on('playClip', (data) => {
+      if (!data || !data.url) return;
+      // The server already enforces broadcastDisabled, but re-check locally so
+      // a stale server-side config can't force an unwanted announcement.
+      if (currentConfig.broadcastDisabled) {
+        console.log('[kiosk] broadcasts disabled — ignoring clip', data.clipId);
+        return;
+      }
+      if (!remoteAudio) return;
+      console.log('[kiosk] playing announcement clip', data.clipId, 'from', data.from);
+      try {
+        // srcObject and src are mutually exclusive on the same element; clear
+        // any live talkback stream first or Safari keeps playing the stream
+        // and silently ignores the new src.
+        remoteAudio.srcObject = null;
+        remoteAudio.src = data.url;
+        const vol = (currentConfig.speakerVolume != null) ? currentConfig.speakerVolume : 0.5;
+        remoteAudio.volume = Math.max(0, Math.min(1, vol));
+        remoteAudio.muted = false;
+        // Release the src when the clip finishes so a later talkback stream
+        // binds to a clean element (src and srcObject fight otherwise).
+        remoteAudio.onended = () => {
+          remoteAudio.onended = null;
+          try { remoteAudio.removeAttribute('src'); remoteAudio.load(); } catch {}
+        };
+        remoteAudio.play().catch((e) => {
+          console.warn('[kiosk] clip playback blocked:', e && e.name);
+        });
+      } catch (e) {
+        console.warn('[kiosk] clip playback failed:', e);
+      }
+    });
+
     // Handle source removed - if it was our broadcast source, tear it down.
     sig.on('sourceRemoved', (data) => {
       if (broadcastPeerId && data.sourceId) {

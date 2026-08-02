@@ -148,6 +148,27 @@ export interface MediaSourceInfo {
   targetDeviceId?: string;
 }
 
+/**
+ * A recorded "Broadcast Message" announcement (plan 18).
+ *
+ * The base station records the announcement locally and uploads it once; the
+ * server hands every endpoint a URL instead of negotiating a peer connection.
+ * Always 16kHz mono 16-bit PCM WAV — the only format iOS Safari, GStreamer and
+ * Sonos can all play.
+ */
+export interface ClipInfo {
+  id: string;
+  /** Device id of the base station that recorded it. */
+  from: string;
+  /** Human label for the sender, shown/logged by endpoints. */
+  label: string;
+  /** When set, only this device plays the clip. Undefined means all. */
+  targetDeviceId?: string;
+  bytes: Buffer;
+  durationMs: number;
+  createdAt: number;
+}
+
 // ─── WebSocket message types ─────────────────────────────────
 
 export type MessageType =
@@ -162,6 +183,7 @@ export type MessageType =
   | 'UNBROADCAST_SOURCE'
   | 'SUBSCRIBE_BROADCAST'
   | 'UNSUBSCRIBE_BROADCAST'
+  | 'BROADCAST_CLIP'
   | 'OFFER'
   | 'ANSWER'
   | 'ICE_CANDIDATE'
@@ -176,6 +198,7 @@ export type MessageType =
   | 'ERROR'
   | 'SOURCE_ADDED'
   | 'SOURCE_REMOVED'
+  | 'PLAY_CLIP'
   | 'SUBSCRIBER_JOINED'
   | 'SUBSCRIBER_LEFT'
   | 'CONFIG_UPDATED'

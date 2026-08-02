@@ -46,6 +46,21 @@
   let currentAnnounceGen = 0;
   let announceWindowBound = false;  // window release handlers bound only once
 
+  // ─── Record-then-play announcement capture (plan 18) ──────
+  // The announcement is recorded locally and uploaded as one WAV, rather than
+  // streamed over a fresh peer connection. That removes the 1-2s cold ICE/DTLS
+  // handshake, which is what used to clip the first word of every broadcast.
+  let announceCtx = null;        // AudioContext for the capture graph
+  let announceProcessor = null;  // ScriptProcessorNode pulling PCM
+  let announceSource = null;     // MediaStreamAudioSourceNode
+  let announceChunks = [];       // Float32Array frames captured while held
+  let announceSampleRate = 0;    // actual context rate (resampled on encode)
+
+  // 16kHz mono is the target: the only format iOS Safari, GStreamer and Sonos
+  // can all play, and small enough that a 5s clip is ~160KB.
+  const CLIP_SAMPLE_RATE = 16000;
+  const CLIP_MAX_SECONDS = 60;
+
   // Grid view state
   let gridMode = false; // false = single view, true = 2x2 grid
   let gridViewingIds = new Set(); // Set of kioskIds being viewed in grid
@@ -600,6 +615,7 @@
   function renderDevices() {
     const kiosks = devices.filter(d => (d.type === 'kiosk' || d.type === 'room') && d.id !== deviceId);
     const bases = devices.filter(d => d.type === 'base' && d.id !== deviceId);
+    const speakers = devices.filter(d => d.type === 'sonos');
 
     // Build broadcast panel HTML.
     // Show the broadcast controls whenever a monitor feed is NOT open. We used
@@ -614,9 +630,14 @@
     if (!feedOpen) {
       broadcastPanel = buildBroadcastPanel();
     }
+    const speakersHtml = renderSpeakersPanel(speakers);
 
     if (kiosks.length === 0) {
-      deviceList.innerHTML = broadcastPanel + '<p class="hint" style="padding:12px">No kiosks connected</p>';
+      deviceList.innerHTML = broadcastPanel + speakersHtml + '<p class="hint" style="padding:12px">No kiosks connected</p>';
+      attachSpeakersListeners();
+      // Re-attach the (open) settings panel inline below its device item, since
+      // the innerHTML rebuild above detached it.
+      positionConfigPanel();
       return;
     }
 
@@ -625,6 +646,13 @@
     } else {
       renderListView(kiosks, broadcastPanel);
     }
+    // Append the network-speaker panel without re-parsing the kiosk list (which
+    // would drop the grid video elements and any in-progress interactions).
+    deviceList.insertAdjacentHTML('beforeend', speakersHtml);
+    attachSpeakersListeners();
+    // Re-attach the (open) settings panel inline below its device item, since
+    // the innerHTML rebuild above detached it.
+    positionConfigPanel();
   }
 
   // Broadcast target selection: 'all' broadcasts to every kiosk; a deviceId
@@ -633,10 +661,14 @@
   let broadcastTarget = 'all';
 
   function buildBroadcastPanel() {
-    // Build the target <select>: an "All devices" option plus one per kiosk.
+    // Build the target <select>: an "All devices" option, one per kiosk, and
+    // one per discovered network speaker (a Sonos chosen here plays the
+    // announcement directly on that speaker).
     const kiosks = devices.filter(d => (d.type === 'kiosk' || d.type === 'room') && d.id !== deviceId);
+    const sonos = devices.filter(d => d.type === 'sonos');
     const options = ['<option value="all">All devices</option>']
       .concat(kiosks.map(k => `<option value="${k.id}">${k.label}</option>`))
+      .concat(sonos.map(s => `<option value="${s.id}">🔊 ${s.label}</option>`))
       .join('');
     return `
       <div class="broadcast-panel panel">
@@ -829,6 +861,70 @@
     }
   }
 
+  // ─── Network Speakers panel (plan 19) ────────────────────
+  // Discovered Sonos/UPnP speakers arrive as "sonos" room devices. Render them
+  // with a volume slider, an "allow announcements" toggle, and a Test button.
+  function renderSpeakersPanel(speakers) {
+    if (!speakers.length) return '';
+    return `
+      <div class="panel speaker-panel">
+        <h3>🔊 Network Speakers</h3>
+        <p class="hint" style="margin-bottom:8px">Announcement destinations on your LAN. Pick one in "Send to" to target it, or leave it on "All devices" and toggle Announcements below.</p>
+        ${speakers.map(d => {
+          const cfg = d.config || {};
+          const vol = Math.round((cfg.volume != null ? cfg.volume : 0.5) * 100);
+          const allow = cfg.allowBroadcasts !== false;
+          return `
+          <div class="device-item speaker-item" data-id="${d.id}">
+            <div class="device-info">
+              <div class="device-name">${d.label}${d.ip ? ` <span class="device-ip">${d.ip}</span>` : ''}${d.online ? '' : ' <span class="device-last-seen offline">offline</span>'}</div>
+            </div>
+            <div class="speaker-controls">
+              <div class="vol-row">
+                <label>Volume</label>
+                <input type="range" class="sonos-vol" data-id="${d.id}" min="0" max="100" value="${vol}">
+                <span class="sonos-vol-val">${vol}%</span>
+              </div>
+              <div class="btn-row">
+                <div class="toggle-switch ${allow ? 'active' : ''} sonos-allow" data-id="${d.id}" title="Play announcements on this speaker"></div>
+                <span class="toggle-label">Announcements</span>
+                <button class="btn btn-small btn-outline sonos-test" data-id="${d.id}" ${d.online ? '' : 'disabled'}>Test</button>
+              </div>
+            </div>
+          </div>`;
+        }).join('')}
+      </div>`;
+  }
+
+  function attachSpeakersListeners() {
+    deviceList.querySelectorAll('.sonos-vol').forEach(el => {
+      const valEl = el.parentElement.querySelector('.sonos-vol-val');
+      el.addEventListener('input', (e) => {
+        // Live label update only — sending config on every pixel would
+        // re-render mid-drag and break the slider.
+        if (valEl) valEl.textContent = e.target.value + '%';
+      });
+      el.addEventListener('change', (e) => {
+        const id = e.target.dataset.id;
+        sig.setConfig(id, { volume: e.target.value / 100 });
+      });
+    });
+    deviceList.querySelectorAll('.sonos-allow').forEach(el => {
+      el.addEventListener('click', (e) => {
+        const active = el.classList.toggle('active');
+        sig.setConfig(el.dataset.id, { allowBroadcasts: active });
+      });
+    });
+    deviceList.querySelectorAll('.sonos-test').forEach(el => {
+      el.addEventListener('click', (e) => {
+        const id = el.dataset.id;
+        sig.send('TEST_SPEAKER', { deviceId: id });
+        const d = devices.find(dev => dev.id === id);
+        showToast('Test tone sent to ' + (d ? d.label : 'speaker'));
+      });
+    });
+  }
+
   // Acquire an audio-only stream for the "Broadcast Message" button. Kept
   // separate from localBroadcastStream (FaceTalk's video+audio) so the two
   // features never fight over the same mic tracks.
@@ -842,6 +938,124 @@
       announceStream = null;
     }
     return announceStream;
+  }
+
+  // ─── Clip capture / WAV encoding (plan 18) ───────────────
+
+  // Linear resample to CLIP_SAMPLE_RATE. Announcements are voice, so a plain
+  // linear interpolation is inaudibly different from a windowed resampler and
+  // avoids pulling in a DSP dependency.
+  function resampleTo16k(input, inputRate) {
+    if (inputRate === CLIP_SAMPLE_RATE) return input;
+    const ratio = inputRate / CLIP_SAMPLE_RATE;
+    const outLength = Math.floor(input.length / ratio);
+    const out = new Float32Array(outLength);
+    for (let i = 0; i < outLength; i++) {
+      const pos = i * ratio;
+      const idx = Math.floor(pos);
+      const frac = pos - idx;
+      const a = input[idx] || 0;
+      const b = input[idx + 1] != null ? input[idx + 1] : a;
+      out[i] = a + (b - a) * frac;
+    }
+    return out;
+  }
+
+  // Wrap mono Float32 samples in a 16-bit PCM WAV container.
+  function encodeWav(samples, sampleRate) {
+    const buffer = new ArrayBuffer(44 + samples.length * 2);
+    const view = new DataView(buffer);
+    const writeStr = (offset, str) => {
+      for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
+    };
+    const dataBytes = samples.length * 2;
+    writeStr(0, 'RIFF');
+    view.setUint32(4, 36 + dataBytes, true);
+    writeStr(8, 'WAVE');
+    writeStr(12, 'fmt ');
+    view.setUint32(16, 16, true);         // PCM chunk size
+    view.setUint16(20, 1, true);          // format = PCM
+    view.setUint16(22, 1, true);          // mono
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * 2, true); // byte rate (mono 16-bit)
+    view.setUint16(32, 2, true);          // block align
+    view.setUint16(34, 16, true);         // bits per sample
+    writeStr(36, 'data');
+    view.setUint32(40, dataBytes, true);
+    let offset = 44;
+    for (let i = 0; i < samples.length; i++) {
+      // Clamp before scaling — a value slightly over 1.0 would wrap to a loud click.
+      const s = Math.max(-1, Math.min(1, samples[i]));
+      view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+      offset += 2;
+    }
+    return new Blob([buffer], { type: 'audio/wav' });
+  }
+
+  // Start pulling PCM off the announce stream. ScriptProcessorNode (not
+  // AudioWorklet) because this app still supports iOS 12, where AudioWorklet
+  // does not exist. Deprecated but universally available and fine for voice.
+  function startClipCapture(stream) {
+    stopClipCapture();
+    try {
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      if (!Ctx) return false;
+      announceCtx = new Ctx();
+      // iOS suspends new contexts until resumed inside a user gesture; the
+      // press that got us here IS that gesture.
+      if (announceCtx.state === 'suspended') announceCtx.resume().catch(() => {});
+      announceSampleRate = announceCtx.sampleRate;
+      announceSource = announceCtx.createMediaStreamSource(stream);
+      announceProcessor = announceCtx.createScriptProcessor(4096, 1, 1);
+      announceChunks = [];
+      let captured = 0;
+      const maxSamples = CLIP_MAX_SECONDS * announceSampleRate;
+      announceProcessor.onaudioprocess = (e) => {
+        if (captured >= maxSamples) return;
+        // The buffer is reused by the browser between callbacks — copy it.
+        announceChunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));
+        captured += e.inputBuffer.length;
+      };
+      announceSource.connect(announceProcessor);
+      // ScriptProcessorNode does not fire unless it is connected to the
+      // destination. A zero-gain node keeps the graph pulling without the
+      // operator hearing their own voice echoed back.
+      const mute = announceCtx.createGain();
+      mute.gain.value = 0;
+      announceProcessor.connect(mute);
+      mute.connect(announceCtx.destination);
+      return true;
+    } catch (err) {
+      console.error('[base] startClipCapture failed:', err);
+      stopClipCapture();
+      return false;
+    }
+  }
+
+  function stopClipCapture() {
+    try { if (announceProcessor) announceProcessor.disconnect(); } catch {}
+    try { if (announceSource) announceSource.disconnect(); } catch {}
+    try { if (announceCtx) announceCtx.close(); } catch {}
+    announceProcessor = null;
+    announceSource = null;
+    announceCtx = null;
+  }
+
+  // Flatten what was captured into a single mono WAV blob at 16kHz.
+  function buildClipBlob() {
+    if (!announceChunks.length) return null;
+    let total = 0;
+    for (const c of announceChunks) total += c.length;
+    const merged = new Float32Array(total);
+    let offset = 0;
+    for (const c of announceChunks) { merged.set(c, offset); offset += c.length; }
+    announceChunks = [];
+    const resampled = resampleTo16k(merged, announceSampleRate || CLIP_SAMPLE_RATE);
+    if (resampled.length === 0) return null;
+    return {
+      blob: encodeWav(resampled, CLIP_SAMPLE_RATE),
+      durationMs: Math.round((resampled.length / CLIP_SAMPLE_RATE) * 1000),
+    };
   }
 
   // Ensure a base-station video+audio stream exists for FaceTalk (the manual
@@ -861,16 +1075,17 @@
     return localBroadcastStream;
   }
 
-  // Start an audio-only broadcast. The server fans it out to every online
-  // kiosk except this base; each kiosk auto-plays it as an announcement.
+  // Start RECORDING an announcement (plan 18). Nothing is sent while the
+  // button is held — the clip is uploaded and fanned out on release. This is
+  // what removes the cold ICE/DTLS handshake that used to eat the first word.
   // `holding`/`gen` let a release that arrives during the async getUserMedia
-  // await cancel a broadcast that hasn't started yet (press-and-hold model).
+  // await cancel a recording that hasn't started yet (press-and-hold model).
   async function startAnnounce() {
     if (!announceStream) {
       await ensureAnnounceStream();
     }
     // The button may have been released (or re-pressed) while we awaited the
-    // mic permission. Bail if we're no longer supposed to be broadcasting.
+    // mic permission. Bail if we're no longer supposed to be recording.
     if (!announceHolding || announceGen !== currentAnnounceGen) {
       if (announceStream) {
         announceStream.getTracks().forEach(t => t.stop());
@@ -883,67 +1098,104 @@
       return;
     }
 
-    announceSourceId = 'announce-' + deviceId + '-' + Date.now();
+    if (!startClipCapture(announceStream)) {
+      showToast('Audio capture unavailable');
+      return;
+    }
     isAnnouncing = true;
-
-    // Publish an AUDIO-ONLY broadcast source (no camera). The kiosk(s) play it
-    // regardless of its display/audio mode, so the announcement is never silent.
-    // When broadcastTarget is a specific deviceId, the server only delivers the
-    // SOURCE_ADDED to that kiosk.
-    sig.broadcastSource(announceSourceId, 'Base Station Broadcast', 'audio-only', broadcastTarget);
 
     const status = document.getElementById('broadcastStatus');
     if (status) {
-      status.textContent = 'Broadcasting… speak now';
+      status.textContent = 'Recording… speak now';
       status.classList.remove('hidden');
     }
     const btn = document.getElementById('toggleBroadcastButton');
     if (btn) {
       btn.classList.remove('btn-primary');
       btn.classList.add('btn-danger');
-      btn.textContent = '⏹ Broadcasting… release to stop';
+      btn.textContent = '⏺ Recording… release to send';
     }
-    showToast('Broadcasting message to all kiosks');
-    console.log('[base] Announce started:', announceSourceId);
+    console.log('[base] Announce recording started');
   }
 
-    function stopAnnounce() {
-      announceHolding = false;
-      announceGen++;            // invalidate any in-flight startAnnounce
-      currentAnnounceGen = announceGen;
-      isAnnouncing = false;
-      if (announceSourceId) {
-        sig.unbroadcastSource(announceSourceId);
-        announceSourceId = null;
-      }
-      // Keep the broadcast stream + peer connections alive for a short grace
-      // window after release. A broadcast opens a brand-new PeerConnection
-      // (cold ICE/DTLS), which takes ~1-2s to connect — far longer than a
-      // renegotiation on an existing monitor PC. Tearing down immediately on
-      // release would drop the connection before audio ever reaches the
-      // listener, so we defer the teardown to let the handshake finish.
-      const subs = Array.from(broadcastSubscribers);
-      broadcastSubscribers.clear();
-      if (broadcastCloseTimer) clearTimeout(broadcastCloseTimer);
-      broadcastCloseTimer = setTimeout(() => {
-        subs.forEach(kioskId => rtc.closeBroadcastPeerConnection(kioskId));
-        if (announceStream) {
-          announceStream.getTracks().forEach(t => t.stop());
-          announceStream = null;
-        }
-        broadcastCloseTimer = null;
-      }, 8000);
-      const status = document.getElementById('broadcastStatus');
-      if (status) { status.textContent = 'Broadcast ending…'; status.classList.remove('hidden'); }
-      const btn = document.getElementById('toggleBroadcastButton');
+  function stopAnnounce() {
+    const wasRecording = isAnnouncing;
+    announceHolding = false;
+    announceGen++;            // invalidate any in-flight startAnnounce
+    currentAnnounceGen = announceGen;
+    isAnnouncing = false;
+
+    stopClipCapture();
+
+    const status = document.getElementById('broadcastStatus');
+    const btn = document.getElementById('toggleBroadcastButton');
+    const resetBtn = () => {
       if (btn) {
         btn.classList.remove('btn-danger');
         btn.classList.add('btn-primary');
         btn.textContent = '📢 Hold to Broadcast';
       }
-      showToast('Broadcast stopping…');
-      console.log('[base] Announce stopped (grace teardown in 8s)');
+    };
+
+    if (!wasRecording) {
+      resetBtn();
+      return;
     }
+
+    const clip = buildClipBlob();
+    // The mic is released immediately — unlike the live path there is no
+    // handshake still in flight that needs it kept open.
+    if (announceStream) {
+      announceStream.getTracks().forEach(t => t.stop());
+      announceStream = null;
+    }
+
+    if (!clip || clip.durationMs < 250) {
+      resetBtn();
+      if (status) status.classList.add('hidden');
+      showToast('Too short — hold and speak');
+      return;
+    }
+
+    if (status) { status.textContent = 'Sending…'; status.classList.remove('hidden'); }
+    if (btn) btn.textContent = '⏳ Sending…';
+
+    // Capture the target at release time: the panel can re-render (and reset
+    // the dropdown) between upload and fan-out.
+    const target = broadcastTarget;
+    uploadAndBroadcastClip(clip, target)
+      .then((count) => {
+        resetBtn();
+        if (status) status.classList.add('hidden');
+        showToast('Announcement sent' + (target !== 'all' ? '' : ' to all devices'));
+        console.log('[base] Announce clip sent', count);
+      })
+      .catch((err) => {
+        resetBtn();
+        if (status) status.classList.add('hidden');
+        console.error('[base] Announce clip failed:', err);
+        showToast('Broadcast failed — try again');
+      });
+  }
+
+  // Upload the recorded WAV, then tell the server which endpoints play it.
+  async function uploadAndBroadcastClip(clip, target) {
+    const qs = new URLSearchParams({
+      from: deviceId || '',
+      label: 'Base Station',
+      durationMs: String(clip.durationMs),
+    });
+    const res = await fetch('/api/clip?' + qs.toString(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'audio/wav' },
+      body: clip.blob,
+    });
+    if (!res.ok) throw new Error('upload failed: HTTP ' + res.status);
+    const data = await res.json();
+    if (!data.clipId) throw new Error('no clipId in response');
+    sig.broadcastClip(data.clipId, target);
+    return data.clipId;
+  }
 
   // ─── Grid View Functions ────────────────────────────────
 
@@ -1477,7 +1729,22 @@
     // (e.g. the kiosk changed something, or we'd only ever received a partial
     // broadcast). The guarded refresh below won't clobber unsaved edits.
     renderConfigForm(device);
+    positionConfigPanel();
     sig.getConfig(device.id);
+  }
+
+  // The settings panel is a single shared element that we MOVE (not copy) to sit
+  // directly below the device item whose Settings button was opened. This keeps
+  // the form inline with the device instead of pinned at the bottom of the page,
+  // while still surviving the full list re-renders that happen on every
+  // device-status / source event (the element reference persists across
+  // innerHTML resets, so its form contents are preserved).
+  function positionConfigPanel() {
+    if (!configDeviceId || configPanel.classList.contains('hidden')) return;
+    const item = deviceList.querySelector('.device-item[data-id="' + configDeviceId + '"]');
+    if (!item) return;
+    const parent = item.parentNode;
+    parent.insertBefore(configPanel, item.nextSibling);
   }
 
   // Re-draw the settings form from a device's current config. Safe to call
@@ -1898,6 +2165,10 @@
 
     sig.on('deviceRemoved', (data) => {
       const id = data.deviceId;
+      if (id === configDeviceId) {
+        configPanel.classList.add('hidden');
+        configDeviceId = null;
+      }
       devices = devices.filter(d => d.id !== id);
       delete capabilitiesByDevice[id];
       delete audioState[id];
