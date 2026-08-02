@@ -207,6 +207,9 @@ class SignalingServer(private val context: Context, private val listener: Server
         }
 
         engine = embeddedServer(Netty, env).also { it.start(wait = false) }
+        // Restore persisted device configs (volume / allow-broadcasts / labels)
+        // so they survive a hub restart, not just disconnects.
+        loadDeviceConfigs()
         // Plan 19: discover Sonos / UPnP renderers on the LAN so recorded
         // announcements (PLAY_CLIP) can be pushed to them. Discovered speakers
         // are published to clients as first-class "sonos" room devices.
@@ -783,6 +786,43 @@ class SignalingServer(private val context: Context, private val listener: Server
 
     // Publish discovered Sonos as first-class room devices so the base station
     // can list, configure (volume / allow-broadcasts), and target them.
+    // Persist device configs (volume / allow-broadcasts / labels) to disk so
+    // they survive a hub restart. Stored as a flat JSON object keyed by
+    // deviceId in the app's private files directory.
+    private val deviceConfigsFile by lazy { File(context.filesDir, "device_configs.json") }
+
+    @Synchronized
+    private fun loadDeviceConfigs() {
+        try {
+            if (!deviceConfigsFile.exists()) return
+            val text = deviceConfigsFile.readText()
+            if (text.isBlank()) return
+            val obj = JSONObject(text)
+            val keys = obj.keys()
+            while (keys.hasNext()) {
+                val k = keys.next()
+                val v = obj.optJSONObject(k) ?: continue
+                deviceConfigs[k] = v
+            }
+            if (deviceConfigs.isNotEmpty()) {
+                Log.i(TAG, "Loaded ${deviceConfigs.size} device configs from disk")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to load device configs: ${e.message}")
+        }
+    }
+
+    @Synchronized
+    private fun saveDeviceConfigs() {
+        try {
+            val obj = JSONObject()
+            for ((k, v) in deviceConfigs) obj.put(k, v)
+            deviceConfigsFile.writeText(obj.toString())
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to save device configs: ${e.message}")
+        }
+    }
+
     private fun syncSonosDevices(speakers: List<SonosManager.SonosSpeaker>) {
         val discoveredIds = speakers.map { it.id }.toSet()
         val knownIds = recentlySeen.keys.filter { recentlySeen[it]?.type == "sonos" }.toSet()
@@ -795,6 +835,7 @@ class SignalingServer(private val context: Context, private val listener: Server
                     put("allowBroadcasts", true)
                     put("label", sp.label)
                 }
+                saveDeviceConfigs()
             } else {
                 deviceConfigs[sp.id]?.put("label", sp.label)
             }
@@ -966,6 +1007,7 @@ class SignalingServer(private val context: Context, private val listener: Server
         }
 
         val fullConfig = deviceConfigs[targetDeviceId]!!
+        saveDeviceConfigs()
 
         // If keepAwake changed, sync to SharedPreferences so HubService picks it up
         if (config.has("keepAwake")) {

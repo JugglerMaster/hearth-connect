@@ -877,7 +877,7 @@
           return `
           <div class="device-item speaker-item" data-id="${d.id}">
             <div class="device-info">
-              <div class="device-name">${d.label}${d.ip ? ` <span class="device-ip">${d.ip}</span>` : ''}${d.online ? '' : ' <span class="device-last-seen offline">offline</span>'}</div>
+              <div class="device-name">${d.label}${d.online ? '' : ' <span class="device-last-seen offline">offline</span>'}</div>
             </div>
             <div class="speaker-controls">
               <div class="vol-row">

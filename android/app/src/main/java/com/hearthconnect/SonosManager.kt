@@ -143,7 +143,10 @@ object SonosManager {
             val db = DocumentBuilderFactory.newInstance().newDocumentBuilder()
             val doc = db.parse(location)
             val root = doc.documentElement
-            val friendly = firstText(root, "friendlyName")
+            // Prefer the user-configured room name (set in the Sonos app) over
+            // the device's friendlyName, which on some firmware is just the
+            // model/UDN string. Fall back to friendlyName if roomName is absent.
+            val friendly = firstText(root, "roomName") ?: firstText(root, "friendlyName")
             var controlUrl: String? = null
             var rcControlUrl: String? = null
             val services = doc.getElementsByTagName("service")
@@ -160,9 +163,9 @@ object SonosManager {
             }
             if (friendly == null) return null
             val netloc = location.substringAfter("://").substringBefore("/")
-            SonosSpeaker(
+                SonosSpeaker(
                 id = "sonos://$netloc",
-                label = friendly,
+                label = cleanLabel(friendly),
                 ip = netloc.substringBefore(":"),
                 controlUrl = controlUrl ?: "http://$netloc/MediaRenderer/AVTransport/Control",
                 rcControlUrl = rcControlUrl ?: "http://$netloc/MediaRenderer/RenderingControl/Control"
@@ -258,6 +261,16 @@ object SonosManager {
             try { server.close() } catch (_: Exception) { }
             tmp.delete()
         }
+    }
+
+    // Some Sonos firmware reports a friendlyName like
+    // "192.168.1.7 - Sonos One - RINCON_XXXX" (IP prefix + UDN suffix). Trim
+    // those so the UI shows just the human name ("Sonos One").
+    private fun cleanLabel(raw: String): String {
+        var n = raw.trim()
+        n = n.replace(Regex("^\\d{1,3}(\\.\\d{1,3}){3}(:\\d+)?\\s*-\\s*"), "")
+        n = n.replace(Regex("\\s*-\\s*RINCON_[0-9A-Fa-f]+\\s*$"), "")
+        return n.ifBlank { raw }
     }
 
     private fun lanIp(): String {
