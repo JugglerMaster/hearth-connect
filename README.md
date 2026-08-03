@@ -6,9 +6,19 @@ HTML5 video intercom / baby monitor system. Self-hosted. Runs on iPads/iPhones (
 
 ## Requirements
 
-- **iOS 11+** (iOS 9.3.5 and earlier are **not supported** — WebRTC requires iOS 11+)
-- Safari (or any WebKit-based browser on iOS)
-- Self-hosted server running Node.js 20+ over HTTPS (self-signed certs work; install CA profile on iOS)
+### Client devices
+- **iOS 11+** (iOS 9.3.5 and earlier are **not supported** — WebRTC requires iOS 11+) running Safari or any WebKit-based browser
+- **Android 9+** for the native Ktor base station (tested on Samsung Galaxy Tab A7 / SM-T500, Android 11)
+
+### Server / hub
+- One of:
+  - **Node.js 20+** self-hosted server over HTTPS — `server/` (Express + `ws`, self-signed certs work; install the CA profile on iOS once via Settings → VPN & Device Management), **or**
+  - **Android hub** — the embedded Ktor signaling server inside the Android base station app (`android/`), which serves the client assets and provides WebRTC signaling without a separate Node process.
+
+### Headless publisher (Raspberry Pi)
+- **Raspberry Pi** (Pi 3/4/Zero 2 W) or any Linux host with a USB/Pi camera and mic
+- **GStreamer 1.18+** with `webrtcbin`, `rtp`, and `good/ugly` plugins
+- **Python 3.9+** for `linux/pi-agent/pi-agent.py` (GStreamer/websockets imported lazily)
 
 ## Features
 
@@ -266,7 +276,7 @@ hearth-connect/
 
 ### In Progress
 - [ ] Android base station QOL polish (bugs, UI refinements)
-- [ ] Audio talkback tuning (Pi ↔ base station two-way audio)
+- [x] Audio talkback tuning (Pi ↔ base station two-way audio)
 
 ### Multi-Room & Auth
 

@@ -1405,12 +1405,26 @@ class SignalingServer(private val context: Context, private val listener: Server
 
     // ─── Keystore ────────────────────────────────────────────
 
+    // True if the stored leaf cert is within the browser-enforced 398-day
+    // maximum. Older hubs issued a 10-year leaf that Brave/Chrome reject with an
+    // un-bypassable ERR_CERT_VALIDITY_TOO_LONG, so we regenerate in that case.
+    private fun leafCertValid(ks: KeyStore): Boolean {
+        val cert = ks.getCertificate(KEYSTORE_ALIAS) as? java.security.cert.X509Certificate ?: return false
+        val days = (cert.notAfter.time - cert.notBefore.time) / (24L * 3600 * 1000)
+        return days <= 398
+    }
+
     private fun loadOrCreateKeyStore(keyStoreFile: File): KeyStore {
         if (keyStoreFile.exists()) {
             val ks = KeyStore.getInstance("PKCS12")
             keyStoreFile.inputStream().use { ks.load(it, KEYSTORE_PASSWORD.toCharArray()) }
-            Log.i(TAG, "Loaded existing keystore from filesDir")
-            return ks
+            if (!leafCertValid(ks)) {
+                Log.i(TAG, "Existing leaf cert exceeds 398-day browser limit — regenerating")
+                keyStoreFile.delete()
+            } else {
+                Log.i(TAG, "Loaded existing keystore from filesDir")
+                return ks
+            }
         }
         // No stored keystore: generate one with the hub's LAN IP/hostname in the
         // SANs (so browsers reaching it by IP don't warn). The pre-built asset
@@ -1450,7 +1464,13 @@ class SignalingServer(private val context: Context, private val listener: Server
         val bc = BouncyCastleProvider()
         Security.insertProviderAt(bc, 1)
         val notBefore = Date(System.currentTimeMillis() - 86_400_000L)
+        // CA stays valid for 10 years so iOS devices keep trusting the profile
+        // after a one-time install. The *leaf* cert must be kept under the
+        // browser-enforced 398-day maximum (Chrome/Brave reject anything longer
+        // with an un-bypassable ERR_CERT_VALIDITY_TOO_LONG), so it is capped at
+        // 365 days. The cert is regenerated on launch anyway.
         val notAfter = Date(System.currentTimeMillis() + 10L * 365 * 24 * 3600 * 1000)
+        val leafNotAfter = Date(System.currentTimeMillis() + 365L * 24 * 3600 * 1000)
 
         // --- Root CA ---
         val caKpg = KeyPairGenerator.getInstance("RSA").apply { initialize(2048) }
@@ -1474,7 +1494,7 @@ class SignalingServer(private val context: Context, private val listener: Server
         val srvDN = X500Principal("CN=hearthconnect")
         val srvBuilder = JcaX509v3CertificateBuilder(
             caCert, BigInteger.valueOf(System.currentTimeMillis() + 1),
-            notBefore, notAfter, srvDN, srvKp.public
+            notBefore, leafNotAfter, srvDN, srvKp.public
         )
         srvBuilder.addExtension(Extension.basicConstraints, false, BasicConstraints(false))
         srvBuilder.addExtension(
