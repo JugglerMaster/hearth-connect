@@ -2,10 +2,10 @@ package com.hearthconnect
 
 import android.content.Context
 import android.content.res.AssetManager
+import android.util.Base64
 import android.util.Log
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
-import io.ktor.network.tls.certificates.buildKeyStore
 import io.ktor.server.application.ApplicationCall
 import io.ktor.server.application.call
 import io.ktor.server.application.install
@@ -35,7 +35,24 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.net.NetworkInterface
+import java.math.BigInteger
+import java.security.KeyPairGenerator
 import java.security.KeyStore
+import java.security.Security
+import java.security.cert.X509Certificate
+import java.util.Date
+import javax.security.auth.x500.X500Principal
+import org.bouncycastle.asn1.x509.BasicConstraints
+import org.bouncycastle.asn1.x509.ExtendedKeyUsage
+import org.bouncycastle.asn1.x509.Extension
+import org.bouncycastle.asn1.x509.GeneralName
+import org.bouncycastle.asn1.x509.GeneralNames
+import org.bouncycastle.asn1.x509.KeyPurposeId
+import org.bouncycastle.asn1.x509.KeyUsage
+import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter
+import org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder
+import org.bouncycastle.jce.provider.BouncyCastleProvider
+import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -77,6 +94,7 @@ class SignalingServer(private val context: Context, private val listener: Server
     fun start(port: Int = HubService.PORT) {
         val keyStoreFile = File(context.filesDir, KEYSTORE_FILE)
         val keyStore = loadOrCreateKeyStore(keyStoreFile)
+        exportCertPem(keyStore)
 
         val env = applicationEngineEnvironment {
             sslConnector(
@@ -123,6 +141,20 @@ class SignalingServer(private val context: Context, private val listener: Server
 
                     get("/api/server-url") {
                         call.respondText("https://${lanIp()}:$port")
+                    }
+
+                    // Downloadable CA cert (PEM) for installing on iOS so the
+                    // self-signed hub cert is trusted and Safari stops prompting.
+                    get("/hearthconnect.crt") {
+                        val f = File(this@SignalingServer.context.filesDir, "hearthconnect.crt")
+                        if (!f.exists()) {
+                            call.respondText("cert not found", ContentType.Text.Plain, HttpStatusCode.NotFound)
+                            return@get
+                        }
+                        // No Content-Disposition: iOS Safari installs the profile
+                        // inline when navigating to the cert, rather than just
+                        // downloading it.
+                        call.respondBytes(f.readBytes(), ContentType("application", "x-x509-ca-cert"))
                     }
 
                     // ─── Broadcast clips (plan 18) ───────────────────
@@ -1380,6 +1412,18 @@ class SignalingServer(private val context: Context, private val listener: Server
             Log.i(TAG, "Loaded existing keystore from filesDir")
             return ks
         }
+        // No stored keystore: generate one with the hub's LAN IP/hostname in the
+        // SANs (so browsers reaching it by IP don't warn). The pre-built asset
+        // keystore is only a last-resort fallback — its SANs are static.
+        try {
+            val generated = generateKeyStoreWithSans()
+            keyStoreFile.parentFile?.mkdirs()
+            keyStoreFile.outputStream().use { generated.store(it, KEYSTORE_PASSWORD.toCharArray()) }
+            Log.i(TAG, "Generated keystore with SANs: ${certDomains().joinToString()}")
+            return generated
+        } catch (e: Exception) {
+            Log.w(TAG, "Keystore generation failed, trying asset: ${e.message}")
+        }
         try {
             assets.open("keystore/$KEYSTORE_FILE").use { stream ->
                 val ks = KeyStore.getInstance("PKCS12")
@@ -1392,17 +1436,126 @@ class SignalingServer(private val context: Context, private val listener: Server
                 return ks
             }
         } catch (e: Exception) {
-            Log.w(TAG, "No pre-built keystore in assets, generating: ${e.message}")
+            Log.w(TAG, "No pre-built keystore in assets: ${e.message}")
         }
-        val generated = buildKeyStore {
-            certificate(KEYSTORE_ALIAS) {
-                password = KEYSTORE_PASSWORD
-                domains = listOf("127.0.0.1", "localhost", "hearth.local")
+        throw IllegalStateException("Unable to obtain a TLS keystore")
+    }
+
+    // Build a proper CA + leaf chain: a self-signed root CA (installed/trusted
+    // on the phone) and a server (leaf) cert signed by it, with the hub's LAN
+    // IP as an iPAddress SAN (Safari requires this for IP-literal URLs) plus
+    // DNS names and serverAuth EKU. iOS will not accept a CA cert used directly
+    // as the server cert, so the two must be separate.
+    private fun generateKeyStoreWithSans(): KeyStore {
+        val bc = BouncyCastleProvider()
+        Security.insertProviderAt(bc, 1)
+        val notBefore = Date(System.currentTimeMillis() - 86_400_000L)
+        val notAfter = Date(System.currentTimeMillis() + 10L * 365 * 24 * 3600 * 1000)
+
+        // --- Root CA ---
+        val caKpg = KeyPairGenerator.getInstance("RSA").apply { initialize(2048) }
+        val caKp = caKpg.generateKeyPair()
+        val caDN = X500Principal("CN=hearthconnect CA")
+        val caBuilder = JcaX509v3CertificateBuilder(
+            caDN, BigInteger.valueOf(System.currentTimeMillis()), notBefore, notAfter, caDN, caKp.public
+        )
+        caBuilder.addExtension(Extension.basicConstraints, true, BasicConstraints(true))
+        caBuilder.addExtension(
+            Extension.keyUsage, true,
+            KeyUsage(KeyUsage.keyCertSign or KeyUsage.cRLSign)
+        )
+        val caSigner = JcaContentSignerBuilder("SHA256withRSA").setProvider(bc).build(caKp.private)
+        val caCert = JcaX509CertificateConverter().setProvider(bc)
+            .getCertificate(caBuilder.build(caSigner)) as X509Certificate
+
+        // --- Server (leaf) cert, signed by the CA ---
+        val srvKpg = KeyPairGenerator.getInstance("RSA").apply { initialize(2048) }
+        val srvKp = srvKpg.generateKeyPair()
+        val srvDN = X500Principal("CN=hearthconnect")
+        val srvBuilder = JcaX509v3CertificateBuilder(
+            caCert, BigInteger.valueOf(System.currentTimeMillis() + 1),
+            notBefore, notAfter, srvDN, srvKp.public
+        )
+        srvBuilder.addExtension(Extension.basicConstraints, false, BasicConstraints(false))
+        srvBuilder.addExtension(
+            Extension.keyUsage, true,
+            KeyUsage(KeyUsage.digitalSignature or KeyUsage.keyEncipherment)
+        )
+        srvBuilder.addExtension(
+            Extension.extendedKeyUsage, false,
+            ExtendedKeyUsage(KeyPurposeId.id_kp_serverAuth)
+        )
+        val generalNames = ArrayList<GeneralName>()
+        for (d in listOf("localhost", "hearth.local")) {
+            generalNames.add(GeneralName(GeneralName.dNSName, d))
+        }
+        val host = try { java.net.InetAddress.getLocalHost().hostName } catch (_: Exception) { "" }
+        if (host.isNotEmpty() && host != "localhost") {
+            generalNames.add(GeneralName(GeneralName.dNSName, host))
+        }
+        for (ip in listOf("127.0.0.1", lanIp())) {
+            if (ip.isNotEmpty() && ip != "localhost") {
+                generalNames.add(GeneralName(GeneralName.iPAddress, ip))
             }
         }
-        keyStoreFile.parentFile?.mkdirs()
-        keyStoreFile.outputStream().use { generated.store(it, KEYSTORE_PASSWORD.toCharArray()) }
-        return generated
+        srvBuilder.addExtension(
+            Extension.subjectAlternativeName, false,
+            GeneralNames(generalNames.toTypedArray())
+        )
+        val srvSigner = JcaContentSignerBuilder("SHA256withRSA").setProvider(bc).build(caKp.private)
+        val srvCert = JcaX509CertificateConverter().setProvider(bc)
+            .getCertificate(srvBuilder.build(srvSigner)) as X509Certificate
+
+        val ks = KeyStore.getInstance("PKCS12")
+        ks.load(null, null)
+        // Store the CA separately too, otherwise BouncyCastle's PKCS12 drops it
+        // from the chain and getCertificateChain() returns only the leaf.
+        ks.setCertificateEntry("${KEYSTORE_ALIAS}-ca", caCert)
+        // Leaf private key + [leaf, CA] chain.
+        ks.setKeyEntry(
+            KEYSTORE_ALIAS, srvKp.private, KEYSTORE_PASSWORD.toCharArray(),
+            arrayOf(srvCert, caCert)
+        )
+        return ks
+    }
+
+    // SANs for the generated cert: localhost plus the hub's LAN IP/hostname so
+    // browsers that reach it by IP (e.g. https://192.168.1.103:8090) don't warn
+    // about a name mismatch. The self-signed CA still needs to be trusted once
+    // per device (see /hearthconnect.crt).
+    private fun certDomains(): List<String> {
+        val set = LinkedHashSet<String>()
+        set += "127.0.0.1"
+        set += "localhost"
+        set += "hearth.local"
+        val ip = lanIp()
+        if (ip.isNotEmpty() && ip != "localhost") set += ip
+        // Best-effort: also cover the device's network hostname.
+        try {
+            val host = java.net.InetAddress.getLocalHost().hostName
+            if (host.isNotEmpty() && !host.equals("localhost", true)) set += host
+        } catch (_: Exception) { }
+        return set.toList()
+    }
+
+    // Export the ROOT CA cert (not the leaf) as a downloadable PEM so it can be
+    // installed on iOS (Settings → Profile Downloaded → install, then enable in
+    // Certificate Trust Settings) to silence the "proceed anyway" prompt.
+    private fun exportCertPem(ks: KeyStore) {
+        try {
+            // The CA is stored under its own alias (getCertificateChain() only
+            // returns the leaf's array, which BouncyCastle truncates).
+            val ca = ks.getCertificate("${KEYSTORE_ALIAS}-ca") as? java.security.cert.X509Certificate
+                ?: (ks.getCertificateChain(KEYSTORE_ALIAS)?.lastOrNull() as? java.security.cert.X509Certificate)
+                ?: return
+            val b64 = android.util.Base64.encodeToString(ca.encoded, android.util.Base64.NO_WRAP)
+            val pem = "-----BEGIN CERTIFICATE-----\n" +
+                b64.chunked(64).joinToString("\n") +
+                "\n-----END CERTIFICATE-----\n"
+            File(context.filesDir, "hearthconnect.crt").writeText(pem)
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to export cert PEM: ${e.message}")
+        }
     }
 
     private fun lanIp(): String {

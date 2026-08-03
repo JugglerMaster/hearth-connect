@@ -53,6 +53,7 @@
     drawer.innerHTML =
       '<div class="drawer-header">Menu</div>' +
       '<div class="drawer-pages">' + pageItems + '</div>' +
+      '<a href="/hearthconnect.crt" class="drawer-item">Install Hub CA Cert</a>' +
       '<div class="drawer-divider"></div>' +
       '<div class="drawer-setting">' +
         '<label class="drawer-setting-label" for="drawerRestoreToggle">Restore last page</label>' +

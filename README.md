@@ -1,6 +1,6 @@
 # Hearth-Connect
 
-**v0.8** — Multi-Platform Video Intercom
+**v0.9** — Multi-Platform Video Intercom
 
 HTML5 video intercom / baby monitor system. Self-hosted. Runs on iPads/iPhones (Safari), Raspberry Pi (headless GStreamer agent), and Android (native Ktor + libwebrtc base station).
 
@@ -51,8 +51,15 @@ HTML5 video intercom / baby monitor system. Self-hosted. Runs on iPads/iPhones (
 - **ALSA audio** — auto-detects USB mic, supports multi-channel devices (PS3Eye 4-ch downmixed to mono)
 - **Two-way talkback** — receives base station audio via sendrecv WebRTC peer connection
 - **Remote config** — base station pushes resolution/framerate/encoder settings to Pi
-- **mDNS discovery** — auto-finds server on local network
-- **Install**: `linux/pi-agent/install.sh` or deploy via `linux/deploy-pi.sh`
+  - **mDNS discovery** — auto-finds server on local network
+  - **WiFi hotspot / captive portal** — if no station WiFi is found, the agent
+    brings up its own AP (SSID = hostname, e.g. `pivideo1`) with a captive
+    portal for one-tap provisioning of home WiFi; scans nearby networks first
+    (without dropping the phone) and recovers a saved connection if the AP has
+    no internet after 10 min. Runs with passwordless `sudo` for `nmcli`/`dnsmasq`.
+  - **SD-card longevity** — `linux/pi-agent/sd-card-longevity.sh` reduces SD
+    writes for always-on Pi deployments.
+  - **Install**: `linux/pi-agent/install.sh` or deploy via `linux/deploy-pi.sh`
 
 ### Android Base Station — `android/`
 - **Native Ktor + libwebrtc** — embedded signaling server, no browser dependency
@@ -85,6 +92,29 @@ HTML5 video intercom / baby monitor system. Self-hosted. Runs on iPads/iPhones (
 - **Monitor display modes** — `blank` / `self` (own camera preview) / `base` (base's FaceTalk feed)
 - **iOS silent-switch safe audio** — monitor audio routed through an unmuted video element
 
+### Recorded Announcements (record-then-play) — `plan 18`
+- **Record → broadcast** — base station records a WAV clip (press-and-hold) and
+  uploads it to `POST /api/clip`; the hub fans it out via `PLAY_CLIP` to selected
+  targets (monitors and/or network speakers).
+- **One-shot, no live relay** — recorded clips are a WAV + push, not a live
+  WebRTC stream, so they don't burden the signaling server with media.
+- **Target selection** — choose recipients from the broadcast "Send to"
+  selector alongside live talkback targets.
+
+### Network Speakers (Sonos / UPnP) — `plan 19`
+- **SSDP discovery** — hub discovers Sonos/UPnP AV renderers on the LAN and
+  publishes them as first-class `sonos` room devices (labeled by the speaker's
+  Sonos `roomName`).
+- **Clip playback** — recorded announcements (and a server-generated test tone)
+  are pushed to Sonos via UPnP `AVTransport` + `RenderingControl` using a
+  raw-socket UPnP client (avoids the `HttpURLConnection` chunked-encoding /
+  service-type quirks that produced UPnP 401/402 errors).
+- **Base station UI** — "Network Speakers" panel with per-speaker volume +
+  allow-broadcasts toggle; Sonos entries appear in the broadcast "Send to"
+  selector.
+- **Persistence** — speaker config (volume, allow-broadcasts, labels) survives
+  hub restarts via `device_configs.json`.
+
 ### iOS Background Audio (Screen Locked)
 
 By default iOS suspends Safari/WKWebView the moment the screen locks, killing the
@@ -102,6 +132,25 @@ WebRTC audio stream. To keep monitoring with the screen off:
 - **Alternative:** a native Swift/`libwebrtc` app using the `audio` background
   mode achieves the same audio-while-locked result, but requires building and
   sideloading. Brave's toggle covers the same case without that overhead.
+
+---
+
+## ⚠️ Security Warning: No Authentication
+
+**Hearth-Connect currently has NO authentication, authorization, or access
+control of any kind.**
+
+- Anyone who can reach the server URL (e.g. over Tailscale or your LAN) can
+  join any room, subscribe to camera/mic feeds, and **push configuration to
+  devices** (including disabling streams or changing settings).
+- Room join is direct via `JOIN_ROOM` — there are no pairing tokens, PINs, or
+  credentials (see "No pairing tokens required" under Signaling & Discovery).
+- This is acceptable for a trusted, isolated home network / private VPN, but it
+  is **NOT safe to expose publicly** (no port-forwarding to the open internet).
+
+Until auth is implemented (see the plan below), treat the server as a
+trust-boundary device: keep it behind your router/firewall and only reachable
+via Tailscale or a similarly access-controlled private network.
 
 ---
 
@@ -220,9 +269,39 @@ hearth-connect/
 - [ ] Audio talkback tuning (Pi ↔ base station two-way audio)
 
 ### Multi-Room & Auth
+
+> **Status:** Not started. There is currently no authentication in the system —
+> see the Security Warning above. The following is the planned approach.
+
 - [ ] Multiple named rooms (create/join from base station)
 - [ ] Optional PIN per room (viewer access control)
 - [ ] Device ownership (prevent unauthorized config pushes)
+
+**Plan — Authentication & Access Control**
+
+1. **Room PIN / access token (first milestone)**
+   - Add an optional `pin` (or shared token) per room in `ConfigManager`
+     (`server/data/config.json`). Server rejects `JOIN_ROOM` without a matching
+     token; subscribers (monitors/viewers) must supply it on connect.
+   - Configurable from the base station UI; persisted server-side.
+   - Backwards-compatible: rooms with no PIN behave as today (open join).
+2. **Device identity & ownership**
+   - Promote the existing client `deviceId` (currently only localStorage) into a
+     server-issued, persisted credential so config-push messages
+     (`Remote config panel`) are only honored from authorized devices.
+   - Base station enrolls trusted device IDs; config pushes from unknown IDs are
+     dropped with a `CONFIG_REJECTED` signal.
+3. **Signaling-level auth**
+   - Require an `Authorization` / token handshake on the WebSocket upgrade
+     (`SignalingHandler`), so unauthorized clients never enter a room at all.
+   - Keep tokens simple (symmetric shared secret per room) — no external IdP
+     needed for a self-hosted home deployment.
+4. **Transport hardening**
+   - Ensure TLS is mandatory before any of the above (self-signed CA already
+     documented); never accept room credentials over plain HTTP.
+5. **Out of scope for v1**
+   - Per-user accounts / OAuth, rate limiting, and brute-force protection on
+     PINs (acceptable risk on a private VPN; revisit if ever publicly exposed).
 
 ### Smart Audio Notifications
 - [ ] Configurable trigger level, hysteresis, and cooldown period

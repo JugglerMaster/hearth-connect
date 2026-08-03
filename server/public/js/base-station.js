@@ -660,6 +660,15 @@
   // "Hold to Broadcast" announcement and FaceTalk respect the user's choice.
   let broadcastTarget = 'all';
 
+  // Tracks Sonos deviceIds for which WE just sent a SET_CONFIG. The server's
+  // SET_CONFIG echo hardcodes status:'online' (SignalingHandler.ts), so the
+  // DEVICE_STATUS it broadcasts back can look like an online/offline flip and
+  // otherwise trigger a full renderDevices() rebuild — which resets the volume
+  // slider, the device names, and the "Send to" dropdown mid-interaction. We
+  // mark the id here and, on the matching echo, sync the speaker item in place
+  // instead of rebuilding. The flag is cleared on the first matching echo.
+  const pendingConfigEcho = {};
+
   function buildBroadcastPanel() {
     // Build the target <select>: an "All devices" option, one per kiosk, and
     // one per discovered network speaker (a Sonos chosen here plays the
@@ -896,6 +905,28 @@
       </div>`;
   }
 
+  // In-place sync of a Sonos speaker item (volume slider + allow toggle) from
+  // the device cache, WITHOUT rebuilding the whole device list. Used by the
+  // deviceStatus handler so a config echo of our own slider/toggle tweak does
+  // not re-render the panel and reset the slider position / "Send to" dropdown.
+  function syncSpeakerItem(d) {
+    const item = deviceList.querySelector('.speaker-item[data-id="' + d.id + '"]');
+    if (!item) return;
+    const cfg = d.config || {};
+    const vol = Math.round((cfg.volume != null ? cfg.volume : 0.5) * 100);
+    const allow = cfg.allowBroadcasts !== false;
+    const volEl = item.querySelector('.sonos-vol');
+    // Don't fight the user mid-drag: if the slider has focus (just released),
+    // leave its value/label alone — they already match what we sent.
+    if (volEl && document.activeElement !== volEl) {
+      volEl.value = vol;
+      const valEl = item.querySelector('.sonos-vol-val');
+      if (valEl) valEl.textContent = vol + '%';
+    }
+    const allowEl = item.querySelector('.sonos-allow');
+    if (allowEl) allowEl.classList.toggle('active', allow);
+  }
+
   function attachSpeakersListeners() {
     deviceList.querySelectorAll('.sonos-vol').forEach(el => {
       const valEl = el.parentElement.querySelector('.sonos-vol-val');
@@ -906,12 +937,14 @@
       });
       el.addEventListener('change', (e) => {
         const id = e.target.dataset.id;
+        pendingConfigEcho[id] = true;
         sig.setConfig(id, { volume: e.target.value / 100 });
       });
     });
     deviceList.querySelectorAll('.sonos-allow').forEach(el => {
       el.addEventListener('click', (e) => {
         const active = el.classList.toggle('active');
+        pendingConfigEcho[el.dataset.id] = true;
         sig.setConfig(el.dataset.id, { allowBroadcasts: active });
       });
     });
@@ -2181,6 +2214,9 @@
     sig.on('deviceStatus', (data) => {
       const wasKnown = devices.some(dev => dev.id === data.deviceId);
       let d = devices.find(dev => dev.id === data.deviceId);
+      const prevOnline = d ? d.online : undefined;
+      const prevType = d ? d.type : undefined;
+      const prevLabel = d ? d.label : undefined;
       if (d) {
         d.online = data.status === 'online';
         d.lastSeenAt = data.lastSeenAt || Date.now();
@@ -2206,7 +2242,36 @@
         monitorError.textContent = 'Kiosk went offline.';
         monitorError.classList.remove('hidden');
       }
-      renderDevices();
+
+      // Decide whether the list structure changed. A full renderDevices()
+      // rebuilds the entire panel — which resets the "Send to" dropdown,
+      // re-renders device names, and re-creates the Sonos volume slider (a
+      // visible CSS flash + slider jump). That must NOT happen on the
+      // DEVICE_STATUS echo of our own Sonos config tweak (volume / announce
+      // toggle): for those we just sync the speaker item in place.
+      const joined = !wasKnown && data.status === 'online';
+      const structural = joined
+        || prevOnline !== (data.status === 'online')
+        || prevType !== data.type
+        || (data.label && prevLabel !== data.label);
+
+      // If WE just pushed config to this Sonos, the server's echo is purely a
+      // config confirmation (it also hardcodes status:'online', which can look
+      // like an online/offline flip). Skip the full rebuild and sync in place,
+      // so the slider/names/dropdown don't reset. Clear the flag on first echo.
+      if (d && d.type === 'sonos' && pendingConfigEcho[d.id]) {
+        delete pendingConfigEcho[d.id];
+        syncSpeakerItem(d);
+        return;
+      }
+
+      if (structural) {
+        renderDevices();
+      } else if (d && d.type === 'sonos') {
+        syncSpeakerItem(d);
+      } else {
+        renderDevices();
+      }
     });
 
     sig.on('error', (err) => {

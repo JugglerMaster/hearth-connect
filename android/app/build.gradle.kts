@@ -67,5 +67,8 @@ dependencies {
     implementation("io.ktor:ktor-serialization-kotlinx-json:2.3.12")
     implementation("io.ktor:ktor-network-tls:2.3.12")
     implementation("io.ktor:ktor-network-tls-certificates:2.3.12")
+    // Expose BouncyCastle so we can build a cert with a real iPAddress SAN
+    // (Ktor's buildKeyStore only emits dNSName entries).
+    implementation("org.bouncycastle:bcpkix-jdk18on:1.77")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
 }
