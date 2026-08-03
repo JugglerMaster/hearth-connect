@@ -18,20 +18,24 @@
 # What remains are the mitigations still worth applying, ordered from LEAST to
 # MOST intrusive, each with its trade-off printed below.
 #
-# Usage:
-#   sudo bash sd-card-longevity.sh            # interactive menu
-#   sudo bash sd-card-longevity.sh --info     # just show the trade-off table
-#   sudo bash sd-card-longevity.sh --apply 2,3,4   # apply selected options
-#   sudo bash sd-card-longevity.sh --dry-run  # show what would change, no writes
+# Every change is idempotent, backed up before editing, and can be reverted
+# with --undo (see below). A reboot is required for fstab / journald / overlay
+# changes to take full effect.
 #
-# Every change is idempotent and backed up before editing. A reboot is required
-# for fstab / journald / overlay changes to take full effect.
+# Usage:
+#   sudo bash sd-card-longevity.sh                  # interactive menu (apply)
+#   sudo bash sd-card-longevity.sh --info           # just show the trade-off table
+#   sudo bash sd-card-longevity.sh --apply 2,3,4    # apply selected options
+#   sudo bash sd-card-longevity.sh --undo 2,3,4     # REVERT selected options
+#   sudo bash sd-card-longevity.sh --dry-run        # show what would change, no writes
 #
 set -e
 
 DRY_RUN=0
 APPLY_LIST=""
+UNDO_LIST=""
 INFO_ONLY=0
+MODE="apply"   # "apply" or "undo"
 
 for a in "$@"; do
   case "$a" in
@@ -39,7 +43,10 @@ for a in "$@"; do
     --info)     INFO_ONLY=1 ;;
     --apply)    : ;;  # value handled below
     --apply=*)  APPLY_LIST="${a#*=}" ;;
-    *)          if [[ "$prev" == "--apply" ]]; then APPLY_LIST="$a"; fi ;;
+    --undo)     MODE="undo" ;;
+    --undo=*)   MODE="undo"; UNDO_LIST="${a#*=}" ;;
+    *)          if [[ "$prev" == "--apply" ]]; then APPLY_LIST="$a";
+                elif [[ "$prev" == "--undo" ]]; then UNDO_LIST="$a"; fi ;;
   esac
   prev="$a"
 done
@@ -91,6 +98,8 @@ print_table() {
   echo "       /opt/hearth-pi-agent as a persistent rw bind or the agent loses its"
   echo "       device_id/server_url on every reboot. Reboot required."
   echo
+  echo "Revert any of the above with: sudo bash $0 --undo <ids>"
+  echo
 }
 
 # ─── helpers ────────────────────────────────────────────────────────────────
@@ -106,7 +115,7 @@ run() {
 }
 need_root() { [[ $EUID -eq 0 ]] || { echo "Run as root (sudo)."; exit 1; }; }
 
-# ─── option implementations ─────────────────────────────────────────────────
+# ─── apply implementations ──────────────────────────────────────────────────
 opt1_loglevel() {
   echo ">> [1] Lower agent log verbosity to WARNING"
   local cfg=/opt/hearth-pi-agent/config.env
@@ -190,9 +199,70 @@ opt5_readonly_root() {
   echo "  reboot rw, apt update, then re-enable overlay and reboot."
 }
 
+# ─── undo (revert) implementations ──────────────────────────────────────────
+undo1_loglevel() {
+  echo ">> [1] Restore agent log verbosity to INFO"
+  local cfg=/opt/hearth-pi-agent/config.env
+  if [[ -f "$cfg" ]]; then
+    backup "$cfg"
+    if grep -q '^LOG_LEVEL=' "$cfg"; then
+      run "sed -i 's|^LOG_LEVEL=.*|LOG_LEVEL=INFO|' $cfg"
+    fi
+  fi
+  echo "  Restart the agent: sudo systemctl restart hearth-pi-agent"
+}
+
+undo2_boot_noatime() {
+  echo ">> [2] Remove noatime,nodiratime from /boot/firmware"
+  backup "$FSTAB"
+  if grep -E '\s/boot' "$FSTAB" | grep -q 'noatime'; then
+    run "sed -i -E 's#(.*\s/boot[a-z/]*\s+[a-z0-9]+\s+defaults),noatime,nodiratime(.*)#\1\2#' $FSTAB"
+  else
+    echo "  /boot already without noatime — skipping"
+  fi
+  echo "  Reboot to apply to the mounted /boot fs."
+}
+
+undo3_journal_ram() {
+  echo ">> [3] Restore journal to disk (Storage=persistent)"
+  backup "$JOURNALD"
+  if grep -q '^Storage=' "$JOURNALD"; then
+    run "sed -i 's/^Storage=.*/Storage=persistent/' $JOURNALD"
+  fi
+  # remove the RuntimeMaxUse line this script added
+  run "sed -i '/^RuntimeMaxUse=16M$/d' $JOURNALD"
+  run "systemctl restart systemd-journald || true"
+  echo "  Journal now persists to /var/log/journal (survives reboot)."
+}
+
+undo4_varlog_tmpfs() {
+  echo ">> [4] Remove tmpfs for /var/log"
+  backup "$FSTAB"
+  if grep -q 'tmpfs /var/log ' "$FSTAB"; then
+    run "sed -i '\\#tmpfs /var/log #d' $FSTAB"
+  else
+    echo "  already absent — skipping"
+  fi
+  echo "  Reboot to mount /var/log back on the SD card (logs will persist)."
+}
+
+undo5_readonly_root() {
+  echo ">> [5] Disable overlayfs read-only root"
+  if [[ -f "$OVERLAY_CONF" ]]; then
+    backup "$OVERLAY_CONF"
+    run "sed -i -E 's/(rootwait) overlay=yes/\1/' $OVERLAY_CONF"
+  fi
+  backup "$FSTAB"
+  run "sed -i '/# hearth-persist/d' $FSTAB"
+  run "sed -i '\\#/opt/hearth-pi-agent /opt/hearth-pi-agent none bind,rw#d' $FSTAB"
+  echo "  Reboot to return to a writable root fs."
+}
+
 # ─── main ───────────────────────────────────────────────────────────────────
 declare -A OPTS=( [1]=opt1_loglevel [2]=opt2_boot_noatime [3]=opt3_journal_ram
                    [4]=opt4_varlog_tmpfs [5]=opt5_readonly_root )
+declare -A UNDOS=( [1]=undo1_loglevel [2]=undo2_boot_noatime [3]=undo3_journal_ram
+                    [4]=undo4_varlog_tmpfs [5]=undo5_readonly_root )
 
 print_table
 
@@ -205,14 +275,26 @@ need_root
 apply_one() {
   local id="$1"
   if [[ -z "${OPTS[$id]:-}" ]]; then echo "  unknown option: $id"; return; fi
-  echo; "${OPTS[$id]}"
+  echo
+  if [[ "$MODE" == "undo" ]]; then
+    "${UNDOS[$id]}"
+  else
+    "${OPTS[$id]}"
+  fi
 }
 
 if [[ -n "$APPLY_LIST" ]]; then
   IFS=',' read -ra ids <<< "$APPLY_LIST"
   for id in "${ids[@]}"; do apply_one "$id"; done
+elif [[ -n "$UNDO_LIST" ]]; then
+  IFS=',' read -ra ids <<< "$UNDO_LIST"
+  for id in "${ids[@]}"; do apply_one "$id"; done
 else
-  echo "Apply which options? (e.g. '2,3,4' or 'all'). Ordered 1..5 above."
+  if [[ "$MODE" == "undo" ]]; then
+    echo "Revert which options? (e.g. '2,3,4' or 'all'). Ordered 1..5 above."
+  else
+    echo "Apply which options? (e.g. '2,3,4' or 'all'). Ordered 1..5 above."
+  fi
   read -r -p "Selection: " sel
   if [[ "$sel" == "all" ]]; then sel="1,2,3,4,5"; fi
   IFS=',' read -ra ids <<< "$sel"
