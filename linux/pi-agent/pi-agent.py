@@ -37,7 +37,9 @@ import time
 # stack installed.
 Gst = GstWebRTC = GstSdp = GLib = None
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
+_LOG_LEVEL = os.environ.get('LOG_LEVEL', 'INFO').strip().upper()
+logging.basicConfig(level=getattr(logging, _LOG_LEVEL, logging.INFO),
+                   format='%(asctime)s %(levelname)s %(message)s')
 log = logging.getLogger('hearth-pi-agent')
 
 WS_URL = os.environ.get('SERVER_URL', '').rstrip('/')
