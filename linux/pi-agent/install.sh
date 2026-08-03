@@ -78,7 +78,7 @@ sudo cp "$SCRIPT_DIR/captive_portal.py" "$INSTALL_DIR/"
 # ─── Install the server's CA so the agent trusts the self-signed TLS cert ───
 # The Pi agent verifies the server's WSS certificate. For a self-hosted LAN
 # server this means trusting its CA. Look for ca.pem next to this script
-# (e.g. copied alongside by deploy-pi.sh), in the server's certs dir, or in
+# (e.g. copied alongside this script), in the server's certs dir, or in
 # /opt/hearth-pi-agent; install whichever is found into the system trust store.
 CA_CANDIDATES=(
   "$SCRIPT_DIR/ca.pem"

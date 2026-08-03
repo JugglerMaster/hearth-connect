@@ -65,7 +65,7 @@ sudo cp hearth-pi-agent.service /etc/systemd/system/
 > **Pulling updates when you hit that error:**
 > ```bash
 > # temp fix: discard the local mode change, then pull
-> git checkout -- linux/pi-agent/install.sh linux/deploy-pi.sh
+> git checkout -- linux/pi-agent/install.sh
 > git pull
 > ```
 > Or, to stop Git from ever flagging mode changes in this clone:

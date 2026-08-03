@@ -69,7 +69,7 @@ HTML5 video intercom / baby monitor system. Self-hosted. Runs on iPads/iPhones (
     no internet after 10 min. Runs with passwordless `sudo` for `nmcli`/`dnsmasq`.
   - **SD-card longevity** — `linux/pi-agent/sd-card-longevity.sh` reduces SD
     writes for always-on Pi deployments.
-  - **Install**: `linux/pi-agent/install.sh` or deploy via `linux/deploy-pi.sh`
+  - **Install**: `linux/pi-agent/install.sh`
 
 ### Android Base Station — `android/`
 - **Native Ktor + libwebrtc** — embedded signaling server, no browser dependency
@@ -192,10 +192,7 @@ cd server && npm install && npm run build && sudo systemctl restart hearth-conne
 ### Raspberry Pi Agent
 
 ```bash
-# Deploy from your dev machine
-linux/deploy-pi.sh <pi-hostname>
-
-# Or install directly on the Pi
+# Install directly on the Pi
 ssh pi 'bash -s' < linux/pi-agent/install.sh
 ```
 
