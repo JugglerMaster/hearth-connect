@@ -154,16 +154,20 @@ def test_encoder(encoder_name):
     """Quick preroll test: can this encoder actually produce output?
 
     ``v4l2h264enc`` exists as a GStreamer element on Pi 3B (installed via
-    gstreamer1.0-plugins-bad) but the hardware encoder stalls under load —
-    the pipeline never reaches PLAYING and no OFFER is created.  This builds
+    gstreamer1.0-plugins-bad) but the hardware encoder stalls on preroll
+    unless an explicit H.264 level is negotiated on its src pad.  This builds
     a tiny test pipeline and checks if it reaches PAUSED (preroll) within a
     short timeout.  Returns True on success, False on failure/timeout.
     """
     _load_gst()
+    # The Pi 3B hardware encoder fails to preroll without an explicit level.
+    # Force level 4.0 (valid for up to 1080p30) so the test reflects what the
+    # live pipeline uses — see https://en.wikipedia.org/wiki/Advanced_Video_Coding#Levels.
+    level_caps = ' ! video/x-h264,level=(string)4' if encoder_name == 'v4l2h264enc' else ''
     pipeline_str = (
         'videotestsrc num-buffers=1 ! videoconvert ! '
         'video/x-raw,format=I420,width=320,height=240,framerate=15/1 ! '
-        '{enc} ! fakesink'.format(enc=encoder_name))
+        '{enc}{level} ! fakesink'.format(enc=encoder_name, level=level_caps))
     try:
         pipeline = Gst.parse_launch(pipeline_str)
         ret = pipeline.set_state(Gst.State.PAUSED)
@@ -523,24 +527,32 @@ def monitor_pipeline_str(has_video, has_audio, width, height, framerate,
             src = 'v4l2src'
             dev = ('device=' + video_device) if video_device else ''
         # Encoder-specific options. `tune=zerolatency` and `key-int-max` are
-        # x264enc (software) properties; `v4l2h264enc` (Pi hardware) rejects
-        # both and manages its own GOP, so it gets no extra options. Kept pure
-        # (no GStreamer introspection) so the string helper stays unit-testable.
-        enc_opts = 'tune=zerolatency key-int-max=30' if enc == 'x264enc' else ''
+        # x264enc (software) properties; `v4l2h264enc` (Pi hardware) manages its
+        # own GOP, so it gets no extra options. Kept pure (no GStreamer
+        # introspection) so the string helper stays unit-testable.
+        if enc == 'v4l2h264enc':
+            # The Pi 3B hardware encoder fails to preroll unless an explicit
+            # H.264 level is negotiated on its src pad. Level 4.0 supports up to
+            # 1080p30 — valid for every resolution this agent uses.
+            # See https://en.wikipedia.org/wiki/Advanced_Video_Coding#Levels
+            enc_segment = 'v4l2h264enc ! video/x-h264,level=(string)4'
+        else:
+            enc_opts = 'tune=zerolatency key-int-max=30' if enc == 'x264enc' else ''
+            enc_segment = '{enc} {enc_opts}'.format(enc=enc, enc_opts=enc_opts)
         if use_libcamerasrc:
             # libcamerasrc outputs NV21; caps set resolution, then convert to I420.
             parts.append(
                 '{src} ! video/x-raw,width={w},height={h},framerate={fr}/1 '
                 '! videoconvert ! video/x-raw,format=I420 '
-                '! {enc} {enc_opts} ! rtph264pay config-interval=-1 '
+                '! {enc_segment} ! rtph264pay config-interval=-1 '
                 '! queue max-size-time=500000000 max-size-bytes=1048576 leaky=downstream ! wb.'.format(
-                    src=src, w=width, h=height, fr=framerate, enc=enc, enc_opts=enc_opts))
+                    src=src, w=width, h=height, fr=framerate, enc_segment=enc_segment))
         else:
             parts.append(
                 '{src} {dev} ! videoconvert ! video/x-raw,format=I420,width={w},height={h},framerate={fr}/1 '
-                '! {enc} {enc_opts} ! rtph264pay config-interval=-1 '
+                '! {enc_segment} ! rtph264pay config-interval=-1 '
                 '! queue max-size-time=500000000 max-size-bytes=1048576 leaky=downstream ! wb.'.format(
-                    src=src, dev=dev, w=width, h=height, fr=framerate, enc=enc, enc_opts=enc_opts))
+                    src=src, dev=dev, w=width, h=height, fr=framerate, enc_segment=enc_segment))
     if has_audio:
         if test_source:
             src = 'audiotestsrc'
@@ -689,6 +701,7 @@ class MonitorSession:
         self._last_offer_ts = 0.0
         self._pipeline_gen = 0  # bumped by build(); stale offers from old gens are discarded
         self._mid_map = {}
+        self._offer_timeout = None  # TimerHandle: clears _making_offer if no ANSWER arrives
         self.pipeline = None
         self.build()
 
@@ -925,12 +938,24 @@ class MonitorSession:
             self.agent.enqueue_ws({'type': 'OFFER', 'payload': {
                 'to': self.subscriber_id, 'sdp': {'type': 'offer', 'sdp': text}}})
             log.info('OFFER sent for %s', self.subscriber_id)
+            if self.agent.loop:
+                if self._offer_timeout:
+                    self._offer_timeout.cancel()
+                self._offer_timeout = self.agent.loop.call_later(
+                    10, self._offer_timeout_fired)
         except Exception as e:
             log.error('on_offer_created FAILED for %s: %s', self.subscriber_id, e)
             self._making_offer = False
 
     def on_local_description_set(self, promise):
         promise.wait()
+
+    def _offer_timeout_fired(self):
+        self._offer_timeout = None
+        if self._making_offer and not self._closing:
+            log.warning('no ANSWER received within 10s for %s — clearing _making_offer',
+                        self.subscriber_id)
+            self._making_offer = False
 
     def on_ice_candidate(self, element, mline_index, candidate):
         # GStreamer >= 1.20 emits (element, mline_index:int, candidate:str).
@@ -1051,6 +1076,9 @@ class MonitorSession:
         promise = Gst.Promise.new_with_change_func(self.on_remote_set)
         self.webrtc.emit('set-remote-description', answer, promise)
         self._making_offer = False
+        if self._offer_timeout:
+            self._offer_timeout.cancel()
+            self._offer_timeout = None
 
     def set_remote_offer(self, sdp_text):
         """Answer a renegotiation OFFER from the base station (e.g. it added a
@@ -1062,6 +1090,22 @@ class MonitorSession:
         talkback audio never reaches the Pi's speaker.
         """
         if self._closing:
+            return
+        # Ignore renegotiation offers arriving while the pipeline is still building
+        # (state < PLAYING) — webrtcbin's create-answer returns None in that window,
+        # which logged "answer is None" and left the session wedged. The base
+        # station re-answers on its own recovery loop, so skipping here is safe.
+        if self.pipeline is None:
+            log.warning('RX RENEG-OFFER but pipeline not ready for %s — ignoring',
+                        self.subscriber_id)
+            return
+        try:
+            _ret, state, _pending = self.pipeline.get_state(0)
+        except Exception:
+            state = None
+        if state != Gst.State.PLAYING:
+            log.warning('RX RENEG-OFFER but pipeline not PLAYING (%s) for %s — ignoring',
+                        getattr(state, 'value_nick', state), self.subscriber_id)
             return
         log.info('RX RENEG-OFFER audio-dir: %s', _sdp_audio_dirs(sdp_text))
         _ret, sdp = GstSdp.SDPMessage.new()
@@ -1090,6 +1134,7 @@ class MonitorSession:
             answer = reply.get_value('answer')
             if answer is None:
                 log.error('monitor session %s answer is None', self.subscriber_id)
+                self._answering = False
                 return
             promise2 = Gst.Promise.new_with_change_func(self.on_local_description_set)
             self.webrtc.emit('set-local-description', answer, promise2)
@@ -1132,6 +1177,9 @@ class MonitorSession:
     def close(self):
         if self.pipeline:
             self._closing = True
+            if self._offer_timeout:
+                self._offer_timeout.cancel()
+                self._offer_timeout = None
             self.pipeline.set_state(Gst.State.NULL)
             self.pipeline = None
             # Non-blocking: do NOT wait for the device to release here.
@@ -1883,18 +1931,31 @@ class Agent:
                 if self.loop:
                     # Small delay so the old pipeline releases /dev/video* before
                     # the new one opens it (avoids the device-busy race).
-                    self.loop.call_later(0.25, existing.build)
+                    self.loop.call_later(0.5, existing.build)
                 else:
                     existing.build()
                 return
-            if len(self.sessions) >= MAX_SUBSCRIBERS:
-                # Make room for the new viewer by evicting the oldest lingering
-                # (stale) session. This prevents a screen-locked viewer from
-                # permanently blocking a different one from connecting.
+            # A NEW subscriber wants the feed. The Pi's physical camera/mic can
+            # only be held by ONE GStreamer pipeline at a time, so if any session
+            # already holds the device we must preempt the oldest one to free it
+            # for the newcomer — regardless of MAX_SUBSCRIBERS. (Several browsers
+            # could subscribe, but only the most recent actually gets media; the
+            # rest would otherwise fail with "device busy" and hang at pc/ice
+            # "new".) Send SESSION_KICKED so the displaced viewer shows a message
+            # and auto-closes instead of looping on recovery.
+            if self.sessions:
                 evicted = self._evict_oldest_stale()
                 if evicted is None:
-                    log.warning('subscriber cap %d reached — rejecting %s', MAX_SUBSCRIBERS, sub)
-                    self.enqueue_ws({'type': 'SUBSCRIBER_LEFT', 'payload': {'subscriberId': sub}})
+                    kicked = self._preempt_oldest_active()
+                    if kicked is None:
+                        log.warning('session exists but none preemptable for %s — rejecting', sub)
+                        self.enqueue_ws({'type': 'SUBSCRIBER_LEFT', 'payload': {'subscriberId': sub}})
+                        return
+                # Delay the new session so the preempted pipeline releases
+                # /dev/video* before the new one opens it (libcamera is slow to
+                # release, so use 1s rather than the 300ms reconnect delay).
+                if self.loop:
+                    self.loop.call_later(1.0, self._deferred_session, sub)
                     return
             self.sessions[sub] = MonitorSession(self, sub)
         elif t == 'SUBSCRIBER_LEFT':
@@ -2056,6 +2117,28 @@ class Agent:
             log.info('evicting stale monitor session %s for new viewer', oldest)
             sess.close()
         return oldest
+
+    def _preempt_oldest_active(self):
+        """Kick the oldest active (non-stale) session to free the camera for a
+        new viewer. Sends SESSION_KICKED so the displaced base station shows a
+        message and closes the feed instead of looping on recovery."""
+        for s in list(self.sessions):
+            if s not in self._stale_since:
+                sess = self.sessions.pop(s, None)
+                if sess:
+                    log.info('preempting active session %s for new viewer', s)
+                    sess.close()
+                self.enqueue_ws({'type': 'SESSION_KICKED',
+                                 'payload': {'subscriberId': s}})
+                return s
+        return None
+
+    def _deferred_session(self, sub):
+        """Create a MonitorSession after a short delay (lets the preempted
+        pipeline release /dev/video* first)."""
+        if sub in self.sessions:
+            return
+        self.sessions[sub] = MonitorSession(self, sub)
 
     def _teardown_all_sessions(self):
         """Close every active session and release camera/mic devices.

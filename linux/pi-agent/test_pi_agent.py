@@ -754,11 +754,15 @@ class _MockPromise:
 class _MockPipeline:
     """Mock GStreamer pipeline."""
     def __init__(self):
-        self.state = 'NULL'
+        self.state = 'PLAYING'
         self.bus = None
 
     def set_state(self, state):
         self.state = state
+
+    def get_state(self, timeout):
+        # Return (ret, state, pending) matching GStreamer's get_state signature.
+        return (None, self.state, None)
 
     def get_by_name(self, name):
         return _MockWebrtc()
@@ -1275,6 +1279,7 @@ class TestTalkbackRenegotiation(unittest.TestCase):
 
         s.webrtc = _RenegWebrtc()
         s._mid_map = {}
+        s.pipeline = _MockPipeline()  # pipeline must be PLAYING for renegotiation to proceed
         sdp_text = 'v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=mid:audio1\r\n'
 
         with mock.patch.object(pa, 'Gst', _TestGst), \

@@ -47,18 +47,6 @@ fi
 INSTALL_DIR=/opt/hearth-pi-agent
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Detect Pi model — Pi 3B's hardware H.264 encoder (v4l2h264enc) stalls under
-# GStreamer, so we default to software x264enc on those boards.
-PI_MODEL=""
-if [[ -f /proc/device-tree/model ]]; then
-  PI_MODEL="$(tr -d '\0' < /proc/device-tree/model)"
-fi
-NEEDS_SW_ENCODER=0
-if [[ "$PI_MODEL" == *"Raspberry Pi 3"* ]]; then
-  NEEDS_SW_ENCODER=1
-  echo "Detected Pi 3B — hardware H.264 encoder is unreliable; will use software x264enc."
-fi
-
 # Run the agent as the user who invoked the script (honors sudo: if installed
 # via `sudo bash install.sh`, use the original user, not root). systemd refuses
 # to start the unit if `User=` names a non-existent account (status 217/USER).
@@ -150,14 +138,6 @@ else
     sed "s|^SERVER_URL=.*|SERVER_URL=$SERVER_URL|" "$INSTALLED_CFG" > "$TMP_CFG"
     sudo cp "$TMP_CFG" "$INSTALLED_CFG"
     rm -f "$TMP_CFG"
-  fi
-  # On Pi 3B, default to software encoder since the hardware encoder stalls.
-  if [[ "$NEEDS_SW_ENCODER" -eq 1 ]]; then
-    TMP_CFG="$(mktemp)"
-    sed 's|^VIDEO_ENCODER=.*|VIDEO_ENCODER=x264enc|' "$INSTALLED_CFG" > "$TMP_CFG"
-    sudo cp "$TMP_CFG" "$INSTALLED_CFG"
-    rm -f "$TMP_CFG"
-    echo "  Set VIDEO_ENCODER=x264enc (Pi 3B hardware encoder is unreliable)."
   fi
 fi
 
