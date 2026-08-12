@@ -242,6 +242,7 @@ class SignalingServer(private val context: Context, private val listener: Server
         // Restore persisted device configs (volume / allow-broadcasts / labels)
         // so they survive a hub restart, not just disconnects.
         loadDeviceConfigs()
+        loadServerSettings()
         // Plan 19: discover Sonos / UPnP renderers on the LAN so recorded
         // announcements (PLAY_CLIP) can be pushed to them. Discovered speakers
         // are published to clients as first-class "sonos" room devices.
@@ -367,6 +368,11 @@ class SignalingServer(private val context: Context, private val listener: Server
             "ICE_RESTART" -> handleRelay(connId, msg)
             "RENEGOTIATE" -> handleRelay(connId, msg)
             "SESSION_KICKED" -> handleSessionKicked(connId, msg)
+            "GET_SETTINGS" -> handleGetSettings(connId)
+            "SET_SETTINGS" -> handleSetSettings(connId, payload)
+            "HA_CONNECT" -> handleHaConnect(connId)
+            "HA_FRAME" -> handleHaFrame(connId, payload)
+            "HA_DISCONNECTED" -> handleHaClose(connId)
             "SET_CONFIG" -> handleSetConfig(connId, payload)
             "GET_CONFIG" -> handleGetConfig(connId, payload)
             "SET_DISPLAY_CONFIG" -> handleSetDisplayConfig(connId, payload)
@@ -829,6 +835,13 @@ class SignalingServer(private val context: Context, private val listener: Server
     // deviceId in the app's private files directory.
     private val deviceConfigsFile by lazy { File(context.filesDir, "device_configs.json") }
 
+    // ─── Server settings (Home Assistant, etc.) ─────────────
+    // Global, per-server config stored separately from device configs so it
+    // never leaks into the device list. The HA token is write-only and never
+    // echoed back (GET_SETTINGS returns hasToken, not the token).
+    private val serverSettingsFile by lazy { File(context.filesDir, "server_settings.json") }
+    private var serverSettings = JSONObject()
+
     @Synchronized
     private fun loadDeviceConfigs() {
         try {
@@ -859,6 +872,38 @@ class SignalingServer(private val context: Context, private val listener: Server
         } catch (e: Exception) {
             Log.w(TAG, "Failed to save device configs: ${e.message}")
         }
+    }
+
+    @Synchronized
+    private fun loadServerSettings() {
+        try {
+            if (!serverSettingsFile.exists()) return
+            val text = serverSettingsFile.readText()
+            if (text.isBlank()) return
+            serverSettings = JSONObject(text)
+            Log.i(TAG, "Loaded server settings from disk")
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to load server settings: ${e.message}")
+        }
+    }
+
+    @Synchronized
+    private fun saveServerSettings() {
+        try {
+            serverSettingsFile.writeText(serverSettings.toString())
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to save server settings: ${e.message}")
+        }
+    }
+
+    // Mask the HA token before sending settings to any client.
+    private fun serverSettingsMasked(): JSONObject {
+        val masked = JSONObject(serverSettings.toString())
+        val ha = masked.optJSONObject("homeAssistant") ?: return masked
+        val hasToken = ha.optString("token", "").isNotBlank()
+        ha.remove("token")
+        ha.put("hasToken", hasToken)
+        return masked
     }
 
     private fun syncSonosDevices(speakers: List<SonosManager.SonosSpeaker>) {

@@ -71,4 +71,10 @@ dependencies {
     // (Ktor's buildKeyStore only emits dNSName entries).
     implementation("org.bouncycastle:bcpkix-jdk18on:1.77")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
+
+    // Outbound WebSocket client for the Home Assistant relay (server owns the
+    // HA connection; the kiosk never talks to HA directly). OkHttp is used for
+    // its straightforward custom trust-manager support (LAN-only: tolerates
+    // HA's self-signed cert server-side).
+    implementation("com.squareup.okhttp3:okhttp:4.12.1")
 }

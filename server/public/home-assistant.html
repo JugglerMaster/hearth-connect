@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1.0, user-scalable=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <title>Home Assistant — Hearth-Connect</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body class="home-assistant-page">
+  <div class="page" id="haRoot">
+    <header class="control-header ha-header">
+      <div id="haStatus" class="ha-status ha-status-info">Loading…</div>
+      <button id="haEditBar" class="ha-editbar"></button>
+    </header>
+
+    <div id="haTabs" class="ha-tabs"></div>
+
+    <div id="haTiles" class="ha-tiles"></div>
+
+    <div id="haPickerOverlay" class="ha-picker-overlay hidden">
+      <div class="ha-picker">
+        <div class="ha-picker-head">
+          <h3>Add entities</h3>
+          <button id="haPickerClose" class="ha-btn">Close</button>
+        </div>
+        <input id="haPickerSearch" class="ha-picker-search" type="text" placeholder="Search lights & HVAC…">
+        <div id="haPickerList" class="ha-picker-list"></div>
+        <button id="haPickerOk" class="ha-btn ha-save">Add selected</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/js/signaling.js"></script>
+  <script src="/js/home-assistant.js"></script>
+  <script src="/js/topbar.js"></script>
+</body>
+</html>

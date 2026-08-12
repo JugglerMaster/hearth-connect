@@ -7,12 +7,14 @@ import {
   PairingToken,
   DeviceConfig,
   DeviceType,
+  ServerSettings,
 } from './types';
 
 interface StoreSchema {
   version: number;
   rooms: Record<string, RoomRecord>;
   devices: Record<string, DeviceRecord>;
+  settings?: ServerSettings;
 }
 
 export class ConfigManager {
@@ -109,6 +111,37 @@ export class ConfigManager {
       room.presets = room.presets.filter(p => p.id !== presetId);
       this.markDirty();
     }
+  }
+
+  // ─── Server settings (HA integration) ────────────────
+  // Global, per-server config (not per-device). The HA token is write-only:
+  // getSettings() never returns it; callers must supply it explicitly via
+  // setSettingsSection('homeAssistant', { token }).
+
+  getSettings(): ServerSettings {
+    return this.data.settings ?? {};
+  }
+
+  // Mask the token before sending settings to any client.
+  getSettingsMasked(): ServerSettings {
+    const s = this.data.settings;
+    if (!s || !s.homeAssistant) return s ?? {};
+    const { token: _token, ...rest } = s.homeAssistant;
+    return { homeAssistant: { ...rest, hasToken: !!_token } } as ServerSettings;
+  }
+
+  setSettingsSection(section: string, value: Record<string, unknown>): ServerSettings {
+    if (!this.data.settings) this.data.settings = {};
+    const current = (this.data.settings as Record<string, unknown>)[section] || {};
+    // Shallow-merge so a partial update (e.g. only `pages`) keeps other fields.
+    // A present, non-empty token replaces; an empty/absent token keeps existing.
+    const merged: Record<string, unknown> = { ...current, ...value };
+    if ('token' in value && (value.token === undefined || value.token === '')) {
+      delete merged.token;
+    }
+    (this.data.settings as Record<string, unknown>)[section] = merged;
+    this.markDirty();
+    return this.data.settings;
   }
 
   // ─── Pairing Tokens ─────────────────────────────────────

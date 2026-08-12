@@ -276,6 +276,30 @@ class SignalingClient {
 
       case 'HEARTBEAT':
         break; // silently consumed
+
+      case 'SETTINGS_RESULT':
+        this.emit('settingsResult', msg.payload);
+        break;
+
+      case 'SETTINGS_UPDATED':
+        this.emit('settingsUpdated', msg.payload);
+        break;
+
+      case 'HA_CONNECTED':
+        this.emit('haConnected', msg.payload);
+        break;
+
+      case 'HA_ERROR':
+        this.emit('haError', msg.payload);
+        break;
+
+      case 'HA_FRAME':
+        this.emit('haFrame', msg.payload);
+        break;
+
+      case 'HA_DISCONNECTED':
+        this.emit('haDisconnected', msg.payload);
+        break;
     }
   }
 
@@ -383,6 +407,30 @@ class SignalingClient {
 
   stopTalk(targetPublisherId) {
     this.send('STOP_TALK', { targetPublisherId });
+  }
+
+  // ─── Server settings (HA integration) ───────────────────
+
+  getSettings() {
+    this.send('GET_SETTINGS', {});
+  }
+
+  setSettings(section, value) {
+    this.send('SET_SETTINGS', { section, value });
+  }
+
+  // ─── Home Assistant relay ───────────────────────────────
+
+  haConnect() {
+    this.send('HA_CONNECT', {});
+  }
+
+  haFrame(payload) {
+    this.send('HA_FRAME', payload);
+  }
+
+  haDisconnect() {
+    this.send('HA_DISCONNECTED', {});
   }
 
   ringDoorbell(label) {

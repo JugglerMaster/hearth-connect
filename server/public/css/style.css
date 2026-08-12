@@ -1484,3 +1484,43 @@ input[type="text"]:focus {
 .self-preview-wrap.hidden {
   display: none;
 }
+
+/* ─── Home Assistant dashboard ───────────────────────────── */
+.home-assistant-page { background: #0e0f13; color: #e8e8e8; }
+.ha-header { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; }
+.ha-status { font-size: 12px; padding: 4px 8px; border-radius: 6px; align-self: flex-start; }
+.ha-status-info { background: #1c2330; color: #9bb; }
+.ha-status-ok { background: #16331c; color: #8fdc9a; }
+.ha-status-connecting { background: #2a2410; color: #e8d28a; }
+.ha-status-error { background: #341717; color: #f0a0a0; }
+.ha-editbar { display: flex; gap: 8px; }
+.ha-tabs { display: flex; gap: 6px; overflow-x: auto; padding: 0 12px 8px; }
+.ha-tab { background: #1a1d24; color: #cfd2da; border: none; border-radius: 8px; padding: 8px 14px; font-size: 14px; cursor: pointer; white-space: nowrap; }
+.ha-tab.active { background: #2f6df0; color: #fff; }
+.ha-tab-add { background: #20242e; color: #9aa; border: 1px dashed #445; }
+.ha-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; padding: 10px 12px 60px; }
+.ha-empty { grid-column: 1 / -1; color: #888; padding: 24px; text-align: center; }
+.ha-tile { background: #171a21; border: 1px solid #262b36; border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px; position: relative; }
+.ha-tile-on { border-color: #2f6df0; }
+.ha-tile-name { font-size: 14px; font-weight: 600; }
+.ha-tile-sub { font-size: 12px; color: #9aa; }
+.ha-tile-climate .ha-tile-sub { margin-bottom: 4px; }
+.ha-btn { background: #232734; color: #e8e8e8; border: none; border-radius: 8px; padding: 8px 10px; font-size: 13px; cursor: pointer; }
+.ha-btn.active { background: #2f6df0; color: #fff; }
+.ha-toggle { align-self: flex-start; }
+.ha-modes { display: flex; flex-wrap: wrap; gap: 6px; }
+.ha-setpoint { display: flex; align-items: center; gap: 10px; font-size: 18px; }
+.ha-temp { min-width: 38px; text-align: center; cursor: pointer; }
+.ha-bright { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.ha-bright input[type=range] { flex: 1; }
+.ha-tile-remove { position: absolute; top: 6px; right: 6px; background: #331; color: #f55; border: none; border-radius: 50%; width: 22px; height: 22px; cursor: pointer; }
+.ha-picker-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; z-index: 500; }
+.ha-picker { background: #14171e; border: 1px solid #2a2f3a; border-radius: 12px; width: min(480px, 92vw); max-height: 86vh; display: flex; flex-direction: column; padding: 14px; gap: 10px; }
+.ha-picker-head { display: flex; justify-content: space-between; align-items: center; }
+.ha-picker-head h3 { margin: 0; }
+.ha-picker-search { background: #0e1117; color: #eee; border: 1px solid #2a2f3a; border-radius: 8px; padding: 8px; }
+.ha-picker-list { overflow-y: auto; display: flex; flex-direction: column; gap: 4px; }
+.ha-pick-item { display: flex; gap: 8px; align-items: center; padding: 6px; border-radius: 6px; }
+.ha-pick-item:hover { background: #1c2030; }
+.ha-pick-item small { color: #778; }
+.ha-save { background: #2f6df0; color: #fff; }

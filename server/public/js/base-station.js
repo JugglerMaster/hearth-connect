@@ -2063,7 +2063,33 @@
       ftDbgState.wsMethod = sig.useSSE ? 'SSE' : 'WS';
       ftDbgState.wsUp = true;
       renderFtDebug();
+      sig.getSettings();
     });
+
+    sig.on('settingsResult', (data) => {
+      const ha = data && data.settings && data.settings.homeAssistant;
+      const urlEl = document.getElementById('haUrl');
+      const noteEl = document.getElementById('haConfiguredNote');
+      if (urlEl && ha && ha.url) urlEl.value = ha.url;
+      if (noteEl) {
+        const hasToken = ha && ha.hasToken;
+        noteEl.textContent = hasToken ? 'Token: configured' : 'Token: not set';
+      }
+    });
+
+    const haSaveBtn = document.getElementById('haSaveBtn');
+    if (haSaveBtn) {
+      haSaveBtn.addEventListener('click', () => {
+        const url = document.getElementById('haUrl').value.trim();
+        const token = document.getElementById('haToken').value;
+        const value = { url };
+        if (token) value.token = token; // only send when the user entered one
+        sig.setSettings('homeAssistant', value);
+        if (token) document.getElementById('haToken').value = '';
+        const noteEl = document.getElementById('haConfiguredNote');
+        if (noteEl) noteEl.textContent = 'Saved.';
+      });
+    }
 
     sig.on('welcome', (data) => {
       deviceId = data.deviceId;

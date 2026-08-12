@@ -216,10 +216,40 @@ export type MessageType =
   | 'SET_DISPLAY_CONFIG'
   | 'DISPLAY_CONFIG_APPLIED'
   | 'PRIMARY_BASE_CHANGED'
-  | 'SESSION_KICKED';
+  | 'SESSION_KICKED'
+  | 'GET_SETTINGS'
+  | 'SET_SETTINGS'
+  | 'SETTINGS_RESULT'
+  | 'SETTINGS_UPDATED'
+  | 'HA_CONNECT'
+  | 'HA_CONNECTED'
+  | 'HA_ERROR'
+  | 'HA_FRAME'
+  | 'HA_DISCONNECTED';
 
 export interface Message {
   type: MessageType;
   payload: Record<string, unknown>;
   id?: string;
+}
+
+// ─── Server settings (HA integration, etc.) ───────────────
+// Stored server-side (gitignored). The long-lived HA token is write-only and
+// never echoed back to clients. The kiosk never connects to HA directly — the
+// server owns the HA WebSocket and relays raw frames (see HA_FRAME).
+
+export interface HaPage {
+  id: string;
+  name: string;
+  entities: string[];
+}
+
+export interface HomeAssistantConfig {
+  url?: string;
+  token?: string;
+  pages?: HaPage[];
+}
+
+export interface ServerSettings {
+  homeAssistant?: HomeAssistantConfig;
 }

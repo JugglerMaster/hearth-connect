@@ -1,6 +1,7 @@
 import { ChannelManager } from './ChannelManager';
 import { ConfigManager } from './ConfigManager';
 import { ClipStore } from './ClipStore';
+import WebSocket from 'ws';
 import {
   Message,
   ConnectedClient,
@@ -45,6 +46,10 @@ export class SignalingHandler {
   }
 
   handleDisconnect(transport: Transport): void {
+    // Tear down any HA relay for this connection so the server-side HA socket
+    // is never leaked when a base station drops.
+    this.handleHaClose(transport);
+
     const client = this.channels.getClientByConnId(transport.connId);
     if (!client) {
       this.channels.unregisterTransport(transport.connId);
@@ -178,6 +183,21 @@ export class SignalingHandler {
         break;
       case 'SESSION_KICKED':
         this.handleSessionKicked(transport, msg.payload);
+        break;
+      case 'GET_SETTINGS':
+        this.handleGetSettings(transport);
+        break;
+      case 'SET_SETTINGS':
+        this.handleSetSettings(transport, msg.payload);
+        break;
+      case 'HA_CONNECT':
+        this.handleHaConnect(transport);
+        break;
+      case 'HA_FRAME':
+        this.handleHaFrame(transport, msg.payload);
+        break;
+      case 'HA_DISCONNECTED':
+        this.handleHaClose(transport);
         break;
       default:
         this.sendError(transport, 'UNKNOWN_TYPE', `Unknown message type: ${msg.type}`);
@@ -1084,4 +1104,157 @@ export class SignalingHandler {
       payload: { from: client.deviceId },
     });
   }
+
+  // ─── Server settings (HA integration) ───────────────────
+
+  private handleGetSettings(transport: Transport): void {
+    const client = this.channels.getClientByConnId(transport.connId);
+    if (!client) return;
+    if (client.deviceType !== 'base') {
+      this.sendError(transport, 'NOT_ALLOWED', 'Only base stations can read server settings');
+      return;
+    }
+    this.send(transport, {
+      type: 'SETTINGS_RESULT',
+      payload: { settings: this.config.getSettingsMasked() },
+    });
+  }
+
+  private handleSetSettings(
+    transport: Transport,
+    payload: Record<string, unknown>
+  ): void {
+    const client = this.channels.getClientByConnId(transport.connId);
+    if (!client) return;
+    if (client.deviceType !== 'base') {
+      this.sendError(transport, 'NOT_ALLOWED', 'Only base stations can write server settings');
+      return;
+    }
+    const section = payload.section as string;
+    const value = (payload.value as Record<string, unknown>) || {};
+    if (!section) {
+      this.sendError(transport, 'INVALID_ARGS', 'SET_SETTINGS requires a section');
+      return;
+    }
+    this.config.setSettingsSection(section, value);
+    this.send(transport, {
+      type: 'SETTINGS_RESULT',
+      payload: { ok: true, settings: this.config.getSettingsMasked() },
+    });
+    // Notify all base stations so their dashboards refresh live.
+    const masked = this.config.getSettingsMasked();
+    for (const c of this.channels.getAllClients().values()) {
+      if (c.deviceType !== 'base') continue;
+      const t = this.channels.getTransport(c.connId);
+      if (t) t.send({ type: 'SETTINGS_UPDATED', payload: { settings: masked } });
+    }
+  }
+
+  // ─── Home Assistant relay (server owns the HA connection) ──
+  // The kiosk never talks to HA directly; the server opens the HA WebSocket,
+  // injects the long-lived token, and relays raw HA frames both ways. This keeps
+  // HA's (possibly self-signed) cert server-side and the token off the device.
+
+  private haRelays = new Map<string, HaRelay>();
+
+  private handleHaConnect(transport: Transport): void {
+    const client = this.channels.getClientByConnId(transport.connId);
+    if (!client) return;
+    if (client.deviceType !== 'base') {
+      this.sendError(transport, 'NOT_ALLOWED', 'Only base stations can connect to Home Assistant');
+      return;
+    }
+    const ha = this.config.getSettings().homeAssistant;
+    if (!ha || !ha.url || !ha.token) {
+      this.send(transport, {
+        type: 'HA_ERROR',
+        payload: { message: 'Home Assistant URL or token not configured' },
+      });
+      return;
+    }
+    // Close any existing relay for this connection first.
+    this.handleHaClose(transport);
+
+    const url = ha.url.replace(/\/+$/, '') + '/api/websocket';
+    let ws: WebSocket;
+    try {
+      // LAN-only: tolerate HA's self-signed cert (server-side only).
+      ws = new WebSocket(url, { rejectUnauthorized: false });
+    } catch (e) {
+      this.send(transport, {
+        type: 'HA_ERROR',
+        payload: { message: `Failed to open HA connection: ${(e as Error).message}` },
+      });
+      return;
+    }
+
+    const relay: HaRelay = { ws, transport, connId: transport.connId, connected: false };
+    this.haRelays.set(transport.connId, relay);
+
+    ws.on('open', () => { /* wait for auth_required from HA */ });
+    ws.on('message', (data: WebSocket.RawData) => {
+      const text = data.toString();
+      let msg: Record<string, unknown>;
+      try {
+        msg = JSON.parse(text);
+      } catch {
+        return;
+      }
+      // Intercept the auth handshake: server injects the token so the kiosk
+      // never sees it. HA sends `auth_required` first.
+      if ((msg.type as string) === 'auth_required') {
+        ws.send(JSON.stringify({ type: 'auth', access_token: ha.token }));
+        return;
+      }
+      // Forward everything else (auth_ok, results, events) to the kiosk.
+      if ((msg.type as string) === 'auth_ok' && !relay.connected) {
+        relay.connected = true;
+      }
+      this.send(transport, { type: 'HA_FRAME', payload: msg });
+      if ((msg.type as string) === 'auth_ok') {
+        this.send(transport, { type: 'HA_CONNECTED', payload: { state: 'connected' } });
+      }
+    });
+    ws.on('unexpected-response', (_req, res) => {
+      this.send(transport, {
+        type: 'HA_ERROR',
+        payload: { message: `HA refused connection (HTTP ${res.statusCode})` },
+      });
+    });
+    ws.on('error', (err) => {
+      this.send(transport, { type: 'HA_ERROR', payload: { message: err.message } });
+    });
+    ws.on('close', () => {
+      this.haRelays.delete(transport.connId);
+      this.send(transport, { type: 'HA_DISCONNECTED', payload: {} });
+    });
+  }
+
+  private handleHaFrame(transport: Transport, payload: Record<string, unknown>): void {
+    const relay = this.haRelays.get(transport.connId);
+    if (!relay || !relay.ws) return;
+    try {
+      relay.ws.send(JSON.stringify(payload));
+    } catch {
+      /* ignore */
+    }
+  }
+
+  private handleHaClose(transport: Transport): void {
+    const relay = this.haRelays.get(transport.connId);
+    if (!relay || !relay.ws) return;
+    this.haRelays.delete(transport.connId);
+    try {
+      relay.ws.close();
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+interface HaRelay {
+  ws: WebSocket;
+  transport: Transport;
+  connId: string;
+  connected: boolean;
 }

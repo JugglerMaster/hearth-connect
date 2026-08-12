@@ -1,11 +1,20 @@
 "use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.SignalingHandler = void 0;
+const ws_1 = __importDefault(require("ws"));
 class SignalingHandler {
     constructor(channels, config, clips) {
         this.channels = channels;
         this.config = config;
         this.clips = clips;
+        // ─── Home Assistant relay (server owns the HA connection) ──
+        // The kiosk never talks to HA directly; the server opens the HA WebSocket,
+        // injects the long-lived token, and relays raw HA frames both ways. This keeps
+        // HA's (possibly self-signed) cert server-side and the token off the device.
+        this.haRelays = new Map();
     }
     handle(transport, raw) {
         let msg;
@@ -31,6 +40,9 @@ class SignalingHandler {
         }
     }
     handleDisconnect(transport) {
+        // Tear down any HA relay for this connection so the server-side HA socket
+        // is never leaked when a base station drops.
+        this.handleHaClose(transport);
         const client = this.channels.getClientByConnId(transport.connId);
         if (!client) {
             this.channels.unregisterTransport(transport.connId);
@@ -158,6 +170,21 @@ class SignalingHandler {
                 break;
             case 'SESSION_KICKED':
                 this.handleSessionKicked(transport, msg.payload);
+                break;
+            case 'GET_SETTINGS':
+                this.handleGetSettings(transport);
+                break;
+            case 'SET_SETTINGS':
+                this.handleSetSettings(transport, msg.payload);
+                break;
+            case 'HA_CONNECT':
+                this.handleHaConnect(transport);
+                break;
+            case 'HA_FRAME':
+                this.handleHaFrame(transport, msg.payload);
+                break;
+            case 'HA_DISCONNECTED':
+                this.handleHaClose(transport);
                 break;
             default:
                 this.sendError(transport, 'UNKNOWN_TYPE', `Unknown message type: ${msg.type}`);
@@ -883,6 +910,144 @@ class SignalingHandler {
             type: 'TALK_DISABLED',
             payload: { from: client.deviceId },
         });
+    }
+    // ─── Server settings (HA integration) ───────────────────
+    handleGetSettings(transport) {
+        const client = this.channels.getClientByConnId(transport.connId);
+        if (!client)
+            return;
+        if (client.deviceType !== 'base') {
+            this.sendError(transport, 'NOT_ALLOWED', 'Only base stations can read server settings');
+            return;
+        }
+        this.send(transport, {
+            type: 'SETTINGS_RESULT',
+            payload: { settings: this.config.getSettingsMasked() },
+        });
+    }
+    handleSetSettings(transport, payload) {
+        const client = this.channels.getClientByConnId(transport.connId);
+        if (!client)
+            return;
+        if (client.deviceType !== 'base') {
+            this.sendError(transport, 'NOT_ALLOWED', 'Only base stations can write server settings');
+            return;
+        }
+        const section = payload.section;
+        const value = payload.value || {};
+        if (!section) {
+            this.sendError(transport, 'INVALID_ARGS', 'SET_SETTINGS requires a section');
+            return;
+        }
+        this.config.setSettingsSection(section, value);
+        this.send(transport, {
+            type: 'SETTINGS_RESULT',
+            payload: { ok: true, settings: this.config.getSettingsMasked() },
+        });
+        // Notify all base stations so their dashboards refresh live.
+        const masked = this.config.getSettingsMasked();
+        for (const c of this.channels.getAllClients().values()) {
+            if (c.deviceType !== 'base')
+                continue;
+            const t = this.channels.getTransport(c.connId);
+            if (t)
+                t.send({ type: 'SETTINGS_UPDATED', payload: { settings: masked } });
+        }
+    }
+    handleHaConnect(transport) {
+        const client = this.channels.getClientByConnId(transport.connId);
+        if (!client)
+            return;
+        if (client.deviceType !== 'base') {
+            this.sendError(transport, 'NOT_ALLOWED', 'Only base stations can connect to Home Assistant');
+            return;
+        }
+        const ha = this.config.getSettings().homeAssistant;
+        if (!ha || !ha.url || !ha.token) {
+            this.send(transport, {
+                type: 'HA_ERROR',
+                payload: { message: 'Home Assistant URL or token not configured' },
+            });
+            return;
+        }
+        // Close any existing relay for this connection first.
+        this.handleHaClose(transport);
+        const url = ha.url.replace(/\/+$/, '') + '/api/websocket';
+        let ws;
+        try {
+            // LAN-only: tolerate HA's self-signed cert (server-side only).
+            ws = new ws_1.default(url, { rejectUnauthorized: false });
+        }
+        catch (e) {
+            this.send(transport, {
+                type: 'HA_ERROR',
+                payload: { message: `Failed to open HA connection: ${e.message}` },
+            });
+            return;
+        }
+        const relay = { ws, transport, connId: transport.connId, connected: false };
+        this.haRelays.set(transport.connId, relay);
+        ws.on('open', () => { });
+        ws.on('message', (data) => {
+            const text = data.toString();
+            let msg;
+            try {
+                msg = JSON.parse(text);
+            }
+            catch {
+                return;
+            }
+            // Intercept the auth handshake: server injects the token so the kiosk
+            // never sees it. HA sends `auth_required` first.
+            if (msg.type === 'auth_required') {
+                ws.send(JSON.stringify({ type: 'auth', access_token: ha.token }));
+                return;
+            }
+            // Forward everything else (auth_ok, results, events) to the kiosk.
+            if (msg.type === 'auth_ok' && !relay.connected) {
+                relay.connected = true;
+            }
+            this.send(transport, { type: 'HA_FRAME', payload: msg });
+            if (msg.type === 'auth_ok') {
+                this.send(transport, { type: 'HA_CONNECTED', payload: { state: 'connected' } });
+            }
+        });
+        ws.on('unexpected-response', (_req, res) => {
+            this.send(transport, {
+                type: 'HA_ERROR',
+                payload: { message: `HA refused connection (HTTP ${res.statusCode})` },
+            });
+        });
+        ws.on('error', (err) => {
+            this.send(transport, { type: 'HA_ERROR', payload: { message: err.message } });
+        });
+        ws.on('close', () => {
+            this.haRelays.delete(transport.connId);
+            this.send(transport, { type: 'HA_DISCONNECTED', payload: {} });
+        });
+    }
+    handleHaFrame(transport, payload) {
+        const relay = this.haRelays.get(transport.connId);
+        if (!relay || !relay.ws)
+            return;
+        try {
+            relay.ws.send(JSON.stringify(payload));
+        }
+        catch {
+            /* ignore */
+        }
+    }
+    handleHaClose(transport) {
+        const relay = this.haRelays.get(transport.connId);
+        if (!relay || !relay.ws)
+            return;
+        this.haRelays.delete(transport.connId);
+        try {
+            relay.ws.close();
+        }
+        catch {
+            /* ignore */
+        }
     }
 }
 exports.SignalingHandler = SignalingHandler;

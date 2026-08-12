@@ -1,4 +1,4 @@
-import { DeviceRecord, RoomRecord, PresetRecord, PairingToken, DeviceConfig, DeviceType } from './types';
+import { DeviceRecord, RoomRecord, PresetRecord, PairingToken, DeviceConfig, DeviceType, ServerSettings } from './types';
 export declare class ConfigManager {
     private data;
     private filePath;
@@ -15,6 +15,9 @@ export declare class ConfigManager {
     deleteRoom(roomId: string): void;
     addPreset(roomId: string, preset: PresetRecord): void;
     removePreset(roomId: string, presetId: string): void;
+    getSettings(): ServerSettings;
+    getSettingsMasked(): ServerSettings;
+    setSettingsSection(section: string, value: Record<string, unknown>): ServerSettings;
     addPairingToken(roomId: string, token: PairingToken): void;
     consumePairingToken(token: string): RoomRecord | null;
     getDevice(id: string): DeviceRecord | undefined;

@@ -44,5 +44,11 @@ export declare class SignalingHandler {
     private handleGetConfig;
     private handleRequestTalk;
     private handleStopTalk;
+    private handleGetSettings;
+    private handleSetSettings;
+    private haRelays;
+    private handleHaConnect;
+    private handleHaFrame;
+    private handleHaClose;
 }
 //# sourceMappingURL=SignalingHandler.d.ts.map

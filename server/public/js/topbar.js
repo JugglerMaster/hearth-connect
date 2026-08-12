@@ -9,6 +9,7 @@
     { label: 'Monitor',      href: '/monitor.html' },
     { label: 'Base Station', href: '/base-station.html' },
     { label: 'Room Control', href: '/room-control.html' },
+    { label: 'Home Assistant', href: '/home-assistant.html' },
   ];
 
   var LS_KEY = 'hearthRestoreLastPage';

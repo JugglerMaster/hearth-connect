@@ -66,6 +66,21 @@
         <h2 id="configTitle">Settings</h2>
         <div id="configForm" class="config-form"></div>
       </div>
+
+      <div class="panel" id="haSettingsPanel">
+        <h2>Server Settings — Home Assistant</h2>
+        <p class="hint">Connects the hub to Home Assistant. The dashboard layout is edited on the <a href="/home-assistant.html">Home Assistant</a> page.</p>
+        <label class="cfg-row">URL
+          <input type="text" id="haUrl" placeholder="http://homeassistant.local:8123" autocomplete="off">
+        </label>
+        <label class="cfg-row">Long-lived token
+          <input type="password" id="haToken" placeholder="paste token (write-only)" autocomplete="off">
+        </label>
+        <div class="cfg-row" id="haConfiguredNote"></div>
+        <div class="cfg-row">
+          <button class="btn btn-primary" id="haSaveBtn">Save</button>
+        </div>
+      </div>
     </div>
   </div>
 

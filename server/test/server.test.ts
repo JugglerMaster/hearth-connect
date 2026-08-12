@@ -13,8 +13,15 @@ import { ConfigManager } from '../src/ConfigManager';
 import { SignalingHandler } from '../src/SignalingHandler';
 
 const allConfigs: ConfigManager[] = [];
+let mockHaServer: any = null;
 after(() => {
   for (const c of allConfigs) c.dispose();
+  if (mockHaServer) {
+    try { mockHaServer.close(); } catch {}
+  }
+  // Importing `ws` in the relay test registers a keep-alive agent that keeps
+  // the event loop alive; exit explicitly once the suite is done.
+  setTimeout(() => process.exit(0), 50);
 });
 
 function makeWs() {
@@ -277,6 +284,153 @@ test('BROADCAST_SOURCE without targetDeviceId notifies every kiosk', () => {
   assert.ok(k1.sent.find((m: any) => m.type === 'SOURCE_ADDED'), 'k1 received the broadcast');
   assert.ok(k2.sent.find((m: any) => m.type === 'SOURCE_ADDED'), 'k2 received the broadcast');
 });
+
+// ─── Server settings (HA integration) ───────────────────
+
+test('GET_SETTINGS is base-only and masks the token', () => {
+  const { config, channels, handler } = newServer();
+  const base = makeWs();
+  const kiosk = makeWs();
+  join(handler, channels, base, 'b1', 'base');
+  join(handler, channels, kiosk, 'k1', 'kiosk');
+
+  handler.handle(base, JSON.stringify({
+    type: 'SET_SETTINGS',
+    payload: { section: 'homeAssistant', value: { url: 'http://ha:8123', token: 'supersecret', pages: [{ id: 'p1', name: 'Home', entities: ['light.a'] }] } },
+  }));
+  const setResult = base.sent.find((m: any) => m.type === 'SETTINGS_RESULT');
+  assert.ok(setResult && setResult.payload.ok, 'base can set settings');
+
+  // Re-fetch as base — token must never be echoed back.
+  base.sent.length = 0;
+  handler.handle(base, JSON.stringify({ type: 'GET_SETTINGS' }));
+  const getResult = base.sent.find((m: any) => m.type === 'SETTINGS_RESULT');
+  assert.ok(getResult, 'base receives settings result');
+  assert.equal(getResult.payload.settings.homeAssistant.hasToken, true, 'hasToken flagged');
+  assert.equal(getResult.payload.settings.homeAssistant.token, undefined, 'token is masked');
+  assert.equal(getResult.payload.settings.homeAssistant.url, 'http://ha:8123');
+
+  // A kiosk asking for settings must be rejected.
+  kiosk.sent.length = 0;
+  handler.handle(kiosk, JSON.stringify({ type: 'GET_SETTINGS' }));
+  assert.ok(kiosk.sent.find((m: any) => m.type === 'ERROR' && m.payload.code === 'NOT_ALLOWED'), 'kiosk blocked from GET_SETTINGS');
+
+  // A kiosk writing settings must be rejected and must not change state.
+  const before = JSON.stringify(config.getSettingsMasked());
+  handler.handle(kiosk, JSON.stringify({
+    type: 'SET_SETTINGS',
+    payload: { section: 'homeAssistant', value: { url: 'http://evil:8123', token: 'x' } },
+  }));
+  assert.ok(kiosk.sent.find((m: any) => m.type === 'ERROR' && m.payload.code === 'NOT_ALLOWED'), 'kiosk blocked from SET_SETTINGS');
+  assert.equal(JSON.stringify(config.getSettingsMasked()), before, 'kiosk write had no effect');
+});
+
+test('SET_SETTINGS deep-merges and omits an empty token', () => {
+  const { config, channels, handler } = newServer();
+  const base = makeWs();
+  join(handler, channels, base, 'b1', 'base');
+  handler.handle(base, JSON.stringify({
+    type: 'SET_SETTINGS',
+    payload: { section: 'homeAssistant', value: { url: 'http://ha:8123', token: 'abc', pages: [{ id: 'p1', name: 'Home', entities: ['light.a'] }] } },
+  }));
+  // Update only pages; omit token → existing token preserved.
+  handler.handle(base, JSON.stringify({
+    type: 'SET_SETTINGS',
+    payload: { section: 'homeAssistant', value: { pages: [{ id: 'p2', name: 'HVAC', entities: ['climate.b'] }] } },
+  }));
+  const ha = config.getSettings().homeAssistant!;
+  assert.equal(ha.token, 'abc', 'token preserved when omitted');
+  assert.equal(ha.url, 'http://ha:8123', 'url preserved');
+  assert.equal(ha.pages!.length, 1, 'pages replaced wholesale');
+  assert.equal(ha.pages![0].id, 'p2', 'new pages applied');
+});
+
+test('HA relay connects through the server (token stays off-device)', async () => {
+  const { WebSocketServer } = await import('ws');
+  const { WebSocket } = await import('ws');
+  const haServer = new WebSocketServer({ host: '127.0.0.1', port: 0 });
+  mockHaServer = haServer;
+  await new Promise<void>((res) => haServer.on('listening', () => res()));
+  const haPort = (haServer.address() as any).port;
+  const haReceived: any[] = [];
+
+  haServer.on('connection', (sock) => {
+    sock.send(JSON.stringify({ type: 'auth_required' }));
+    sock.on('message', (data: any) => {
+      const msg = JSON.parse(data.toString());
+      haReceived.push(msg);
+      if (msg.type === 'auth') {
+        sock.send(JSON.stringify({ type: 'auth_ok' }));
+        return;
+      }
+      if (msg.type === 'get_states') {
+        sock.send(JSON.stringify({ id: msg.id, type: 'result', success: true, result: [{ entity_id: 'light.a', state: 'off', attributes: { friendly_name: 'Lamp' } }] }));
+        return;
+      }
+      if (msg.type === 'subscribe_events') {
+        sock.send(JSON.stringify({ id: msg.id, type: 'result', success: true }));
+        return;
+      }
+      if (msg.type === 'call_service') {
+        sock.send(JSON.stringify({ id: msg.id, type: 'result', success: true }));
+      }
+    });
+  });
+
+  const { config, channels, handler } = newServer();
+  const base = makeWs();
+  join(handler, channels, base, 'b1', 'base');
+
+  // Configure HA url + token on the server.
+  handler.handle(base, JSON.stringify({
+    type: 'SET_SETTINGS',
+    payload: { section: 'homeAssistant', value: { url: `ws://127.0.0.1:${haPort}`, token: 'tok123', pages: [{ id: 'p1', name: 'Home', entities: ['light.a'] }] } },
+  }));
+
+  base.sent.length = 0;
+  handler.handle(base, JSON.stringify({ type: 'HA_CONNECT' }));
+
+  // The server opens the HA WS, injects the token, and reports connected.
+  try {
+    await waitFor(() => base.sent.find((m: any) => m.type === 'HA_CONNECTED'), 3000);
+  } catch (e) {
+    console.error('HA relay debug — base.sent:', base.sent.map((m: any) => m.type), 'haReceived:', haReceived.map((m: any) => m.type), 'url:', `ws://127.0.0.1:${haPort}`);
+    throw e;
+  }
+  // The client sends get_states after connecting (the handler only relays it).
+  handler.handle(base, JSON.stringify({ type: 'HA_FRAME', payload: { id: 1, type: 'get_states' } }));
+  await waitFor(() => base.sent.find((m: any) => m.type === 'HA_FRAME' && (m.payload as any).type === 'result' && (m.payload as any).id === 1), 3000);
+
+  assert.ok(haReceived.find((m: any) => m.type === 'auth' && m.access_token === 'tok123'), 'server injected the token to HA (kiosk never sees it)');
+  const statesFrame = base.sent.find((m: any) => m.type === 'HA_FRAME' && (m.payload as any).id === 1 && (m.payload as any).success);
+  assert.ok(statesFrame, 'base received get_states result via relay');
+  assert.equal(statesFrame.payload.result[0].entity_id, 'light.a', 'entity state relayed');
+
+  // Send a call_service through the relay; the mock HA server must receive it.
+  handler.handle(base, JSON.stringify({
+    type: 'HA_FRAME',
+    payload: { id: 9, type: 'call_service', domain: 'light', service: 'turn_on', service_data: { entity_id: 'light.a', brightness: 128 } },
+  }));
+  await waitFor(() => haReceived.find((m: any) => m.type === 'call_service' && (m as any).service_data && (m as any).service_data.entity_id === 'light.a'), 3000);
+
+  handler.handleDisconnect(base);
+  await new Promise((r) => setTimeout(r, 50));
+  haServer.close();
+  mockHaServer = null;
+  assert.ok(true);
+});
+
+function waitFor(pred: () => any, timeoutMs: number): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const start = Date.now();
+    const tick = () => {
+      if (pred()) return resolve();
+      if (Date.now() - start > timeoutMs) return reject(new Error('waitFor timed out'));
+      setTimeout(tick, 20);
+    };
+    tick();
+  });
+}
 
 // ─── cleanup ──────────────────────────────────────────────
 
