@@ -55,6 +55,8 @@ let streams = {};
   const RECOVER_TIMEOUT = 10000;
   const MAX_RECOVER_ATTEMPTS = 4;
   const RECOVER_RETRY_MS = 15000;
+  const WATCHDOG_GRACE_MS = 15000;
+  var subscribeTime = 0;
 
   // ─── Own camera state (from camera.js) ────────────────
   let cameraSourceId = null;
@@ -513,6 +515,7 @@ let streams = {};
     renderRxDebug();
     subscribed.add(peerId);
     sig.subscribeSource(peerId);
+    subscribeTime = Date.now();
     showMonitor();
     renderDevices();
     attachMonitorStream();
@@ -619,6 +622,7 @@ let streams = {};
 
   function watchdog() {
     if (!viewingId || !viewMode || recovering) return;
+    if (Date.now() - subscribeTime < WATCHDOG_GRACE_MS) return;
     var type = sourceTypeFor(viewingId);
     if (!type) return;
     var last = lastActivity[viewingId] || 0;
@@ -1309,6 +1313,15 @@ let streams = {};
         // Note: displayMode is intentionally NOT applied here — it's controlled
         // exclusively by SET_DISPLAY_CONFIG from a base station. The welcome handler
         // forces blank on every connect.
+      }
+    });
+
+    sig.on('sessionKicked', function (data) {
+      var pubId = data.publisherId;
+      console.log('[rc] session kicked by', pubId);
+      if (pubId === viewingId) {
+        showToast('Another viewer took over this feed', 5000);
+        stopView();
       }
     });
 

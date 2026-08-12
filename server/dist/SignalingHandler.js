@@ -2,9 +2,10 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.SignalingHandler = void 0;
 class SignalingHandler {
-    constructor(channels, config) {
+    constructor(channels, config, clips) {
         this.channels = channels;
         this.config = config;
+        this.clips = clips;
     }
     handle(transport, raw) {
         let msg;
@@ -107,6 +108,9 @@ class SignalingHandler {
             case 'UNSUBSCRIBE_BROADCAST':
                 this.handleUnsubscribeBroadcast(transport, msg.payload);
                 break;
+            case 'BROADCAST_CLIP':
+                this.handleBroadcastClip(transport, msg.payload);
+                break;
             case 'OFFER':
                 this.handleRelay(transport, msg, 'OFFER');
                 break;
@@ -152,6 +156,9 @@ class SignalingHandler {
             case 'CALL_STATE':
                 this.handleCallState(transport, msg.payload);
                 break;
+            case 'SESSION_KICKED':
+                this.handleSessionKicked(transport, msg.payload);
+                break;
             default:
                 this.sendError(transport, 'UNKNOWN_TYPE', `Unknown message type: ${msg.type}`);
         }
@@ -181,7 +188,7 @@ class SignalingHandler {
             this.sendError(transport, 'INVALID_PARAMS', 'deviceId and deviceType required');
             return;
         }
-        const validTypes = ['kiosk', 'base'];
+        const validTypes = ['kiosk', 'base', 'room'];
         if (!validTypes.includes(deviceType)) {
             this.sendError(transport, 'INVALID_TYPE', `deviceType must be one of: ${validTypes.join(', ')}`);
             return;
@@ -190,6 +197,23 @@ class SignalingHandler {
         let device = this.config.getDevice(deviceId);
         if (!device) {
             device = this.config.createDevice(deviceId, deviceType, label, roomId, undefined, legacyIOS);
+        }
+        // Merge any config the client sends on join (kiosk reports its localStorage state).
+        // Device-side preferences (displayMode, broadcastDisabled) are always overwritten
+        // from the client because the kiosk knows what it's actually displaying — the
+        // server may have stale defaults from device creation.
+        const clientConfig = payload.config;
+        if (clientConfig && Object.keys(clientConfig).length > 0) {
+            const existing = this.config.getDeviceConfig(deviceId) || {};
+            const deviceSideKeys = new Set(['displayMode', 'broadcastDisabled']);
+            const patch = {};
+            for (const [k, v] of Object.entries(clientConfig)) {
+                if (deviceSideKeys.has(k) || !(k in existing) && v !== undefined)
+                    patch[k] = v;
+            }
+            if (Object.keys(patch).length > 0) {
+                this.config.updateDeviceConfig(deviceId, patch);
+            }
         }
         // Use config label if set (overrides the join-time label)
         const effectiveLabel = (device.config?.label && device.config.label.trim()) ? device.config.label : label;
@@ -201,7 +225,7 @@ class SignalingHandler {
             // Remove the previous connection for a reconnecting client
             this.channels.removeClientByConn(existingClient.connId);
         }
-        const client = this.channels.addClient(transport.connId, deviceId, deviceType, roomId, effectiveLabel);
+        const client = this.channels.addClient(transport.connId, deviceId, deviceType, roomId, effectiveLabel, transport.ip);
         this.config.updateDevice(deviceId, { lastSeenAt: Date.now() });
         // Send current state to the joining client
         const activeSources = this.channels.getActiveSources(roomId);
@@ -231,6 +255,7 @@ class SignalingHandler {
                 label: effectiveLabel,
                 lastSeenAt: Date.now(),
                 config: device.config,
+                ip: transport.ip,
             },
         }, deviceId);
         // Send capabilities of already-connected devices to this new joiner (so a late-joining
@@ -302,8 +327,8 @@ class SignalingHandler {
             this.sendError(transport, 'NOT_IN_ROOM', 'Join a room first');
             return;
         }
-        if (client.deviceType !== 'kiosk' && client.deviceType !== 'base') {
-            this.sendError(transport, 'NOT_ALLOWED', 'Only cameras and base stations can publish');
+        if (client.deviceType !== 'kiosk' && client.deviceType !== 'base' && client.deviceType !== 'room') {
+            this.sendError(transport, 'NOT_ALLOWED', 'Only cameras, base stations, and room controls can publish');
             return;
         }
         const sourceId = payload.sourceId;
@@ -455,14 +480,75 @@ class SignalingHandler {
             });
         }
     }
+    /**
+     * Record-then-play announcement fan-out (plan 18).
+     *
+     * The base has already uploaded the WAV to /api/clip; this just tells the
+     * targeted endpoints to fetch and play it. No peer connection, no ICE, so
+     * none of the cold-handshake timing problems of handleBroadcastSource apply.
+     */
+    handleBroadcastClip(transport, payload) {
+        const client = this.channels.getClientByConnId(transport.connId);
+        if (!client) {
+            this.sendError(transport, 'NOT_IN_ROOM', 'Join a room first');
+            return;
+        }
+        if (client.deviceType !== 'base') {
+            this.sendError(transport, 'NOT_ALLOWED', 'Only base stations can broadcast');
+            return;
+        }
+        const clipId = payload.clipId;
+        if (!clipId) {
+            this.sendError(transport, 'INVALID_PARAMS', 'clipId required');
+            return;
+        }
+        const clip = this.clips?.get(clipId);
+        if (!clip) {
+            this.sendError(transport, 'NOT_FOUND', 'Clip expired or not found');
+            return;
+        }
+        // Same 'all' normalization as handleBroadcastSource: the base's dropdown
+        // default is the literal string 'all', which must not be matched against a
+        // device that happens to be named 'all'.
+        const rawTarget = payload.targetDeviceId || undefined;
+        const targetDeviceId = rawTarget && rawTarget !== 'all' ? rawTarget : undefined;
+        const device = this.config.getDevice(client.deviceId);
+        const label = device?.config?.label || 'Base Station';
+        const candidates = targetDeviceId
+            ? this.channels.getClientsInRoom(client.roomId).filter(c => c.deviceId === targetDeviceId)
+            : this.channels.getClientsInRoom(client.roomId).filter(c => c.deviceId !== client.deviceId);
+        let delivered = 0;
+        for (const target of candidates) {
+            // Only playback endpoints get announcements; other bases do not.
+            if (target.deviceType !== 'kiosk' && target.deviceType !== 'room')
+                continue;
+            // Authoritative opt-out check — same posture as handleSubscribeBroadcast,
+            // we do not trust the endpoint to silence itself.
+            const stored = this.config.getDevice(target.deviceId);
+            if (stored?.config?.broadcastDisabled === true)
+                continue;
+            this.channels.sendTo(target.deviceId, {
+                type: 'PLAY_CLIP',
+                payload: {
+                    clipId: clip.id,
+                    url: `/clip/${clip.id}.wav`,
+                    durationMs: clip.durationMs,
+                    from: client.deviceId,
+                    label,
+                },
+            });
+            delivered++;
+        }
+        console.log(`Clip broadcast ${clipId} by ${client.deviceId} → ${targetDeviceId || 'all'} (${delivered} endpoints)`);
+    }
     handleSubscribeBroadcast(transport, payload) {
         const client = this.channels.getClientByConnId(transport.connId);
         if (!client) {
             this.sendError(transport, 'NOT_IN_ROOM', 'Join a room first');
             return;
         }
-        if (client.deviceType !== 'kiosk') {
-            this.sendError(transport, 'NOT_ALLOWED', 'Only kiosks can subscribe to broadcasts');
+        if (client.deviceType !== 'kiosk' && client.deviceType !== 'room') {
+            this.sendError(transport, 'NOT_ALLOWED', 'Only kiosks and room controls can subscribe to broadcasts');
             return;
         }
         const publisherId = payload.publisherId;
@@ -473,12 +559,12 @@ class SignalingHandler {
             this.sendError(transport, 'NOT_FOUND', 'Publisher not found');
             return;
         }
-        // Authoritative guard: a kiosk with system broadcasts disabled must not
+        // Authoritative guard: a kiosk or room with system broadcasts disabled must not
         // receive "Broadcast Message" announcements, even if its client ignores
         // the source. Re-check the stored device config (which the base sets).
         const subscriber = this.config.getDevice(client.deviceId);
         if (subscriber && subscriber.config && subscriber.config.broadcastDisabled === true) {
-            console.log(`Kiosk ${client.deviceId} has broadcasts disabled — denying subscribe`);
+            console.log(`${client.deviceType} ${client.deviceId} has broadcasts disabled — denying subscribe`);
             return;
         }
         // Notify publisher that a new subscriber wants their broadcast stream
@@ -511,9 +597,8 @@ class SignalingHandler {
         }
         const targetDeviceId = payload.targetDeviceId;
         const displayMode = payload.displayMode;
-        const audioMode = payload.audioMode;
-        if (!targetDeviceId || !displayMode || !audioMode) {
-            this.sendError(transport, 'INVALID_PARAMS', 'targetDeviceId, displayMode, audioMode required');
+        if (!targetDeviceId || !displayMode) {
+            this.sendError(transport, 'INVALID_PARAMS', 'targetDeviceId and displayMode required');
             return;
         }
         const targetDevice = this.config.getDevice(targetDeviceId);
@@ -521,19 +606,19 @@ class SignalingHandler {
             this.sendError(transport, 'NOT_FOUND', 'Target device not found');
             return;
         }
-        if (targetDevice.type !== 'kiosk') {
-            this.sendError(transport, 'INVALID_TARGET', 'Display config can only be set on kiosks');
+        if (targetDevice.type !== 'kiosk' && targetDevice.type !== 'room') {
+            this.sendError(transport, 'INVALID_TARGET', 'Display config can only be set on kiosks and room controls');
             return;
         }
         // Persist config
-        this.config.updateDeviceConfig(targetDeviceId, { displayMode, audioMode });
+        this.config.updateDeviceConfig(targetDeviceId, { displayMode });
         const fullConfig = this.config.getDeviceConfig(targetDeviceId);
         // Push to target kiosk if connected
         const targetClient = this.channels.getClient(targetDeviceId);
         if (targetClient) {
             this.channels.sendTo(targetDeviceId, {
                 type: 'SET_DISPLAY_CONFIG',
-                payload: { displayMode, audioMode },
+                payload: { displayMode },
             });
         }
         // Acknowledge to requesting base with the FULL persisted config (not just
@@ -541,9 +626,9 @@ class SignalingHandler {
         // with the SET_CONFIG reply.
         this.send(transport, {
             type: 'CONFIG_RESULT',
-            payload: { targetDeviceId, ok: true, config: fullConfig || { displayMode, audioMode } },
+            payload: { targetDeviceId, ok: true, config: fullConfig || { displayMode } },
         });
-        console.log(`Display config set for ${targetDeviceId}: display=${displayMode}, audio=${audioMode}`);
+        console.log(`Display config set for ${targetDeviceId}: display=${displayMode}`);
     }
     handleCapabilities(transport, payload) {
         const client = this.channels.getClientByConnId(transport.connId);
@@ -551,14 +636,15 @@ class SignalingHandler {
             return;
         const videoDevices = payload.videoDevices || [];
         const audioDevices = payload.audioDevices || [];
-        const capabilities = { videoDevices, audioDevices };
+        const audioOutputDevices = payload.audioOutputDevices || [];
+        const capabilities = { videoDevices, audioDevices, audioOutputDevices };
         this.channels.setCapabilities(client.deviceId, capabilities);
         // Relay to all other clients (base stations render source pickers from this)
         this.channels.broadcastAll({
             type: 'CAPABILITIES',
-            payload: { deviceId: client.deviceId, videoDevices, audioDevices },
+            payload: { deviceId: client.deviceId, videoDevices, audioDevices, audioOutputDevices },
         }, client.deviceId);
-        console.log(`Capabilities reported: ${client.deviceId} (${videoDevices.length}v ${audioDevices.length}a)`);
+        console.log(`Capabilities reported: ${client.deviceId} (${videoDevices.length}v ${audioDevices.length}a ${audioOutputDevices.length}out)`);
     }
     handleAudioPeak(transport, payload) {
         const client = this.channels.getClientByConnId(transport.connId);
@@ -642,6 +728,24 @@ class SignalingHandler {
             payload: { from: client.deviceId, state: payload.state, ts: Date.now() },
         });
     }
+    handleSessionKicked(transport, payload) {
+        const publisher = this.channels.getClientByConnId(transport.connId);
+        if (!publisher)
+            return;
+        const subscriberId = payload.subscriberId;
+        if (!subscriberId)
+            return;
+        const subscriber = this.channels.getClient(subscriberId);
+        if (subscriber) {
+            const idx = subscriber.subscriptions.indexOf(publisher.deviceId);
+            if (idx !== -1)
+                subscriber.subscriptions.splice(idx, 1);
+        }
+        this.channels.sendTo(subscriberId, {
+            type: 'SESSION_KICKED',
+            payload: { publisherId: publisher.deviceId },
+        });
+    }
     handleRelay(transport, msg, originalType) {
         const client = this.channels.getClientByConnId(transport.connId);
         if (!client) {
@@ -703,6 +807,7 @@ class SignalingHandler {
         }
         // Broadcast updated device status to all clients (includes full config
         // so every base station's local cache stays in sync).
+        const targetClientForStatus = this.channels.getClient(targetDeviceId);
         this.channels.broadcastAll({
             type: 'DEVICE_STATUS',
             payload: {
@@ -712,6 +817,7 @@ class SignalingHandler {
                 label: fullConfig?.label || targetDevice.label,
                 config: fullConfig || targetDevice.config,
                 lastSeenAt: Date.now(),
+                ip: targetClientForStatus?.ip,
             },
         });
         // Push config to target if connected

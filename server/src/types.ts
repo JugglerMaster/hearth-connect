@@ -215,7 +215,8 @@ export type MessageType =
   | 'CALL_STATE'
   | 'SET_DISPLAY_CONFIG'
   | 'DISPLAY_CONFIG_APPLIED'
-  | 'PRIMARY_BASE_CHANGED';
+  | 'PRIMARY_BASE_CHANGED'
+  | 'SESSION_KICKED';
 
 export interface Message {
   type: MessageType;

@@ -1,10 +1,12 @@
 import { ChannelManager } from './ChannelManager';
 import { ConfigManager } from './ConfigManager';
+import { ClipStore } from './ClipStore';
 import { Transport } from './types';
 export declare class SignalingHandler {
     private channels;
     private config;
-    constructor(channels: ChannelManager, config: ConfigManager);
+    private clips?;
+    constructor(channels: ChannelManager, config: ConfigManager, clips?: ClipStore | undefined);
     handle(transport: Transport, raw: string): void;
     handleDisconnect(transport: Transport): void;
     private route;
@@ -20,6 +22,14 @@ export declare class SignalingHandler {
     private handleUnsubscribeSource;
     private handleBroadcastSource;
     private handleUnbroadcastSource;
+    /**
+     * Record-then-play announcement fan-out (plan 18).
+     *
+     * The base has already uploaded the WAV to /api/clip; this just tells the
+     * targeted endpoints to fetch and play it. No peer connection, no ICE, so
+     * none of the cold-handshake timing problems of handleBroadcastSource apply.
+     */
+    private handleBroadcastClip;
     private handleSubscribeBroadcast;
     private handleUnsubscribeBroadcast;
     private handleSetDisplayConfig;
@@ -28,6 +38,7 @@ export declare class SignalingHandler {
     private handleRemoveDevice;
     private handleDoorbell;
     private handleCallState;
+    private handleSessionKicked;
     private handleRelay;
     private handleSetConfig;
     private handleGetConfig;

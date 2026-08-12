@@ -259,7 +259,11 @@ export class ChannelManager {
     const now = Date.now();
     const result: RecentlySeenDevice[] = [];
     for (const device of this.recentlySeenDevices.values()) {
-      if (now - device.lastSeenAt <= this.RECENT_SEEN_WINDOW) {
+      // Online devices stay in the list regardless of how long they've been
+      // connected — lastSeenAt is only bumped on join/disconnect, so a device
+      // with a long-lived socket would otherwise age out of the 24h window
+      // while still streaming. Only *offline* entries expire after the window.
+      if (device.online || now - device.lastSeenAt <= this.RECENT_SEEN_WINDOW) {
         result.push(device);
       }
     }
@@ -298,6 +302,12 @@ export class ChannelManager {
     const client = this.clients.get(deviceId);
     if (client) {
       client.lastHeartbeat = Date.now();
+    }
+    // Keep the recently-seen timestamp fresh so an offline device's 24h expiry
+    // window is measured from its last heartbeat, not its join time.
+    const seen = this.recentlySeenDevices.get(deviceId);
+    if (seen) {
+      seen.lastSeenAt = Date.now();
     }
   }
 

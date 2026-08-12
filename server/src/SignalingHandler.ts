@@ -176,6 +176,9 @@ export class SignalingHandler {
       case 'CALL_STATE':
         this.handleCallState(transport, msg.payload);
         break;
+      case 'SESSION_KICKED':
+        this.handleSessionKicked(transport, msg.payload);
+        break;
       default:
         this.sendError(transport, 'UNKNOWN_TYPE', `Unknown message type: ${msg.type}`);
     }
@@ -887,6 +890,28 @@ export class SignalingHandler {
     this.channels.sendTo(targetId, {
       type: 'CALL_STATE',
       payload: { from: client.deviceId, state: payload.state, ts: Date.now() },
+    });
+  }
+
+  private handleSessionKicked(
+    transport: Transport,
+    payload: Record<string, unknown>
+  ): void {
+    const publisher = this.channels.getClientByConnId(transport.connId);
+    if (!publisher) return;
+
+    const subscriberId = payload.subscriberId as string;
+    if (!subscriberId) return;
+
+    const subscriber = this.channels.getClient(subscriberId);
+    if (subscriber) {
+      const idx = subscriber.subscriptions.indexOf(publisher.deviceId);
+      if (idx !== -1) subscriber.subscriptions.splice(idx, 1);
+    }
+
+    this.channels.sendTo(subscriberId, {
+      type: 'SESSION_KICKED',
+      payload: { publisherId: publisher.deviceId },
     });
   }
 

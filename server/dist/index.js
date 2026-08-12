@@ -46,20 +46,24 @@ const child_process_1 = require("child_process");
 const express_1 = __importDefault(require("express"));
 const ws_1 = require("ws");
 const qrcode_1 = __importDefault(require("qrcode"));
+const bonjour_service_1 = __importDefault(require("bonjour-service"));
 const ConfigManager_1 = require("./ConfigManager");
 const ChannelManager_1 = require("./ChannelManager");
 const SignalingHandler_1 = require("./SignalingHandler");
+const ClipStore_1 = require("./ClipStore");
 // ─── Config ────────────────────────────────────────────────
 const PORT = parseInt(process.env.SERVER_PORT || '8090', 10);
 const HTTP_PORT = parseInt(process.env.SERVER_HTTP_PORT || '80', 10);
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, '..', 'data');
 const CERT_DIR = process.env.CERT_DIR || path.join(__dirname, '..', 'certs');
 const TLS_ENABLED = process.env.TLS_ENABLED === 'true' || process.argv.includes('--tls');
+const MDNS_ENABLED = process.env.MDNS_DISABLED !== 'true'; // enabled by default
 // ─── State ─────────────────────────────────────────────────
 const configManager = new ConfigManager_1.ConfigManager(path.join(DATA_DIR, 'config.json'));
 const channelManager = new ChannelManager_1.ChannelManager();
 channelManager.clearRecentlySeen();
-const signalingHandler = new SignalingHandler_1.SignalingHandler(channelManager, configManager);
+const clipStore = new ClipStore_1.ClipStore();
+const signalingHandler = new SignalingHandler_1.SignalingHandler(channelManager, configManager, clipStore);
 // ─── Express App ───────────────────────────────────────────
 const app = (0, express_1.default)();
 // No-cache for served assets so devices (e.g. iPad Safari) always pick up
@@ -89,6 +93,42 @@ app.post('/api/server-url', (_req, res) => {
     }).catch(() => {
         res.json({ serverUrl, dataUrl: null });
     });
+});
+// ─── Broadcast clips (plan 18) ─────────────────────────────
+// The base station records an announcement and uploads the WAV once; every
+// endpoint then fetches it by URL instead of negotiating a peer connection.
+app.post('/api/clip', express_1.default.raw({ type: 'audio/wav', limit: ClipStore_1.ClipStore.MAX_BYTES }), (req, res) => {
+    const body = req.body;
+    if (!Buffer.isBuffer(body) || body.length === 0) {
+        res.status(400).json({ error: 'empty clip body' });
+        return;
+    }
+    const clip = clipStore.add({
+        id: (0, crypto_1.randomUUID)(),
+        from: String(req.query.from || ''),
+        label: String(req.query.label || 'Base Station'),
+        targetDeviceId: undefined,
+        bytes: body,
+        durationMs: parseInt(String(req.query.durationMs || '0'), 10) || 0,
+    });
+    console.log(`Clip uploaded: ${clip.id} (${body.length} bytes, ${clip.durationMs}ms) from ${clip.from}`);
+    res.json({ clipId: clip.id, url: `/clip/${clip.id}.wav`, durationMs: clip.durationMs });
+});
+app.get('/clip/:id.wav', (req, res) => {
+    // Express strips the literal ".wav" into the param name, so the id param is
+    // just the uuid. Accept a trailing .wav defensively for direct fetches.
+    const id = String(req.params['id'] || '').replace(/\.wav$/, '');
+    const clip = clipStore.get(id);
+    if (!clip) {
+        res.status(404).end();
+        return;
+    }
+    res.setHeader('Content-Type', 'audio/wav');
+    res.setHeader('Content-Length', String(clip.bytes.length));
+    // Endpoints (Sonos in particular) re-fetch on retry; caching a clip that
+    // expires in 5 minutes would only serve staleness.
+    res.setHeader('Cache-Control', 'no-store');
+    res.end(clip.bytes);
 });
 // ─── Server Creation ───────────────────────────────────────
 // Generate / refresh the self-signed TLS certs in CERT_DIR.
@@ -250,10 +290,12 @@ const server = createServer();
 // as soon as it receives a compressed frame, breaking signaling on those devices.
 const wss = new ws_1.WebSocketServer({ server, perMessageDeflate: false });
 // Wrap a raw WebSocket as a Transport for modern clients.
-function makeWsTransport(ws) {
+function makeWsTransport(ws, req) {
     const connId = (0, crypto_1.randomUUID)();
+    const ip = req.socket.remoteAddress || req.headers['x-forwarded-for'] || undefined;
     return {
         connId,
+        ip,
         send(msg) {
             if (ws.readyState === ws_1.WebSocket.OPEN) {
                 try {
@@ -270,8 +312,8 @@ function makeWsTransport(ws) {
         },
     };
 }
-wss.on('connection', (ws) => {
-    const transport = makeWsTransport(ws);
+wss.on('connection', (ws, req) => {
+    const transport = makeWsTransport(ws, req);
     channelManager.registerTransport(transport);
     ws.on('message', (raw) => {
         signalingHandler.handle(transport, raw.toString());
@@ -305,6 +347,7 @@ app.get('/api/events', (req, res) => {
     res.write(': connected\n\n');
     const transport = {
         connId,
+        ip: req.socket.remoteAddress || req.headers['x-forwarded-for'] || undefined,
         send(msg) {
             try {
                 res.write('data: ' + JSON.stringify(msg) + '\n\n');
@@ -345,12 +388,47 @@ app.post('/api/signal', express_1.default.json(), (req, res) => {
     signalingHandler.handle(transport, JSON.stringify({ type, payload }));
     res.json({ ok: true });
 });
+// ─── mDNS / Bonjour Service ────────────────────────────────
+// Publish a _hearth-connect._tcp.local service so Pi agents on the same LAN
+// can discover the server automatically (no manual SERVER_URL needed).
+let bonjour = null;
+function publishMdns() {
+    if (!MDNS_ENABLED) {
+        console.log('[mDNS] disabled (MDNS_DISABLED=true)');
+        return;
+    }
+    const lanIps = computeLanIps();
+    const ip = lanIps[0] || '127.0.0.1';
+    const wsProto = TLS_ENABLED ? 'wss' : 'ws';
+    const serverUrl = `${wsProto}://${ip}:${PORT}`;
+    bonjour = new bonjour_service_1.default();
+    bonjour.publish({
+        name: 'Hearth-Connect',
+        type: 'hearth-connect',
+        protocol: 'tcp',
+        port: PORT,
+        txt: {
+            serverUrl,
+            roomId: 'default',
+            label: 'Hearth-Connect Server',
+        },
+    });
+    console.log(`[mDNS] published _hearth-connect._tcp — ${serverUrl}`);
+}
+function unpublishMdns() {
+    if (bonjour) {
+        bonjour.unpublishAll();
+        bonjour.destroy();
+        bonjour = null;
+    }
+}
 // ─── Start ─────────────────────────────────────────────────
 const proto = TLS_ENABLED ? 'https' : 'http';
 if (!TLS_ENABLED) {
     // HTTP only
     server.listen(PORT, () => {
         console.log(`Hearth-Connect server running at http://localhost:${PORT}`);
+        publishMdns();
     });
 }
 else {
@@ -359,6 +437,7 @@ else {
         console.log(`Hearth-Connect server running at https://0.0.0.0:${PORT}`);
         console.log('[TLS] min/max version forced to TLSv1.2 (legacy WebKit WSS compat)');
         console.log('[WS] perMessageDeflate disabled (legacy WebKit WSS compat)');
+        publishMdns();
     });
     // Optional HTTP redirect server (non-fatal if port unavailable)
     const httpApp = (0, express_1.default)();
@@ -377,12 +456,14 @@ else {
 // ─── Graceful Shutdown ─────────────────────────────────────
 process.on('SIGINT', () => {
     console.log('\nShutting down...');
+    unpublishMdns();
     configManager.dispose();
     wss.close();
     server.close();
     process.exit(0);
 });
 process.on('SIGTERM', () => {
+    unpublishMdns();
     configManager.dispose();
     wss.close();
     server.close();

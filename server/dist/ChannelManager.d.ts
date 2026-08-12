@@ -5,6 +5,7 @@ export interface RecentlySeenDevice {
     type: DeviceType;
     lastSeenAt: number;
     online: boolean;
+    ip?: string;
     config?: Record<string, unknown>;
 }
 export declare class ChannelManager {
@@ -17,7 +18,7 @@ export declare class ChannelManager {
     unregisterTransport(connId: string): void;
     getTransport(connId: string): Transport | undefined;
     sendToConn(connId: string, message: object): void;
-    addClient(connId: string, deviceId: string, deviceType: DeviceType, roomId: string, label: string): ConnectedClient;
+    addClient(connId: string, deviceId: string, deviceType: DeviceType, roomId: string, label: string, ip?: string): ConnectedClient;
     removeClientByConn(connId: string): ConnectedClient | null;
     getClient(deviceId: string): ConnectedClient | undefined;
     getClientByConnId(connId: string): ConnectedClient | undefined;

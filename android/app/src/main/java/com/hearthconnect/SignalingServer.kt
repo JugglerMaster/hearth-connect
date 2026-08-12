@@ -283,7 +283,9 @@ class SignalingServer(private val context: Context, private val listener: Server
                 // same dropped connection.
                 val c = clients[deviceId]
                 if (c != null && c.connId == staleConnId) {
-                    performTeardown(deviceId, subscriptions, sources)
+                    kotlinx.coroutines.runBlocking {
+                        performTeardown(deviceId, subscriptions, sources)
+                    }
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "grace teardown error for $deviceId: ${e.message}")
@@ -296,7 +298,7 @@ class SignalingServer(private val context: Context, private val listener: Server
         pendingTeardown.remove(deviceId)?.cancel(false)
     }
 
-    private fun performTeardown(deviceId: String, subscriptions: List<String>, sources: List<MediaSource>) {
+    private suspend fun performTeardown(deviceId: String, subscriptions: List<String>, sources: List<MediaSource>) {
         pendingTeardown.remove(deviceId)
         val client = clients[deviceId] ?: return
 
@@ -339,7 +341,7 @@ class SignalingServer(private val context: Context, private val listener: Server
 
     // ─── Message routing ─────────────────────────────────────
 
-    private fun handleMessage(connId: String, msg: JSONObject) {
+    private suspend fun handleMessage(connId: String, msg: JSONObject) {
         val type = msg.optString("type", "")
         val payload = msg.optJSONObject("payload") ?: JSONObject()
 
@@ -364,6 +366,7 @@ class SignalingServer(private val context: Context, private val listener: Server
             "ICE_CANDIDATE" -> handleRelay(connId, msg)
             "ICE_RESTART" -> handleRelay(connId, msg)
             "RENEGOTIATE" -> handleRelay(connId, msg)
+            "SESSION_KICKED" -> handleSessionKicked(connId, msg)
             "SET_CONFIG" -> handleSetConfig(connId, payload)
             "GET_CONFIG" -> handleGetConfig(connId, payload)
             "SET_DISPLAY_CONFIG" -> handleSetDisplayConfig(connId, payload)
@@ -382,26 +385,26 @@ class SignalingServer(private val context: Context, private val listener: Server
 
     // ─── Helpers ─────────────────────────────────────────────
 
-    private fun sendToDevice(deviceId: String, msg: JSONObject) {
+    private suspend fun sendToDevice(deviceId: String, msg: JSONObject) {
         val client = clients[deviceId] ?: return
         val session = sessions[client.connId] ?: return
         try {
-            session.outgoing.trySend(Frame.Text(msg.toString()))
+            session.outgoing.send(Frame.Text(msg.toString()))
         } catch (e: Exception) {
             Log.w(TAG, "Send failed to $deviceId: ${e.message}")
         }
     }
 
-    private fun sendToConn(connId: String, msg: JSONObject) {
+    private suspend fun sendToConn(connId: String, msg: JSONObject) {
         val session = sessions[connId] ?: return
         try {
-            session.outgoing.trySend(Frame.Text(msg.toString()))
+            session.outgoing.send(Frame.Text(msg.toString()))
         } catch (e: Exception) {
             Log.w(TAG, "Send failed to conn $connId: ${e.message}")
         }
     }
 
-    private fun sendError(connId: String, code: String, message: String) {
+    private suspend fun sendError(connId: String, code: String, message: String) {
         sendToConn(connId, JSONObject().apply {
             put("type", "ERROR")
             put("payload", JSONObject().apply {
@@ -411,14 +414,14 @@ class SignalingServer(private val context: Context, private val listener: Server
         })
     }
 
-    private fun broadcastAll(msg: JSONObject, excludeDeviceId: String? = null) {
+    private suspend fun broadcastAll(msg: JSONObject, excludeDeviceId: String? = null) {
         for ((id, client) in clients) {
             if (id == excludeDeviceId) continue
             sendToDevice(id, msg)
         }
     }
 
-    private fun broadcastToType(deviceType: String, msg: JSONObject, excludeDeviceId: String? = null) {
+    private suspend fun broadcastToType(deviceType: String, msg: JSONObject, excludeDeviceId: String? = null) {
         for ((id, client) in clients) {
             if (client.deviceType != deviceType) continue
             if (id == excludeDeviceId) continue
@@ -428,7 +431,7 @@ class SignalingServer(private val context: Context, private val listener: Server
 
     // ─── Handlers ────────────────────────────────────────────
 
-    private fun handleJoinRoom(connId: String, payload: JSONObject) {
+    private suspend fun handleJoinRoom(connId: String, payload: JSONObject) {
         val deviceId = payload.optString("deviceId", "")
         val deviceType = payload.optString("deviceType", "")
         val label = payload.optString("label", deviceId).ifEmpty { deviceId }
@@ -568,7 +571,7 @@ class SignalingServer(private val context: Context, private val listener: Server
         Log.i(TAG, "Device joined: $deviceId ($deviceType) as label=\"$label\"")
     }
 
-    private fun handleLeaveRoom(connId: String) {
+    private suspend fun handleLeaveRoom(connId: String) {
         val deviceId = connToDevice[connId] ?: return
         val client = clients[deviceId] ?: return
 
@@ -591,16 +594,19 @@ class SignalingServer(private val context: Context, private val listener: Server
         })
     }
 
-    private fun handleHeartbeat(connId: String) {
+    private suspend fun handleHeartbeat(connId: String) {
         val deviceId = connToDevice[connId] ?: return
         clients[deviceId]?.lastHeartbeat = System.currentTimeMillis()
+        // Keep the recently-seen timestamp fresh so an offline device's 24h
+        // expiry window is measured from its last heartbeat, not its join time.
+        recentlySeen[deviceId]?.lastSeenAt = System.currentTimeMillis()
         sendToConn(connId, JSONObject().apply {
             put("type", "HEARTBEAT")
             put("payload", JSONObject())
         })
     }
 
-    private fun handlePublishSource(connId: String, payload: JSONObject) {
+    private suspend fun handlePublishSource(connId: String, payload: JSONObject) {
         val client = getClient(connId) ?: return sendError(connId, "NOT_IN_ROOM", "Join a room first")
         val sourceId = payload.optString("sourceId", "")
         val label = payload.optString("label", "Camera")
@@ -620,7 +626,7 @@ class SignalingServer(private val context: Context, private val listener: Server
         Log.i(TAG, "Source published: $sourceId by ${client.deviceId}")
     }
 
-    private fun handleUnpublishSource(connId: String, payload: JSONObject) {
+    private suspend fun handleUnpublishSource(connId: String, payload: JSONObject) {
         val client = getClient(connId) ?: return
         val sourceId = payload.optString("sourceId", "")
         if (sourceId.isEmpty()) return
@@ -633,7 +639,7 @@ class SignalingServer(private val context: Context, private val listener: Server
         }
     }
 
-    private fun handleSubscribeSource(connId: String, payload: JSONObject) {
+    private suspend fun handleSubscribeSource(connId: String, payload: JSONObject) {
         val client = getClient(connId) ?: return sendError(connId, "NOT_IN_ROOM", "Join a room first")
         val publisherId = payload.optString("publisherId", "")
         if (publisherId.isEmpty()) return
@@ -651,7 +657,7 @@ class SignalingServer(private val context: Context, private val listener: Server
         Log.i(TAG, "Subscriber ${client.deviceId} subscribed to $publisherId")
     }
 
-    private fun handleUnsubscribeSource(connId: String, payload: JSONObject) {
+    private suspend fun handleUnsubscribeSource(connId: String, payload: JSONObject) {
         val client = getClient(connId) ?: return
         val publisherId = payload.optString("publisherId", "")
         if (publisherId.isEmpty()) return
@@ -664,7 +670,7 @@ class SignalingServer(private val context: Context, private val listener: Server
         client.subscriptions.remove(publisherId)
     }
 
-    private fun handleBroadcastSource(connId: String, payload: JSONObject) {
+    private suspend fun handleBroadcastSource(connId: String, payload: JSONObject) {
         val client = getClient(connId) ?: return sendError(connId, "NOT_IN_ROOM", "Join a room first")
         if (client.deviceType !in BASE_TYPES) return sendError(connId, "NOT_ALLOWED", "Only base stations can broadcast")
 
@@ -741,7 +747,7 @@ class SignalingServer(private val context: Context, private val listener: Server
      * it. No peer connection, so none of handleBroadcastSource's cold-handshake
      * timing issues apply.
      */
-    private fun handleBroadcastClip(connId: String, payload: JSONObject) {
+    private suspend fun handleBroadcastClip(connId: String, payload: JSONObject) {
         val client = getClient(connId) ?: return sendError(connId, "NOT_IN_ROOM", "Join a room first")
         if (client.deviceType !in BASE_TYPES) return sendError(connId, "NOT_ALLOWED", "Only base stations can broadcast")
 
@@ -897,21 +903,23 @@ class SignalingServer(private val context: Context, private val listener: Server
     }
 
     private fun broadcastDeviceStatus(deviceId: String, status: String, type: String, label: String, ip: String?) {
-        broadcastAll(JSONObject().apply {
-            put("type", "DEVICE_STATUS")
-            put("payload", JSONObject().apply {
-                put("deviceId", deviceId)
-                put("status", status)
-                put("type", type)
-                put("label", label)
-                put("lastSeenAt", System.currentTimeMillis())
-                put("config", deviceConfigs[deviceId] ?: JSONObject())
-                if (ip != null) put("ip", ip)
+        kotlinx.coroutines.runBlocking {
+            broadcastAll(JSONObject().apply {
+                put("type", "DEVICE_STATUS")
+                put("payload", JSONObject().apply {
+                    put("deviceId", deviceId)
+                    put("status", status)
+                    put("type", type)
+                    put("label", label)
+                    put("lastSeenAt", System.currentTimeMillis())
+                    put("config", deviceConfigs[deviceId] ?: JSONObject())
+                    if (ip != null) put("ip", ip)
+                })
             })
-        })
+        }
     }
 
-    private fun handleTestSpeaker(connId: String, payload: JSONObject) {
+    private suspend fun handleTestSpeaker(connId: String, payload: JSONObject) {
         val client = getClient(connId) ?: return
         if (client.deviceType !in BASE_TYPES) return sendError(connId, "NOT_ALLOWED", "Only base stations can test speakers")
         val id = payload.optString("deviceId", "")
@@ -947,7 +955,7 @@ class SignalingServer(private val context: Context, private val listener: Server
         return baos.toByteArray()
     }
 
-    private fun handleUnbroadcastSource(connId: String, payload: JSONObject) {
+    private suspend fun handleUnbroadcastSource(connId: String, payload: JSONObject) {
         val client = getClient(connId) ?: return
         val sourceId = payload.optString("sourceId", "")
         if (sourceId.isEmpty()) return
@@ -960,7 +968,7 @@ class SignalingServer(private val context: Context, private val listener: Server
         }
     }
 
-    private fun handleSubscribeBroadcast(connId: String, payload: JSONObject) {
+    private suspend fun handleSubscribeBroadcast(connId: String, payload: JSONObject) {
         val client = getClient(connId) ?: return sendError(connId, "NOT_IN_ROOM", "Join a room first")
         // Any device may receive broadcasts (cameras/monitors included), unless it
         // has opted out via the broadcastDisabled toggle. This mirrors the
@@ -986,7 +994,7 @@ class SignalingServer(private val context: Context, private val listener: Server
         Log.i(TAG, "${client.deviceType} ${client.deviceId} subscribed to broadcast from $publisherId")
     }
 
-    private fun handleUnsubscribeBroadcast(connId: String, payload: JSONObject) {
+    private suspend fun handleUnsubscribeBroadcast(connId: String, payload: JSONObject) {
         val client = getClient(connId) ?: return
         val publisherId = payload.optString("publisherId", "")
         if (publisherId.isEmpty()) return
@@ -1000,7 +1008,7 @@ class SignalingServer(private val context: Context, private val listener: Server
         })
     }
 
-    private fun handleRelay(connId: String, msg: JSONObject) {
+    private suspend fun handleRelay(connId: String, msg: JSONObject) {
         val client = getClient(connId) ?: return sendError(connId, "NOT_IN_ROOM", "Join a room first")
         val payload = msg.optJSONObject("payload") ?: return
         val targetId = payload.optString("to", "")
@@ -1016,7 +1024,25 @@ class SignalingServer(private val context: Context, private val listener: Server
         })
     }
 
-    private fun handleSetConfig(connId: String, payload: JSONObject) {
+    private suspend fun handleSessionKicked(connId: String, msg: JSONObject) {
+        val publisher = getClient(connId) ?: return
+        val payload = msg.optJSONObject("payload") ?: return
+        val subscriberId = payload.optString("subscriberId", "")
+        if (subscriberId.isEmpty()) return
+
+        // Remove the publisher from the kicked subscriber's subscription list so
+        // the server's view of who-is-subscribed-to-whom stays consistent.
+        clients[subscriberId]?.subscriptions?.remove(publisher.deviceId)
+
+        sendToDevice(subscriberId, JSONObject().apply {
+            put("type", "SESSION_KICKED")
+            put("payload", JSONObject().apply {
+                put("publisherId", publisher.deviceId)
+            })
+        })
+    }
+
+    private suspend fun handleSetConfig(connId: String, payload: JSONObject) {
         val client = getClient(connId) ?: return
         if (client.deviceType !in BASE_TYPES) return sendError(connId, "NOT_ALLOWED", "Only base stations can push configuration")
 
@@ -1089,7 +1115,7 @@ class SignalingServer(private val context: Context, private val listener: Server
         Log.i(TAG, "Config updated for $targetDeviceId by ${client.deviceId}")
     }
 
-    private fun handleGetConfig(connId: String, payload: JSONObject) {
+    private suspend fun handleGetConfig(connId: String, payload: JSONObject) {
         val client = getClient(connId) ?: return
         val targetDeviceId = payload.optString("targetDeviceId", "").ifEmpty { client.deviceId }
 
@@ -1103,7 +1129,7 @@ class SignalingServer(private val context: Context, private val listener: Server
         })
     }
 
-    private fun handleSetDisplayConfig(connId: String, payload: JSONObject) {
+    private suspend fun handleSetDisplayConfig(connId: String, payload: JSONObject) {
         val client = getClient(connId) ?: return
         if (client.deviceType !in BASE_TYPES) return sendError(connId, "NOT_ALLOWED", "Only base stations can set display config")
 
@@ -1147,7 +1173,7 @@ class SignalingServer(private val context: Context, private val listener: Server
         Log.i(TAG, "Display config set for $targetDeviceId: display=$displayMode")
     }
 
-    private fun handleRequestTalk(connId: String, payload: JSONObject) {
+    private suspend fun handleRequestTalk(connId: String, payload: JSONObject) {
         val client = getClient(connId) ?: return
         val targetPublisherId = payload.optString("targetPublisherId", "")
         if (targetPublisherId.isEmpty()) return
@@ -1158,7 +1184,7 @@ class SignalingServer(private val context: Context, private val listener: Server
         })
     }
 
-    private fun handleStopTalk(connId: String, payload: JSONObject) {
+    private suspend fun handleStopTalk(connId: String, payload: JSONObject) {
         val client = getClient(connId) ?: return
         val targetPublisherId = payload.optString("targetPublisherId", "")
         if (targetPublisherId.isEmpty()) return
@@ -1169,7 +1195,7 @@ class SignalingServer(private val context: Context, private val listener: Server
         })
     }
 
-    private fun handleCapabilities(connId: String, payload: JSONObject) {
+    private suspend fun handleCapabilities(connId: String, payload: JSONObject) {
         val client = getClient(connId) ?: return
 
         val videoDevices = payload.optJSONArray("videoDevices") ?: JSONArray()
@@ -1199,7 +1225,7 @@ class SignalingServer(private val context: Context, private val listener: Server
         Log.i(TAG, "Capabilities reported: ${client.deviceId} (${videoDevices.length()}v ${audioDevices.length()}a ${audioOutputDevices.length()}out)")
     }
 
-    private fun handleAudioPeak(connId: String, payload: JSONObject) {
+    private suspend fun handleAudioPeak(connId: String, payload: JSONObject) {
         val client = getClient(connId) ?: return
         val levelDb = payload.opt("levelDb")
         // Relay the audio-level reading to every other device (the base station
@@ -1216,7 +1242,7 @@ class SignalingServer(private val context: Context, private val listener: Server
         }, excludeDeviceId = client.deviceId)
     }
 
-    private fun handleRemoveDevice(connId: String, payload: JSONObject) {
+    private suspend fun handleRemoveDevice(connId: String, payload: JSONObject) {
         val client = getClient(connId) ?: return
         if (client.deviceType !in BASE_TYPES) return sendError(connId, "NOT_ALLOWED", "Only base stations can remove devices")
 
@@ -1241,7 +1267,7 @@ class SignalingServer(private val context: Context, private val listener: Server
         Log.i(TAG, "Device removed: $targetDeviceId by ${client.deviceId}")
     }
 
-    private fun handleDoorbell(connId: String, payload: JSONObject) {
+    private suspend fun handleDoorbell(connId: String, payload: JSONObject) {
         val client = getClient(connId) ?: return
         val label = payload.optString("label", "").ifEmpty { client.label }
 
@@ -1258,7 +1284,7 @@ class SignalingServer(private val context: Context, private val listener: Server
         listener?.onDoorbell(client.deviceId, label)
     }
 
-    private fun handleCallState(connId: String, payload: JSONObject) {
+    private suspend fun handleCallState(connId: String, payload: JSONObject) {
         val client = getClient(connId) ?: return
         val targetId = payload.optString("targetDeviceId", "")
         if (targetId.isEmpty()) return
@@ -1273,7 +1299,7 @@ class SignalingServer(private val context: Context, private val listener: Server
         })
     }
 
-    private fun handlePairDevice(connId: String, payload: JSONObject) {
+    private suspend fun handlePairDevice(connId: String, payload: JSONObject) {
         val token = payload.optString("token", "")
         val deviceType = payload.optString("deviceType", "")
         val label = payload.optString("label", "Unnamed Device")
@@ -1379,7 +1405,11 @@ class SignalingServer(private val context: Context, private val listener: Server
         val arr = JSONArray()
         val now = System.currentTimeMillis()
         for (entry in recentlySeen.values) {
-            if (now - entry.lastSeenAt <= RECENT_SEEN_WINDOW) {
+            // Online devices stay in the list regardless of how long they've been
+            // connected — lastSeenAt is only bumped on join/disconnect, so a device
+            // with a long-lived socket would otherwise age out of the 24h window
+            // while still streaming. Only *offline* entries expire after the window.
+            if (entry.online || now - entry.lastSeenAt <= RECENT_SEEN_WINDOW) {
                 arr.put(JSONObject().apply {
                     put("id", entry.id)
                     put("label", entry.label)

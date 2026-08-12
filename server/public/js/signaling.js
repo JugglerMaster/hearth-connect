@@ -206,6 +206,10 @@ class SignalingClient {
         this.emit('subscriberLeft', msg.payload);
         break;
 
+      case 'SESSION_KICKED':
+        this.emit('sessionKicked', msg.payload);
+        break;
+
       case 'OFFER':
         this.emit('offer', msg.payload);
         break;
