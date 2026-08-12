@@ -82,6 +82,8 @@
   const RECOVER_TIMEOUT = 10000;
   const MAX_RECOVER_ATTEMPTS = 4;      // fast retries before falling back to slow retry
   const RECOVER_RETRY_MS = 15000;      // slow background retry cadence after that
+  const WATCHDOG_GRACE_MS = 15000;     // don't check for dead streams during initial connection
+  let subscribeTime = 0;               // timestamp when current view was subscribed
 
   const connectionDot = document.getElementById('connectionDot');
   const monitorFeed = document.getElementById('monitorFeed');
@@ -634,6 +636,11 @@
 
     if (kiosks.length === 0) {
       deviceList.innerHTML = broadcastPanel + speakersHtml + '<p class="hint" style="padding:12px">No kiosks connected</p>';
+      // The broadcast panel is still rendered here, so its press-and-hold and
+      // target-select listeners must be attached too — otherwise the "Hold to
+      // Broadcast" button renders but does nothing (regression: button dead
+      // whenever no kiosks are in the room).
+      attachBroadcastPanelListeners();
       attachSpeakersListeners();
       // Re-attach the (open) settings panel inline below its device item, since
       // the innerHTML rebuild above detached it.
@@ -693,22 +700,6 @@
         <div id="broadcastStatus" class="monitor-status hidden" style="margin-top:8px"></div>
       </div>
     `;
-  }
-
-  // Keep the stored target in sync with the dropdown whenever the panel renders,
-  // and bind the panel's listeners.
-  function attachBroadcastPanelListeners() {
-    const targetSel = document.getElementById('broadcastTargetSelect');
-    if (targetSel) {
-      // Restore the previously chosen target (survives re-renders).
-      targetSel.value = broadcastTarget;
-      targetSel.addEventListener('change', (e) => {
-        broadcastTarget = (e.target.value) || 'all';
-        console.log('[base] broadcast target set to', broadcastTarget);
-      });
-    }
-    const btn = document.getElementById('toggleBroadcastButton');
-    if (!btn) return;
   }
 
   function renderListView(kiosks, broadcastPanel) {
@@ -820,6 +811,7 @@
     });
 
     // Attach listeners for grid
+    attachBroadcastPanelListeners();
     attachGridListeners();
   }
 
@@ -828,6 +820,18 @@
   function attachBroadcastPanelListeners() {
     const btn = document.getElementById('toggleBroadcastButton');
     if (!btn) return;
+
+    // Keep the stored target in sync with the dropdown whenever the panel
+    // renders, and bind its change listener. (The panel HTML is rebuilt by
+    // renderDevices on every re-render, so this must re-attach each time.)
+    const targetSel = document.getElementById('broadcastTargetSelect');
+    if (targetSel) {
+      targetSel.value = broadcastTarget;
+      targetSel.addEventListener('change', (e) => {
+        broadcastTarget = (e.target.value) || 'all';
+        console.log('[base] broadcast target set to', broadcastTarget);
+      });
+    }
 
     // Press-and-hold: broadcast only while the button is physically pressed
     // (walkie-talkie style). Start on press, stop on release.
@@ -1301,6 +1305,7 @@
     subscribed.add(peerId);
     console.log('[view] subscribing', peerId);
     sig.subscribeSource(peerId);
+    subscribeTime = Date.now();
 
     showMonitor();
     renderDevices();
@@ -1676,6 +1681,7 @@
 
   function watchdog() {
     if (!viewingId || !viewMode || recovering) return;
+    if (Date.now() - subscribeTime < WATCHDOG_GRACE_MS) return;
     const type = sourceTypeFor(viewingId);
     if (!type) return;
     const last = lastActivity[viewingId] || 0;
@@ -2279,6 +2285,18 @@
       const msg = (err && (err.message || err.code)) || 'Unknown error';
       monitorError.textContent = 'Cannot connect: ' + msg + '. The kiosk may be offline.';
       monitorError.classList.remove('hidden');
+    });
+
+    sig.on('sessionKicked', (data) => {
+      const pubId = data.publisherId;
+      console.log('[base] session kicked by', pubId);
+      if (pubId === viewingId) {
+        showToast('Another viewer took over this feed', 5000);
+        stopView();
+      }
+      if (gridViewingIds.has(pubId)) {
+        removeFromGrid(pubId);
+      }
     });
 
     sig.on('configResult', (data) => {
