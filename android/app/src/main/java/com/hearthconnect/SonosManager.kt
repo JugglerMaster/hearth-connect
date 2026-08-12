@@ -53,6 +53,15 @@ object SonosManager {
     private var lastIds: Set<String> = emptySet()
     private var running = false
 
+    // A speaker stays "present" for this long after its last successful SSDP
+    // response. Sonos devices occasionally miss a single 2.5s discovery window
+    // (UDP drop, slow description fetch, late response). Without this grace
+    // period a healthy speaker would flap to offline every ~30s; it only counts
+    // as gone after PRESENT_GRACE_MS of silence (~3 missed windows).
+    private const val PRESENT_GRACE_MS = 90_000L
+    private val knownSpeakers = LinkedHashMap<String, SonosSpeaker>()
+    private val lastSeenAt = HashMap<String, Long>()
+
     fun startDiscovery(intervalMs: Long = 30_000) {
         if (running) return
         running = true
@@ -115,7 +124,19 @@ object SonosManager {
         } catch (e: Exception) {
             Log.w(TAG, "SSDP send error: ${e.message}")
         }
-        speakers = found.values.toList()
+        // Merge this round's findings into the retained set. Speakers that were
+        // not rediscovered this round stay "present" until PRESENT_GRACE_MS
+        // elapses without any SSDP response, so a single missed window (UDP
+        // loss, late response) does not mark a healthy speaker offline.
+        val now = System.currentTimeMillis()
+        for ((key, sp) in found) {
+            knownSpeakers[key] = sp
+            lastSeenAt[key] = now
+        }
+        knownSpeakers.keys.removeAll { key ->
+            (now - (lastSeenAt[key] ?: 0)) > PRESENT_GRACE_MS
+        }
+        speakers = knownSpeakers.values.toList()
         if (speakers.isNotEmpty()) {
             Log.i(TAG, "discovered ${speakers.size} Sonos: ${speakers.joinToString { it.label }}")
         }
