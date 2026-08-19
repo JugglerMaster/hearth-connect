@@ -76,5 +76,5 @@ dependencies {
     // HA connection; the kiosk never talks to HA directly). OkHttp is used for
     // its straightforward custom trust-manager support (LAN-only: tolerates
     // HA's self-signed cert server-side).
-    implementation("com.squareup.okhttp3:okhttp:4.12.1")
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
 }

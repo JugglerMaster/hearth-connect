@@ -129,6 +129,12 @@ hearth-connect/
 > `server/public/`, then `adb install -r` + force-stop/restart the hub. Verify the change
 > landed by extracting the asset from the APK (`unzip -p app-debug.apk assets/public/js/<file>`),
 > NOT by grepping the dex (JS assets are not compiled into the dex).
+>
+> **Android build toolchain (already set up on this machine):**
+> - Gradle wrapper: `android/gradlew` (use this, not a system `gradle`).
+> - Android SDK: `ANDROID_HOME=/home/dadisc01/Android/Sdk` (already exported in the env).
+> - Build + install: `cd android && ./gradlew clean assembleDebug && adb install -r app/build/outputs/apk/debug/app-debug.apk`
+> - To just compile-check Kotlin (no APK): `cd android && ./gradlew compileDebugKotlin`.
 
 ## Client-Side Verification (ad-hoc)
 
@@ -167,6 +173,31 @@ Auto-SKIPS (exit 0) when GStreamer, `websockets`, or the server are missing, so
 it is CI-safe. It is a LAN/local test (STUN only, no TURN) — agent and browser
 should run on the same host or same subnet. Diagnostics (agent log tail +
 browser console) print on failure.
+
+#### Live Pi video check (no spawned agent)
+
+`tests/e2e-browser/e2e-verify-pi-video.mjs` does **not** spawn an agent. It joins
+the live room and subscribes to the **existing** Pi source (looks for a `pi-`
+publisher; `TARGET_LABEL` defaults to `Cat Room`), then asserts the browser
+receives a **video track with non-zero bytes**. This is the only automated check
+that proves the physical Pi's camera/encoder is actually publishing watchable
+WebRTC end-to-end (not just signaling). Auto-SKIPS when the server is
+unreachable or no Pi source is in the room. Run it alongside `test:pi-interop`
+via `npm run test:pi-browser`, or on its own:
+```bash
+SERVER_URL=https://<host>:8090 ROOM_ID=default TARGET_LABEL='Cat Room' \
+  npm run test:pi-live
+```
+
+#### Full Pi-agent validation
+
+1. **Pure logic** (no GStreamer): `cd linux/pi-agent && python3 -m unittest test_pi_agent.py`
+2. **Self-contained interop** (spawns a `TEST_SOURCE` agent + browser subscriber): `npm run test:pi-interop`
+3. **Live device** (subscribes to the real Pi, asserts video frames): `npm run test:pi-live`
+
+Steps 2 and 3 together are `npm run test:pi-browser`. Step 2 needs GStreamer +
+`websockets` + Chromium; step 3 needs the physical Pi online. Both auto-skip when
+their dependencies are absent.
 
 ### Pi agent (Python)
 

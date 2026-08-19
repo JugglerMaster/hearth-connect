@@ -568,7 +568,11 @@ def monitor_pipeline_str(has_video, has_audio, width, height, framerate,
         # The queue is bounded + leaky=downstream so transient Pi CPU/network
         # pressure drops a frame (brief stutter) instead of silently accumulating
         # delay.
-        _audio_src = '{src} {dev} provide-clock=false'.format(src=src, dev=dev)
+        # provide-clock is a GstAudioSrc property (present on alsasrc) but NOT
+        # on audiotestsrc (a plain GstBaseSrc) — only append it for real sources.
+        _audio_src = ('{src} {dev} provide-clock=false'.format(src=src, dev=dev)
+                      if src == 'alsasrc'
+                      else '{src} {dev}'.format(src=src, dev=dev).strip())
         if audio_channels > 0:
             parts.append(
                 '{src} ! capsfilter caps=audio/x-raw,channels={ch} '
@@ -699,6 +703,12 @@ class MonitorSession:
         self._making_offer = False
         self._answering = False  # True while we are answering a renegotiation OFFER
         self._last_offer_ts = 0.0
+        # DTLS role established during the ORIGINAL negotiation. GStreamer's
+        # create-answer always emits a=setup:active, but renegotiation (no ICE
+        # restart) MUST preserve the role from the original handshake or the
+        # browser throws "Failed to set SSL role for the transport". Track the
+        # peer's role from the original answer so renegotiation answers echo it.
+        self._dtls_role = 'passive'
         self._pipeline_gen = 0  # bumped by build(); stale offers from old gens are discarded
         self._mid_map = {}
         self._offer_timeout = None  # TimerHandle: clears _making_offer if no ANSWER arrives
@@ -1070,10 +1080,22 @@ class MonitorSession:
     def set_remote_answer(self, sdp_text):
         # GStreamer >= 1.20 returns (SDPResult, message) from SDPMessage.new().
         log.info('RX ANSWER audio-dir: %s', _sdp_audio_dirs(sdp_text))
+        # The peer's original answer fixes our DTLS role: if it took 'active'
+        # we are the passive DTLS side, and vice-versa. Renegotiation answers
+        # must keep this role (see on_answer_created).
+        setups = [l.split(':', 1)[1] for l in sdp_text.splitlines() if l.startswith('a=setup:')]
+        if setups:
+            peer = setups[0]
+            self._dtls_role = 'active' if peer == 'passive' else 'passive'
+            log.info('monitor session %s DTLS role from original answer: %s (peer %s)',
+                     self.subscriber_id, self._dtls_role, peer)
         _ret, sdp = GstSdp.SDPMessage.new()
         GstSdp.sdp_message_parse_buffer(sdp_text.encode(), sdp)
         answer = GstWebRTC.WebRTCSessionDescription.new(GstWebRTC.WebRTCSDPType.ANSWER, sdp)
-        promise = Gst.Promise.new_with_change_func(self.on_remote_set)
+        # We are the offerer: once the remote ANSWER is applied there is nothing
+        # left to do (ICE proceeds automatically). Using on_remote_set here would
+        # wrongly call create-answer on an offerer and log "answer is None".
+        promise = Gst.Promise.new_with_change_func(self.on_local_description_set)
         self.webrtc.emit('set-remote-description', answer, promise)
         self._making_offer = False
         if self._offer_timeout:
@@ -1108,6 +1130,10 @@ class MonitorSession:
                         getattr(state, 'value_nick', state), self.subscriber_id)
             return
         log.info('RX RENEG-OFFER audio-dir: %s', _sdp_audio_dirs(sdp_text))
+        _mlines = [l for l in sdp_text.splitlines() if l.startswith('m=')]
+        log.info('RX RENEG-OFFER m-lines: %d (%s)',
+                 len(_mlines),
+                 ', '.join(l.split()[0].split('=', 1)[1] for l in _mlines))
         _ret, sdp = GstSdp.SDPMessage.new()
         GstSdp.sdp_message_parse_buffer(sdp_text.encode(), sdp)
         offer = GstWebRTC.WebRTCSessionDescription.new(GstWebRTC.WebRTCSDPType.OFFER, sdp)
@@ -1139,6 +1165,27 @@ class MonitorSession:
             promise2 = Gst.Promise.new_with_change_func(self.on_local_description_set)
             self.webrtc.emit('set-local-description', answer, promise2)
             text = answer.sdp.as_text()
+            # GStreamer emits a=setup:active in every answer, but without an ICE
+            # restart renegotiation must preserve the DTLS role fixed by the
+            # original answer (RFC 8829 §5.8.2). Emit the tracked role so the
+            # browser accepts the renegotiation answer instead of throwing
+            # "Failed to set SSL role for the transport".
+            patched = '\n'.join(
+                'a=setup:%s' % self._dtls_role if l.startswith('a=setup:') else l
+                for l in text.splitlines())
+            if patched != text:
+                log.info('monitor session %s patched renegotiation answer DTLS role -> %s',
+                         self.subscriber_id, self._dtls_role)
+            text = patched
+            log.info('monitor session %s reneg-answer audio-dir: %s',
+                     self.subscriber_id, _sdp_audio_dirs(text))
+            _amlines = [l for l in text.splitlines() if l.startswith('m=')]
+            log.info('monitor session %s reneg-answer m-lines: %d (%s)',
+                     self.subscriber_id, len(_amlines),
+                     ' | '.join(l.split()[1] + '/' + l.split()[0].split('=', 1)[1] for l in _amlines))
+            _setup = [l for l in text.splitlines() if l.startswith('a=setup')]
+            log.info('monitor session %s reneg-answer setup: %s',
+                     self.subscriber_id, _setup)
             self.agent.enqueue_ws({'type': 'ANSWER', 'payload': {
                 'to': self.subscriber_id, 'sdp': {'type': 'answer', 'sdp': text}}})
             log.info('monitor session %s ANSWER sent for renegotiation', self.subscriber_id)
@@ -1830,6 +1877,13 @@ class Agent:
             self.video_devices = parse_v4l2_devices(out.stdout)
         except Exception as e:
             log.warning('v4l2-ctl failed: %s', e)
+        # TEST_SOURCE mode: synthesize a video device when none is detected so
+        # has_video is True and the monitor pipeline carries video+audio (2
+        # m-lines) — otherwise the e2e glare repro collapses to audio-only and
+        # never reproduces the renegotiation counter-offer.
+        if TEST_SOURCE and not self.video_devices:
+            self.video_devices = [{'id': 'test-src', 'name': 'TEST_SOURCE',
+                                   'path': '', 'formats': []}]
         try:
             out = subprocess.run(['arecord', '-l'], capture_output=True, text=True, timeout=10)
             self.audio_devices = parse_arecord_devices(out.stdout)

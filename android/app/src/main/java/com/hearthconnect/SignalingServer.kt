@@ -30,10 +30,20 @@ import io.ktor.websocket.readText
 import kotlin.concurrent.thread
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.consumeEach
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.Response
+import okhttp3.WebSocket
+import okhttp3.WebSocketListener
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.security.SecureRandom
+import javax.net.ssl.SSLContext
+import javax.net.ssl.TrustManager
+import javax.net.ssl.X509TrustManager
 import java.net.NetworkInterface
 import java.math.BigInteger
 import java.security.KeyPairGenerator
@@ -259,6 +269,10 @@ class SignalingServer(private val context: Context, private val listener: Server
     // ─── Disconnect handling ─────────────────────────────────
 
     private fun handleDisconnect(connId: String) {
+        // Tear down any HA relay for this connection so the server-side HA
+        // socket is never leaked when a base station drops.
+        handleHaClose(connId)
+
         val deviceId = connToDevice[connId] ?: run {
             connToDevice.remove(connId)
             return
@@ -842,6 +856,28 @@ class SignalingServer(private val context: Context, private val listener: Server
     private val serverSettingsFile by lazy { File(context.filesDir, "server_settings.json") }
     private var serverSettings = JSONObject()
 
+    // Active Home Assistant relays, keyed by the kiosk's signaling connId. The
+    // server owns the single outbound WS to HA and relays raw frames both ways
+    // so the kiosk never holds the long-lived token or talks to HA directly.
+    private val haRelays = ConcurrentHashMap<String, WebSocket>()
+
+    // LAN-only: tolerate HA's self-signed cert server-side (the token + cert
+    // never leave the hub). Build a trust-all SSLContext for the HA connection.
+    private val haOkHttpClient by lazy {
+        val trustAll = arrayOf<TrustManager>(object : X509TrustManager {
+            override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) {}
+            override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) {}
+            override fun getAcceptedIssuers(): Array<X509Certificate> = arrayOf()
+        })
+        val ssl = SSLContext.getInstance("SSL").apply {
+            init(null, trustAll, SecureRandom())
+        }
+        OkHttpClient.Builder()
+            .sslSocketFactory(ssl.socketFactory, trustAll[0] as X509TrustManager)
+            .hostnameVerifier { _, _ -> true }
+            .build()
+    }
+
     @Synchronized
     private fun loadDeviceConfigs() {
         try {
@@ -904,6 +940,169 @@ class SignalingServer(private val context: Context, private val listener: Server
         ha.remove("token")
         ha.put("hasToken", hasToken)
         return masked
+    }
+
+    // ─── Server settings (HA integration) ───────────────────
+
+    private suspend fun handleGetSettings(connId: String) {
+        val client = getClient(connId) ?: return
+        if (client.deviceType != "base") {
+            return sendError(connId, "NOT_ALLOWED", "Only base stations can read server settings")
+        }
+        sendToConn(connId, JSONObject().apply {
+            put("type", "SETTINGS_RESULT")
+            put("payload", JSONObject().apply { put("settings", serverSettingsMasked()) })
+        })
+    }
+
+    private suspend fun handleSetSettings(connId: String, payload: JSONObject) {
+        val client = getClient(connId) ?: return
+        if (client.deviceType != "base") {
+            return sendError(connId, "NOT_ALLOWED", "Only base stations can write server settings")
+        }
+        val section = payload.optString("section", "")
+        val value = payload.optJSONObject("value") ?: JSONObject()
+        if (section.isEmpty()) {
+            return sendError(connId, "INVALID_PARAMS", "SETTINGS requires a section")
+        }
+        // Shallow-merge so a partial update (e.g. only `pages`) keeps other
+        // fields. A present, non-empty token replaces; an empty/absent token
+        // keeps the existing one.
+        val current = serverSettings.optJSONObject(section) ?: JSONObject()
+        val merged = JSONObject(current.toString())
+        val keys = value.keys()
+        while (keys.hasNext()) {
+            val k = keys.next()
+            val v = value.get(k)
+            if (k == "token" && (v == JSONObject.NULL || (v is String && v.isEmpty()))) {
+                merged.remove("token")
+            } else {
+                merged.put(k, v)
+            }
+        }
+        serverSettings.put(section, merged)
+        saveServerSettings()
+        val masked = serverSettingsMasked()
+        sendToConn(connId, JSONObject().apply {
+            put("type", "SETTINGS_RESULT")
+            put("payload", JSONObject().apply {
+                put("ok", true)
+                put("settings", masked)
+            })
+        })
+        // Notify all base stations so their dashboards refresh live.
+        val update = JSONObject().apply {
+            put("type", "SETTINGS_UPDATED")
+            put("payload", JSONObject().apply { put("settings", masked) })
+        }
+        for ((id, c) in clients) {
+            if (c.deviceType == "base") sendToDevice(id, update)
+        }
+    }
+
+    // ─── Home Assistant relay (server owns the HA connection) ──
+
+    private suspend fun handleHaConnect(connId: String) {
+        val client = getClient(connId) ?: return
+        if (client.deviceType != "base") {
+            return sendError(connId, "NOT_ALLOWED", "Only base stations can connect to Home Assistant")
+        }
+        val ha = serverSettings.optJSONObject("homeAssistant")
+        if (ha == null || ha.optString("url", "").isBlank() || ha.optString("token", "").isBlank()) {
+            sendToConn(connId, JSONObject().apply {
+                put("type", "HA_ERROR")
+                put("payload", JSONObject().apply { put("message", "Home Assistant URL or token not configured") })
+            })
+            return
+        }
+        // Close any existing relay for this connection first.
+        handleHaClose(connId)
+
+        val raw = ha.optString("url").replace(Regex("/+\$"), "")
+        val wsUrl = when {
+            raw.startsWith("https://", ignoreCase = true) -> "wss://" + raw.substring(8) + "/api/websocket"
+            raw.startsWith("http://", ignoreCase = true) -> "ws://" + raw.substring(7) + "/api/websocket"
+            else -> raw + "/api/websocket"
+        }
+        val token = ha.optString("token")
+
+        val request = Request.Builder().url(wsUrl).build()
+        val ws = haOkHttpClient.newWebSocket(request, object : WebSocketListener() {
+            override fun onOpen(webSocket: WebSocket, response: Response) {
+                // Wait for auth_required from HA before injecting the token.
+            }
+
+            override fun onMessage(webSocket: WebSocket, text: String) {
+                try {
+                    val msg = JSONObject(text)
+                    val type = msg.optString("type", "")
+                    // Intercept the auth handshake: the server injects the token
+                    // so the kiosk never sees it. HA sends `auth_required` first.
+                    if (type == "auth_required") {
+                        webSocket.send(JSONObject().apply {
+                            put("type", "auth")
+                            put("access_token", token)
+                        }.toString())
+                        return
+                    }
+                    // Forward everything else (auth_ok, results, events).
+                    if (type == "auth_ok") {
+                        runBlocking {
+                            sendToConn(connId, JSONObject().apply {
+                                put("type", "HA_CONNECTED")
+                                put("payload", JSONObject().apply { put("state", "connected") })
+                            })
+                        }
+                    }
+                    runBlocking {
+                        sendToConn(connId, JSONObject().apply {
+                            put("type", "HA_FRAME")
+                            put("payload", msg)
+                        })
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "HA relay frame parse error: ${e.message}")
+                }
+            }
+
+            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                haRelays.remove(connId, webSocket)
+                runBlocking {
+                    sendToConn(connId, JSONObject().apply {
+                        put("type", "HA_ERROR")
+                        put("payload", JSONObject().apply { put("message", t.message ?: "HA connection failed") })
+                    })
+                }
+            }
+
+            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                haRelays.remove(connId, webSocket)
+                runBlocking {
+                    sendToConn(connId, JSONObject().apply {
+                        put("type", "HA_DISCONNECTED")
+                        put("payload", JSONObject())
+                    })
+                }
+            }
+        })
+        haRelays[connId] = ws
+    }
+
+    private fun handleHaFrame(connId: String, payload: JSONObject) {
+        val ws = haRelays[connId] ?: return
+        try {
+            ws.send(payload.toString())
+        } catch (e: Exception) {
+            Log.w(TAG, "HA relay send failed: ${e.message}")
+        }
+    }
+
+    private fun handleHaClose(connId: String) {
+        val ws = haRelays.remove(connId) ?: return
+        try {
+            ws.close(1000, "client closed")
+        } catch (_: Exception) {
+        }
     }
 
     private fun syncSonosDevices(speakers: List<SonosManager.SonosSpeaker>) {

@@ -5,7 +5,9 @@
   "type": "module",
   "scripts": {
     "test": "node e2e-base-station.mjs",
-    "test:pi-interop": "node e2e-pi-agent-interop.mjs"
+    "test:pi-interop": "node e2e-pi-agent-interop.mjs",
+    "test:pi-live": "node e2e-verify-pi-video.mjs",
+    "test:pi-browser": "node e2e-pi-agent-interop.mjs && node e2e-verify-pi-video.mjs"
   },
   "devDependencies": {
     "playwright": "^1.45.0"

@@ -1961,6 +1961,16 @@
       rxDbgState.tracks = (v || a) ? (v + 'v ' + a + 'a') : '--';
       renderRxDebug();
       attachMonitorStream();
+      // The monitor PC was just (re)built. If talkback was active on this peer,
+      // re-attach the mic to the freshly pre-negotiated talkback transceiver.
+      // Without this the rebuilt stream has no talkback and the Talk button is
+      // stuck "on" (startTalk early-returns on talkingTo === peerId), so the
+      // channel "never rebuilds" after a disconnect.
+      if (talkingTo === peerId) {
+        rtc.enableTalkback(peerId)
+          .then(() => sig.requestTalk(peerId))
+          .catch((err) => console.error('[base] re-enable talkback after rebuild failed', err));
+      }
     }
   };
 

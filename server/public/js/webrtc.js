@@ -218,6 +218,7 @@ class WebRTCManager {
     this.remoteStreams.delete(peerId);
     this.pendingCandidates.delete(peerId);
     this.pcMeta.delete(peerId);
+    this.talkbackSenders.delete(peerId);
   }
 
   closeAll() {
@@ -346,6 +347,24 @@ class WebRTCManager {
     }
   }
 
+  // Perfect negotiation (RFC 8623): when the polite peer has a local offer in
+  // flight (e.g. talkback addTrack raced the peer's own renegotiation) and a
+  // colliding offer arrives, it must roll back its local offer before accepting
+  // the remote one. Without this, setRemoteDescription throws InvalidStateError
+  // and the answer is never sent — the peer's offer times out and the stream
+  // watchdog tears the view down and re-subscribes in a loop.
+  async rollbackLocalOffer(pc, meta, who) {
+    if (pc.signalingState === 'have-local-offer' || pc.signalingState === 'have-local-pranswer') {
+      try {
+        await pc.setLocalDescription({ type: 'rollback' });
+        meta.makingOffer = false;
+        console.log('[webrtc] rolled back local offer to accept', who);
+      } catch (err) {
+        console.error('[webrtc] rollback failed for', who, err);
+      }
+    }
+  }
+
   async handleOffer(data) {
     const { from, sdp, isBroadcast } = data;
     console.log('[webrtc] handleOffer from', from, 'isBroadcast:', isBroadcast, 'sdp length:', sdp && sdp.sdp ? sdp.sdp.length : 0);
@@ -368,6 +387,7 @@ class WebRTCManager {
           console.warn('[webrtc] ignoring colliding broadcast offer from', from);
           return;
         }
+        await this.rollbackLocalOffer(pc, meta, `broadcast-${peerId}`);
         await pc.setRemoteDescription(new RTCSessionDescription(sdp));
         await this.flushCandidates(`broadcast-${peerId}`);
         const answer = await pc.createAnswer();
@@ -398,8 +418,13 @@ class WebRTCManager {
         console.warn('[webrtc] ignoring colliding offer from', from);
         return;
       }
+      await this.rollbackLocalOffer(pc, meta, from);
       await pc.setRemoteDescription(new RTCSessionDescription(sdp));
       await this.flushCandidates(from);
+      // Pre-negotiate a bidirectional audio transceiver (if the publisher offered
+      // audio) so talkback can later replaceTrack() without renegotiating the
+      // live PC. Must run before createAnswer so the answer reflects sendrecv.
+      this._ensureTalkbackTransceiver(pc, from, sdp);
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
       this.sig.sendAnswer(from, answer);
@@ -431,6 +456,56 @@ class WebRTCManager {
     } catch (err) {
       console.error('handleAnswer failed:', err);
     }
+  }
+
+  // ─── Talkback transceiver (pre-negotiated, no renegotiation) ─────────────
+  // At subscribe time, find the publisher's audio transceiver on the monitor PC
+  // and make it bidirectional (sendrecv). The publisher (Pi/kiosk) always offers
+  // audio as sendrecv, so flipping the base's side to sendrecv keeps the m-line
+  // count identical (no new m-line) and just marks the base as a sender on the
+  // already-present audio channel. We then stash the sender in talkbackSenders so
+  // enableTalkback() can replaceTrack() it live, with zero SDP churn.
+  _ensureTalkbackTransceiver(pc, peerId, sdp) {
+    const trans = this._findAudioTransceiver(pc, sdp);
+    if (!trans) {
+      // Publisher offered no audio (video-only source) — no talkback channel.
+      this.talkbackSenders.delete(peerId);
+      return;
+    }
+    try {
+      if (trans.direction !== 'sendrecv') trans.direction = 'sendrecv';
+    } catch (e) {
+      console.warn('[webrtc] could not set talkback transceiver sendrecv for', peerId, e);
+    }
+    this.talkbackSenders.set(peerId, trans.sender);
+    console.log('[webrtc] talkback transceiver pre-negotiated (sendrecv) for', peerId);
+  }
+
+  // Locate the audio transceiver created for the publisher's audio m-line.
+  _findAudioTransceiver(pc, sdp) {
+    // Fast path: a receiver already carries an audio track (it exists once the
+    // offer is applied, even before media flows).
+    let t = pc.getTransceivers().find(x => x.receiver && x.receiver.track && x.receiver.track.kind === 'audio');
+    if (t) return t;
+    // Fallback: match the audio m-line's mid from the offer SDP to its transceiver.
+    if (sdp && sdp.sdp) {
+      const lines = sdp.sdp.split(/\r?\n/);
+      let audioMid = null;
+      for (let i = 0; i < lines.length; i++) {
+        if (lines[i].startsWith('m=audio')) {
+          for (let j = i; j < lines.length; j++) {
+            if (lines[j].startsWith('a=mid:')) { audioMid = lines[j].slice(6).trim(); break; }
+            if (lines[j].startsWith('m=')) break;
+          }
+          break;
+        }
+      }
+      if (audioMid) {
+        t = pc.getTransceivers().find(x => x.mid === audioMid);
+        if (t) return t;
+      }
+    }
+    return null;
   }
 
   // The Pi agent emits ICE candidates as a raw SDP candidate string
@@ -601,29 +676,59 @@ class WebRTCManager {
     // Override in page-specific logic
   }
 
-  // ─── Talkback (full-duplex reverse audio) ─────────────
-  // enableTalkback() acquires the mic and adds it as a track. onnegotiationneeded
-  // then fires and renegotiates the existing PC so the audio actually flows.
-  // This fixes the previous bug where addTrack() was called with no negotiation
-  // handler, so the track was never offered.
+// ─── Talkback (full-duplex reverse audio) ─────────────
+// At subscribe time we pre-negotiate a bidirectional (sendrecv) audio
+// transceiver on the monitor PC (see _ensureTalkbackTransceiver). Enabling
+// talkback then just replaceTrack()s that sender's track — NO renegotiation, so
+// the live monitor (video/audio) connection is never touched and its ICE never
+// drops. This is what keeps talkback from destabilizing the stream the way the
+// old addTrack() path did (addTrack created a *new* m-line and fired
+// onnegotiationneeded, re-offering the whole PC and tripping the watchdog).
 
   async enableTalkback(targetPeerId, audioStream) {
     try {
-      const stream = audioStream || await this.startMic();
-      this.additionalAudioStream = stream;
+      // Reuse the already-acquired mic if it's still live (e.g. after a PC
+      // rebuild during recovery) so we don't open a second mic context. Serialize
+      // acquisition so a user-press and a recovery re-enable landing together
+      // don't each open a mic.
+      if (!audioStream) {
+        if (this.additionalAudioStream && this.additionalAudioStream.getAudioTracks().some(t => t.readyState === 'live')) {
+          audioStream = this.additionalAudioStream;
+        } else {
+          if (!this._talkbackMicPromise) {
+            this._talkbackMicPromise = this.startMic().finally(() => { this._talkbackMicPromise = null; });
+          }
+          audioStream = await this._talkbackMicPromise;
+        }
+      }
+      this.additionalAudioStream = audioStream;
 
+      const track = audioStream.getAudioTracks()[0];
+      if (!track) throw new Error('no audio track from mic');
+
+      const sender = this.talkbackSenders.get(targetPeerId);
+      if (sender) {
+        // Pre-negotiated sendrecv transceiver: swap the mic in with NO
+        // renegotiation, so the live monitor (video/audio) stream is untouched.
+        track.enabled = true;
+        await sender.replaceTrack(track);
+        console.log('[webrtc] talkback enabled via replaceTrack (no renegotiation) for', targetPeerId);
+        return audioStream;
+      }
+
+      // Fallback: publisher offered no audio (video-only) so there is no
+      // pre-negotiated transceiver. Use the legacy addTrack path, which DOES
+      // renegotiate and can disrupt the stream — only used in that rare case.
+      console.warn('[webrtc] no talkback transceiver for', targetPeerId, '— falling back to addTrack (renegotiation)');
       let pc = this.peerConnections.get(targetPeerId);
       if (!pc) {
         pc = this.createPeerConnection(targetPeerId, 'recv', false);
       }
-
       pc._suppressNegotiation = false;
-      const track = stream.getAudioTracks()[0];
-      track.enabled = true;
       let added = false;
-      for (const t of stream.getAudioTracks()) {
+      for (const t of audioStream.getAudioTracks()) {
         if (!pc.getSenders().some(s => s.track === t)) {
-          pc.addTrack(t, stream);
+          pc.addTrack(t, audioStream);
           added = true;
         }
       }
@@ -632,7 +737,7 @@ class WebRTCManager {
       } else {
         console.log('[webrtc] talkback enabled via addTrack (renegotiation) for', targetPeerId);
       }
-      return stream;
+      return audioStream;
     } catch (err) {
       console.error('enableTalkback failed:', err);
       throw err;
@@ -640,15 +745,22 @@ class WebRTCManager {
   }
 
   disableTalkback(targetPeerId) {
-    const pc = this.peerConnections.get(targetPeerId);
-    if (pc && this.additionalAudioStream) {
-      for (const track of this.additionalAudioStream.getAudioTracks()) {
-        const s = pc.getSenders().find(x => x.track === track);
-        if (s) {
-          try { pc.removeTrack(s); } catch (e) { console.error('removeTalkback failed', e); }
+    const sender = this.talkbackSenders.get(targetPeerId);
+    if (sender) {
+      // Drop the mic from the pre-negotiated transceiver without renegotiating.
+      try { sender.replaceTrack(null); } catch (e) { console.error('replaceTrack(null) failed', e); }
+      console.log('[webrtc] talkback disabled via replaceTrack for', targetPeerId);
+    } else {
+      const pc = this.peerConnections.get(targetPeerId);
+      if (pc && this.additionalAudioStream) {
+        for (const track of this.additionalAudioStream.getAudioTracks()) {
+          const s = pc.getSenders().find(x => x.track === track);
+          if (s) {
+            try { pc.removeTrack(s); } catch (e) { console.error('removeTalkback failed', e); }
+          }
         }
+        console.log('[webrtc] talkback disabled via removeTrack for', targetPeerId);
       }
-      console.log('[webrtc] talkback disabled via removeTrack for', targetPeerId);
     }
     if (this.additionalAudioStream) {
       this.additionalAudioStream.getTracks().forEach(t => t.stop());
