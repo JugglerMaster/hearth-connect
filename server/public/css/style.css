@@ -1487,8 +1487,8 @@ input[type="text"]:focus {
 
 /* ─── Home Assistant dashboard ───────────────────────────── */
 .home-assistant-page { background: #0e0f13; color: #e8e8e8; }
-.ha-header { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; }
-.ha-status { font-size: 12px; padding: 4px 8px; border-radius: 6px; align-self: flex-start; }
+.ha-header { display: flex; flex-direction: column; gap: 8px; padding: 56px 12px 10px; }
+.ha-status { position: fixed; top: 8px; left: 50%; transform: translateX(-50%); z-index: 150; font-size: 12px; padding: 4px 10px; border-radius: 6px; }
 .ha-status-info { background: #1c2330; color: #9bb; }
 .ha-status-ok { background: #16331c; color: #8fdc9a; }
 .ha-status-connecting { background: #2a2410; color: #e8d28a; }
@@ -1514,6 +1514,7 @@ input[type="text"]:focus {
 .ha-bright { display: flex; align-items: center; gap: 8px; font-size: 12px; }
 .ha-bright input[type=range] { flex: 1; }
 .ha-tile-remove { position: absolute; top: 6px; right: 6px; background: #331; color: #f55; border: none; border-radius: 50%; width: 22px; height: 22px; cursor: pointer; }
+.ha-tile-rename-btn { position: absolute; top: 6px; right: 32px; background: #223; color: #9cf; border: none; border-radius: 50%; width: 22px; height: 22px; cursor: pointer; font-size: 12px; }
 .ha-picker-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; z-index: 500; }
 .ha-picker { background: #14171e; border: 1px solid #2a2f3a; border-radius: 12px; width: min(480px, 92vw); max-height: 86vh; display: flex; flex-direction: column; padding: 14px; gap: 10px; }
 .ha-picker-head { display: flex; justify-content: space-between; align-items: center; }
