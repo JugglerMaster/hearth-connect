@@ -60,6 +60,13 @@
   // can all play, and small enough that a 5s clip is ~160KB.
   const CLIP_SAMPLE_RATE = 16000;
   const CLIP_MAX_SECONDS = 60;
+  // Keep the capture context alive this long after release so the tail of
+  // speech still buffered in the mic/ScriptProcessor pipeline (Android can
+  // hold ~500 ms) flushes out instead of being cut off. Trailing silence added
+  // by the grace window is trimmed in buildClipBlob so the clip isn't padded.
+  const TAIL_GRACE_MS = 800;
+  // Float amplitude below which a sample counts as silence, for clip trimming.
+  const CLIP_SILENCE_THRESHOLD = 0.01;
 
   // Grid view state
   let gridMode = false; // false = single view, true = 2x2 grid
@@ -968,10 +975,42 @@
   async function ensureAnnounceStream() {
     if (announceStream) return announceStream;
     try {
-      announceStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
-      console.log('[base] Announce mic acquired');
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      if (!Ctx) return null;
+      // Create the capture AudioContext FIRST so we know the sample rate
+      // Android will actually run it at (it clamps to the device's supported
+      // rate, normally 48000 — you cannot force it to 16000). We then ask the
+      // mic to capture at that SAME rate and DISABLE the echo/NS/AGC processing
+      // chain. On Android that chain forces the 16 kHz VOICE_COMMUNICATION
+      // source, whose rate never matches the context and whose resample is what
+      // made announcements play back slow/"underwater". Capturing the raw mic
+      // at the context rate means the MediaStreamSource → ScriptProcessor graph
+      // performs NO rate conversion — that is the actual fix.
+      announceCtx = new Ctx();
+      if (announceCtx.state === 'suspended') announceCtx.resume().catch(() => {});
+      const ctxRate = announceCtx.sampleRate || 48000;
+      announceStream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: false,
+          sampleRate: { ideal: ctxRate },
+        },
+      });
+      // Align the context to the mic's ACTUAL rate in case the `ideal` hint
+      // wasn't honored. This guarantees the MediaStreamSource performs no
+      // rate conversion regardless of what the device delivers.
+      const at = announceStream.getAudioTracks()[0];
+      const actual = at && at.getSettings ? at.getSettings().sampleRate : 0;
+      if (actual && actual >= 8000 && actual <= 96000 && actual !== ctxRate) {
+        try { announceCtx.close(); } catch (_) {}
+        announceCtx = new Ctx({ sampleRate: actual });
+        if (announceCtx.state === 'suspended') announceCtx.resume().catch(() => {});
+      }
+      console.log('[base] Announce mic acquired (ctxRate=' + (announceCtx.sampleRate) + ')');
     } catch (err) {
       console.error('[base] ensureAnnounceStream failed:', err);
+      if (announceCtx) { try { announceCtx.close(); } catch (_) {} announceCtx = null; }
       announceStream = null;
     }
     return announceStream;
@@ -1029,6 +1068,17 @@
     return new Blob([buffer], { type: 'audio/wav' });
   }
 
+  // Strip leading/trailing silence so the grace window (and any pre-roll gap
+  // before the user starts speaking) doesn't pad the clip. Internal pauses are
+  // preserved — only the run of quiet samples at each end is removed.
+  function trimSilence(samples, threshold) {
+    let start = 0;
+    while (start < samples.length && Math.abs(samples[start]) < threshold) start++;
+    let end = samples.length;
+    while (end > start && Math.abs(samples[end - 1]) < threshold) end--;
+    return samples.subarray(start, end);
+  }
+
   // Start pulling PCM off the announce stream. ScriptProcessorNode (not
   // AudioWorklet) because this app still supports iOS 12, where AudioWorklet
   // does not exist. Deprecated but universally available and fine for voice.
@@ -1037,10 +1087,17 @@
     try {
       const Ctx = window.AudioContext || window.webkitAudioContext;
       if (!Ctx) return false;
-      announceCtx = new Ctx();
-      // iOS suspends new contexts until resumed inside a user gesture; the
-      // press that got us here IS that gesture.
-      if (announceCtx.state === 'suspended') announceCtx.resume().catch(() => {});
+      // Reuse the AudioContext created in ensureAnnounceStream — its rate was
+      // chosen to match the mic capture rate (raw mic @ device-native rate,
+      // AEC/NS/AGC disabled), so the MediaStreamSource → ScriptProcessor graph
+      // performs NO rate conversion. That is what avoids the "underwater"
+      // playback. Fall back to a fresh default context only if it is missing.
+      if (!announceCtx) {
+        announceCtx = new Ctx();
+        // iOS suspends new contexts until resumed inside a user gesture; the
+        // press that got us here IS that gesture.
+        if (announceCtx.state === 'suspended') announceCtx.resume().catch(() => {});
+      }
       announceSampleRate = announceCtx.sampleRate;
       announceSource = announceCtx.createMediaStreamSource(stream);
       announceProcessor = announceCtx.createScriptProcessor(4096, 1, 1);
@@ -1089,9 +1146,11 @@
     announceChunks = [];
     const resampled = resampleTo16k(merged, announceSampleRate || CLIP_SAMPLE_RATE);
     if (resampled.length === 0) return null;
+    const trimmed = trimSilence(resampled, CLIP_SILENCE_THRESHOLD);
+    if (trimmed.length === 0) return null;
     return {
-      blob: encodeWav(resampled, CLIP_SAMPLE_RATE),
-      durationMs: Math.round((resampled.length / CLIP_SAMPLE_RATE) * 1000),
+      blob: encodeWav(trimmed, CLIP_SAMPLE_RATE),
+      durationMs: Math.round((trimmed.length / CLIP_SAMPLE_RATE) * 1000),
     };
   }
 
@@ -1128,6 +1187,7 @@
         announceStream.getTracks().forEach(t => t.stop());
         announceStream = null;
       }
+      if (announceCtx) { try { announceCtx.close(); } catch (_) {} announceCtx = null; }
       return;
     }
     if (!announceStream) {
@@ -1162,8 +1222,6 @@
     currentAnnounceGen = announceGen;
     isAnnouncing = false;
 
-    stopClipCapture();
-
     const status = document.getElementById('broadcastStatus');
     const btn = document.getElementById('toggleBroadcastButton');
     const resetBtn = () => {
@@ -1175,44 +1233,57 @@
     };
 
     if (!wasRecording) {
+      stopClipCapture();
       resetBtn();
       return;
     }
 
-    const clip = buildClipBlob();
-    // The mic is released immediately — unlike the live path there is no
-    // handshake still in flight that needs it kept open.
-    if (announceStream) {
-      announceStream.getTracks().forEach(t => t.stop());
-      announceStream = null;
-    }
+    // Keep the capture context alive for a short grace period so the last chunk
+    // of speech — still buffered in the mic/ScriptProcessor pipeline (Android's
+    // audio path can hold ~500 ms) — flushes into announceChunks instead of
+    // being cut off. The trailing silence is trimmed in buildClipBlob.
+    if (status) { status.textContent = 'Finalizing…'; status.classList.remove('hidden'); }
 
-    if (!clip || clip.durationMs < 250) {
-      resetBtn();
-      if (status) status.classList.add('hidden');
-      showToast('Too short — hold and speak');
-      return;
-    }
+    // Snapshot the generation so a fresh press during the grace window cancels
+    // this finalize (a new press bumps announceGen via startHold).
+    const finalizeGen = announceGen;
+    setTimeout(() => {
+      if (finalizeGen !== announceGen) return; // superseded by a new press
+      stopClipCapture();
+      const clip = buildClipBlob();
+      // The mic is released now that capture has flushed.
+      if (announceStream) {
+        announceStream.getTracks().forEach(t => t.stop());
+        announceStream = null;
+      }
 
-    if (status) { status.textContent = 'Sending…'; status.classList.remove('hidden'); }
-    if (btn) btn.textContent = '⏳ Sending…';
-
-    // Capture the target at release time: the panel can re-render (and reset
-    // the dropdown) between upload and fan-out.
-    const target = broadcastTarget;
-    uploadAndBroadcastClip(clip, target)
-      .then((count) => {
+      if (!clip || clip.durationMs < 250) {
         resetBtn();
         if (status) status.classList.add('hidden');
-        showToast('Announcement sent' + (target !== 'all' ? '' : ' to all devices'));
-        console.log('[base] Announce clip sent', count);
-      })
-      .catch((err) => {
-        resetBtn();
-        if (status) status.classList.add('hidden');
-        console.error('[base] Announce clip failed:', err);
-        showToast('Broadcast failed — try again');
-      });
+        showToast('Too short — hold and speak');
+        return;
+      }
+
+      if (status) { status.textContent = 'Sending…'; status.classList.remove('hidden'); }
+      if (btn) btn.textContent = '⏳ Sending…';
+
+      // Capture the target at release time: the panel can re-render (and reset
+      // the dropdown) between upload and fan-out.
+      const target = broadcastTarget;
+      uploadAndBroadcastClip(clip, target)
+        .then((count) => {
+          resetBtn();
+          if (status) status.classList.add('hidden');
+          showToast('Announcement sent' + (target !== 'all' ? '' : ' to all devices'));
+          console.log('[base] Announce clip sent', count);
+        })
+        .catch((err) => {
+          resetBtn();
+          if (status) status.classList.add('hidden');
+          console.error('[base] Announce clip failed:', err);
+          showToast('Broadcast failed — try again');
+        });
+    }, TAIL_GRACE_MS);
   }
 
   // Upload the recorded WAV, then tell the server which endpoints play it.

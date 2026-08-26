@@ -1138,7 +1138,14 @@ class SignalingServer(private val context: Context, private val listener: Server
             }
             for (id in knownIds) {
                 if (id !in discoveredIds) {
-                    val lbl = deviceConfigs[id]?.optString("label", id) ?: id
+                    // Prefer the last-known friendly name we published while the
+                // speaker was online (recentlySeen holds it), then any persisted
+                // config label. Only fall back to the raw deviceId as a last
+                // resort — otherwise a transient offline blink paints the UI with
+                // "sonos://ip:1400" until the next refresh/reconnect.
+                val lbl = recentlySeen[id]?.label
+                    ?: deviceConfigs[id]?.optString("label")?.takeIf { it.isNotEmpty() }
+                    ?: id
                     broadcastDeviceStatus(id, "offline", "sonos", lbl, null)
                 }
             }
