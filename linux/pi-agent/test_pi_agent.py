@@ -1404,5 +1404,42 @@ class TestConfigLabelPersistence(unittest.TestCase):
         self.assertEqual(agent.device_label, 'CachedName')
 
 
+class TestGstClipArgv(unittest.TestCase):
+    """gst-launch-1.0 argv construction for _play_clip.
+
+    Regression for the 'pivideo1 doesn't get broadcasts' bug: gst-launch does
+    NOT shell-split its argv, so a sink like 'alsasink device=hw:0,0' must be
+    split into separate elements or the pipeline exits immediately with
+    'erroneous pipeline: syntax error' and the announcement is never audible.
+    """
+
+    def _assert_no_space_tokens(self, argv):
+        for tok in argv[1:]:
+            self.assertNotIn(' ', tok, 'argv token must not embed a space: %r' % tok)
+
+    def test_parameterized_sink_is_split(self):
+        argv = pa.gst_clip_argv('/tmp/hearth-clip-abc.wav', 0.5, 'alsasink device=hw:0,0')
+        self._assert_no_space_tokens(argv)
+        self.assertIn('!', argv)
+        self.assertEqual(argv[-2:], ['alsasink', 'device=hw:0,0'])
+        self.assertIn('volume=0.5', argv)
+
+    def test_bare_alsasink(self):
+        argv = pa.gst_clip_argv('/tmp/x.wav', 1.0, 'alsasink')
+        self._assert_no_space_tokens(argv)
+        self.assertEqual(argv[-1], 'alsasink')
+
+    def test_none_falls_back_to_alsasink(self):
+        argv = pa.gst_clip_argv('/tmp/x.wav', 0.25, None)
+        self.assertEqual(argv[-1], 'alsasink')
+        self.assertIn('volume=0.25', argv)
+
+    def test_volume_and_paths_are_split(self):
+        argv = pa.gst_clip_argv('/tmp/hearth-clip-abc.wav', 0.5, 'alsasink device=hw:0,0')
+        self.assertEqual(argv[1], '-q')
+        self.assertIn('location=/tmp/hearth-clip-abc.wav', argv)
+        self.assertNotIn('volume=0.5!', argv)  # no token boundary loss
+
+
 if __name__ == '__main__':
     unittest.main()

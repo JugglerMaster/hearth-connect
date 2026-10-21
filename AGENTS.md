@@ -296,3 +296,27 @@ alsasrc device=hw:2,0 ! capsfilter caps=audio/x-raw,channels=4
 **Symptom**: Audio stream connected (WebRTC track present) but browser viewers
 hear silence from PS3Eye mic. Single-channel USB mics (e.g. C-Media PnP)
 were unaffected because they output 1 channel natively.
+
+### Pi announcements (PLAY_CLIP) never audible on Pies with a `speakerDevice`
+
+`gst-launch-1.0` treats each argv entry as a single pipeline token and does NOT
+shell-split embedded whitespace. `_play_clip` built the command as a Python
+list but passed the sink — e.g. `'alsasink device=hw:0,0'` — as ONE un-split
+argv entry. gst-launch then exits within ~50ms with `erroneous pipeline:
+syntax error`, and because `_play_clip` spawned with `stderr=DEVNULL` and never
+checked the exit code, it logged "playing" regardless. Every announcement sent
+to a Pi with `speakerDevice` set (any device whose sink carries properties)
+was silently dropped, while talkback — an in-process GStreamer pipeline built
+with `Gst.parse_launch`, not gst-launch argv — kept working. Pies with the
+bare default sink (`alsasink`, no properties) were unaffected.
+
+**Fix** (`pi-agent.py:gst_clip_argv`): the sink string is split on whitespace
+into separate argv elements (`'alsasink', 'device=hw:0,0'`), and `_play_clip`'s
+cleanup thread now logs `PLAY_CLIP %s playback failed (gst-launch rc=%d ...)`
+when the process exits non-zero. The malformed-token variant is asserted in
+`test_pi_agent.py:TestGstClipArgv` (every argv element must contain no space).
+
+**Symptom**: Base station records + broadcasts an announcement ("All devices"),
+Pi's journal shows `PLAY_CLIP <id> playing`, but nothing comes out of the
+speaker. Diagnose via `state` in `/proc/asound/card0/pcm0p/sub*/status` while
+the clip plays (never leaves `closed` in the broken build).
