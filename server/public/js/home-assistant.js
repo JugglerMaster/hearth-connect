@@ -675,6 +675,7 @@
       renderTabs();
       renderTiles();
     }
+    renderHaSettings();
     if (HA.editing && HA.draft && payload && payload.ok) {
       HA.editing = false;
       HA.draft = null;
@@ -684,6 +685,46 @@
       renderTiles();
     }
     ensureConnected();
+  }
+
+  // ─── HA connection settings (gear button) ──────────────
+
+  function renderHaSettings() {
+    const overlay = HA.root && HA.root.querySelector('#haSettingsOverlay');
+    if (overlay && !overlay.classList.contains('hidden')) return; // don't clobber while open
+    const ha = HA.settings.homeAssistant;
+    const urlEl = HA.root && HA.root.querySelector('#haUrl');
+    const noteEl = HA.root && HA.root.querySelector('#haConfiguredNote');
+    if (urlEl && ha && ha.url) urlEl.value = ha.url;
+    if (noteEl) {
+      const hasToken = !!(ha && ha.hasToken);
+      noteEl.textContent = hasToken ? 'Token: configured' : 'Token: not set';
+      noteEl.className = 'ha-settings-row' + (hasToken ? ' ha-ok' : '');
+    }
+  }
+
+  function openHaSettings() {
+    renderHaSettings();
+    const overlay = HA.root && HA.root.querySelector('#haSettingsOverlay');
+    if (overlay) overlay.classList.remove('hidden');
+  }
+
+  function closeHaSettings() {
+    const overlay = HA.root && HA.root.querySelector('#haSettingsOverlay');
+    if (overlay) overlay.classList.add('hidden');
+  }
+
+  function saveHaSettings() {
+    const urlEl = HA.root && HA.root.querySelector('#haUrl');
+    const tokenEl = HA.root && HA.root.querySelector('#haToken');
+    const noteEl = HA.root && HA.root.querySelector('#haConfiguredNote');
+    const url = urlEl ? urlEl.value.trim() : '';
+    const token = tokenEl ? tokenEl.value : '';
+    const value = { url };
+    if (token) value.token = token; // only send when the user entered one
+    HA.sig.setSettings('homeAssistant', value);
+    if (tokenEl) tokenEl.value = '';
+    if (noteEl) { noteEl.textContent = 'Saved.'; noteEl.className = 'ha-settings-row ha-ok'; }
   }
 
   // ─── Picker ─────────────────────────────────────────────
@@ -800,6 +841,12 @@
     if (okBtn) okBtn.addEventListener('click', applyPicker);
     const closeBtn = HA.root && HA.root.querySelector('#haPickerClose');
     if (closeBtn) closeBtn.addEventListener('click', closePicker);
+    const gearBtn = HA.root && HA.root.querySelector('#haGearBtn');
+    if (gearBtn) gearBtn.addEventListener('click', openHaSettings);
+    const setClose = HA.root && HA.root.querySelector('#haSettingsClose');
+    if (setClose) setClose.addEventListener('click', closeHaSettings);
+    const haSave = HA.root && HA.root.querySelector('#haSaveBtn');
+    if (haSave) haSave.addEventListener('click', saveHaSettings);
   }
 
   function autoInit() {

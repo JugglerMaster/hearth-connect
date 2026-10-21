@@ -15,9 +15,29 @@
       <div id="haEditBar" class="ha-editbar"></div>
     </header>
 
+    <button id="haGearBtn" class="ha-gear-btn" title="Home Assistant settings" aria-label="Home Assistant settings">⚙</button>
+
     <div id="haTabs" class="ha-tabs"></div>
 
     <div id="haTiles" class="ha-tiles"></div>
+
+    <div id="haSettingsOverlay" class="ha-picker-overlay hidden">
+      <div class="ha-picker ha-settings">
+        <div class="ha-picker-head">
+          <h3>Home Assistant</h3>
+          <button id="haSettingsClose" class="ha-btn">Close</button>
+        </div>
+        <p class="ha-settings-hint">Connects the hub to Home Assistant. The long-lived token is stored only on the hub and is never shown back.</p>
+        <label class="ha-settings-row">URL
+          <input type="text" id="haUrl" placeholder="http://homeassistant.local:8123" autocomplete="off">
+        </label>
+        <label class="ha-settings-row">Long-lived token
+          <input type="password" id="haToken" placeholder="paste token (write-only)" autocomplete="off">
+        </label>
+        <div class="ha-settings-row" id="haConfiguredNote"></div>
+        <button class="ha-btn ha-save" id="haSaveBtn">Save</button>
+      </div>
+    </div>
 
     <div id="haPickerOverlay" class="ha-picker-overlay hidden">
       <div class="ha-picker">

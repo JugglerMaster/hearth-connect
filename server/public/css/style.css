@@ -1517,6 +1517,12 @@ input[type="text"]:focus {
 .ha-tile-rename-btn { position: absolute; top: 6px; right: 32px; background: #223; color: #9cf; border: none; border-radius: 50%; width: 22px; height: 22px; cursor: pointer; font-size: 12px; }
 .ha-picker-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; z-index: 500; }
 .ha-picker { background: #14171e; border: 1px solid #2a2f3a; border-radius: 12px; width: min(480px, 92vw); max-height: 86vh; display: flex; flex-direction: column; padding: 14px; gap: 10px; }
+.ha-gear-btn { position: fixed; top: 12px; right: 12px; z-index: 200; width: 40px; height: 40px; border: none; border-radius: 8px; background: rgba(20,20,31,.7); color: var(--fg); cursor: pointer; font-size: 20px; display: flex; align-items: center; justify-content: center; backdrop-filter: blur(4px); -webkit-tap-highlight-color: transparent; }
+.ha-gear-btn:active { background: rgba(20,20,31,.95); }
+.ha-settings-hint { color: #9aa; font-size: 12px; margin: 0; }
+.ha-settings-row { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+.ha-settings-row input { background: #0e1117; color: #eee; border: 1px solid #2a2f3a; border-radius: 8px; padding: 8px; }
+.ha-settings-row.ha-ok { color: #8fdc9a; }
 .ha-picker-head { display: flex; justify-content: space-between; align-items: center; }
 .ha-picker-head h3 { margin: 0; }
 .ha-picker-search { background: #0e1117; color: #eee; border: 1px solid #2a2f3a; border-radius: 8px; padding: 8px; }
