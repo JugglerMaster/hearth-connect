@@ -148,6 +148,8 @@ try {
 
     return new Promise((resolve, reject) => {
       const t0 = Date.now();
+      const rttValues = [];
+      let audioSince = 0;
       const iv = setInterval(async () => {
         // A gated hub parks an unpaired client at AUTH_REQUIRED forever.
         // Report that as a skip (with the fix) rather than a 30s timeout.
@@ -168,6 +170,12 @@ try {
           try {
             const pc = wm.peerConnections.get(window.__subTo);
             if (pc) {
+              // G6: ICE resilience — fail if the connection ever settles to failed.
+              if (pc.connectionState === 'failed') {
+                clearInterval(iv);
+                reject(new Error('ICE connectionState reached failed during steady state'));
+                return;
+              }
               const stats = await pc.getStats();
               stats.forEach((r) => {
                 if (r.type === 'inbound-rtp') {
@@ -175,13 +183,22 @@ try {
                   if (r.kind === 'video' || (r.mediaType === 'video')) videoBytes += r.bytesReceived || 0;
                   if (r.kind === 'audio' || (r.mediaType === 'audio')) audioBytes += r.bytesReceived || 0;
                 }
+                // G3: latency — collect rtt from rtcp-received (moving avg, ms).
+                if (r.type === 'rtcp-received' && typeof r.rtt === 'number' && r.rtt > 0) {
+                  rttValues.push(r.rtt);
+                }
               });
             }
           } catch {}
           if (audioBytes > 0) {
-            clearInterval(iv);
-            resolve({ connected: true, tracks: st.tracks, bytesReceived: bytes, videoBytes, audioBytes });
-            return;
+            if (!audioSince) audioSince = Date.now();
+            // G3: sample the latency window after media is flowing.
+            if (Date.now() - audioSince > 5000) {
+              clearInterval(iv);
+              resolve({ connected: true, tracks: st.tracks, bytesReceived: bytes,
+                        videoBytes, audioBytes, rttValues });
+              return;
+            }
           }
         }
         if (Date.now() - t0 > 30000) {
@@ -190,7 +207,8 @@ try {
             reject(new Error('timed out; states=' + JSON.stringify(st.states) +
               ' subTo=' + window.__subTo + ' msgs=' + JSON.stringify(window.__msgs)));
           } else {
-            resolve({ connected: true, tracks: st.tracks, bytesReceived: bytes, videoBytes, audioBytes,
+            resolve({ connected: true, tracks: st.tracks, bytesReceived: bytes,
+                      videoBytes, audioBytes, rttValues,
                       note: 'connected+tracks but no audio bytes within 30s' });
           }
           return;
@@ -208,7 +226,18 @@ try {
     console.log('  bytesReceived:', result.bytesReceived, 'audioBytes:', result.audioBytes, 'videoBytes:', result.videoBytes);
     if (result.tracks.length === 0) { console.error('FAIL: no remote track'); exitCode = 1; }
     else if (result.audioBytes === 0) { console.error('FAIL: connected but no audio bytes (audioBytes=' + result.audioBytes + ')'); exitCode = 1; }
-    else if (result.bytesReceived === 0) { console.warn('WARN: connected but no media bytes yet'); }
+    else {
+      if (result.bytesReceived === 0) { console.warn('WARN: connected but no media bytes yet'); }
+      // G3: latency — sub-500ms is a stated goal; rtt is a moving average (ms).
+      const rtt = result.rttValues || [];
+      if (rtt.length > 0) {
+        const maxRtt = Math.max(...rtt);
+        console.log('  rtt (ms): min=' + Math.min(...rtt) + ' max=' + maxRtt + ' samples=' + rtt.length);
+        if (maxRtt > 500) { console.error('FAIL: latency regression (max rtt=' + maxRtt + 'ms > 500ms)'); exitCode = 1; }
+      } else {
+        console.warn('WARN: no rtt stats available — latency not measured this run');
+      }
+    }
   }
 } catch (err) {
   exitCode = 1;
