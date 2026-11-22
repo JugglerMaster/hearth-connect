@@ -16,7 +16,8 @@ import assert from 'assert/strict';
 import { fileURLToPath } from 'url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const src = fs.readFileSync(path.join(ROOT, 'server/public/js/signaling.js'), 'utf8');
+const signalingSrc = fs.readFileSync(path.join(ROOT, 'server/public/js/signaling.js'), 'utf8');
+const webrtcSrc = fs.readFileSync(path.join(ROOT, 'server/public/js/webrtc.js'), 'utf8');
 
 // ─── controllable timers ───────────────────────────────────
 let timers = [];
@@ -105,12 +106,69 @@ function makeStorage(initial = {}) {
 }
 
 // ─── sandbox ───────────────────────────────────────────────
+// ─── fake WebRTC (for the media-handoff section) ─────────
+const cryptoObj = { randomUUID: () => 'uuid-' + nextTimer++ };
+
+class FakeRTCPeerConnection {
+  constructor(iceServers) {
+    this.iceServers = iceServers;
+    this._connectionState = 'new';
+    this._iceConnectionState = 'new';
+    this.signalingState = 'new';
+    this.localDescription = null;
+    this.remoteDescription = null;
+    this.onicecandidate = null;
+    this.ontrack = null;
+    this.onnegotiationneeded = null;
+    this.onconnectionstatechange = null;
+    this.oniceconnectionstatechange = null;
+  }
+  set connectionState(v) {
+    this._connectionState = v;
+    if (this.onconnectionstatechange) this.onconnectionstatechange();
+  }
+  get connectionState() { return this._connectionState; }
+  set iceConnectionState(v) {
+    this._iceConnectionState = v;
+    if (this.oniceconnectionstatechange) this.oniceconnectionstatechange();
+  }
+  get iceConnectionState() { return this._iceConnectionState; }
+  getTransceivers() { return []; }
+  getSenders() { return []; }
+  addTrack() {}
+  removeTrack() {}
+  createOffer() { return Promise.resolve({ type: 'offer', sdp: 'v=0' }); }
+  createAnswer() { return Promise.resolve({ type: 'answer', sdp: 'v=0' }); }
+  setLocalDescription(d) { this.localDescription = d; return Promise.resolve(d); }
+  setRemoteDescription(d) { this.remoteDescription = d; return Promise.resolve(d); }
+  getStats() { return Promise.resolve([]); }
+  close() {}
+}
+class FakeRTCSessionDescription {
+  constructor(sdp) { this.sdp = sdp; }
+}
+class FakeRTCIceCandidate {
+  constructor(c) {
+    this.candidate = c.candidate || c;
+    this.sdpMid = c.sdpMid;
+    this.sdpMLineIndex = c.sdpMLineIndex;
+  }
+}
+class FakeMediaStream {
+  constructor() { this._tracks = []; }
+  getTracks() { return this._tracks; }
+  addTrack(t) { this._tracks.push(t); }
+}
+
 const localStorage = makeStorage();
 const sandbox = {
   WebSocket: FakeWebSocket,
   document,
-  window: {},
-  navigator: { userAgent: 'Mozilla/5.0 (X11; Linux x86_64) Chrome/120 Safari/537.36' },
+  window: { crypto: cryptoObj },
+  navigator: {
+    userAgent: 'Mozilla/5.0 (X11; Linux x86_64) Chrome/120 Safari/537.36',
+    mediaDevices: { getUserMedia: async () => new FakeMediaStream() },
+  },
   localStorage,
   location: { protocol: 'https:', host: 'hub.local:8090' },
   console: { log() {}, warn() {}, error() {} },
@@ -118,12 +176,20 @@ const sandbox = {
   clearTimeout: fakeClearTimeout,
   fetch: async () => ({}),
   JSON,
+  crypto: cryptoObj,
+  RTCPeerConnection: FakeRTCPeerConnection,
+  RTCSessionDescription: FakeRTCSessionDescription,
+  RTCIceCandidate: FakeRTCIceCandidate,
+  MediaStream: FakeMediaStream,
 };
 vm.createContext(sandbox);
-vm.runInContext(src + '\n;globalThis.__SignalingClient = SignalingClient;', sandbox);
+vm.runInContext(signalingSrc + webrtcSrc +
+  '\n;globalThis.__SignalingClient = SignalingClient; globalThis.__WebRTCManager = WebRTCManager;', sandbox);
 const SignalingClient = sandbox.__SignalingClient;
+const WebRTCManager = sandbox.__WebRTCManager;
 
 assert.ok(SignalingClient, 'SignalingClient should be defined');
+assert.ok(WebRTCManager, 'WebRTCManager should be defined');
 
 function tick() { timers = timers.filter((t) => t.ms > 4000); } // drop the 4s fallback
 
@@ -219,6 +285,71 @@ function tick() { timers = timers.filter((t) => t.ms > 4000); } // drop the 4s f
   // the 4s pre-auth fallbacks from earlier sections).
   assert.equal(timers.filter((t) => t.ms <= 1000).length, 0,
     'no auto-reconnect after an explicit denial');
+}
+
+// ─── 5. media handoff after AUTH_OK ──────────────────────
+{
+  localStorage.removeItem('hearth_authToken');
+  const sig = new SignalingClient('wss://127.0.0.1:8090');
+  sig.deviceId = 'kiosk-1';
+  sig.deviceType = 'kiosk';
+  sig.deviceLabel = 'Nursery';
+
+  const connStates = [];
+  const timeline = [];
+  const openFired = [];
+  class Sub extends WebRTCManager {
+    onConnectionStateChange(peerId, state) { connStates.push({ peerId, state }); }
+  }
+  const wm = new Sub(sig);
+
+  // Queue the room/sub frames while pending — they must flush after AUTH_OK.
+  sig.joinRoom('default', 'kiosk-1');
+  sig.subscribeSource('pi-1');
+
+  // The page creates a monitor PC in response to 'open' (post-auth).
+  sig.on('open', () => {
+    openFired.push('open');
+    timeline.push({ t: 'open' });
+    wm.createPeerConnection('pi-1', 'recv', false);
+  });
+
+  sig.connect();
+  const ws = FakeWebSocket.last;
+  // Record the order of frames sent vs 'open'.
+  const origSend = ws.send.bind(ws);
+  ws.send = (data) => {
+    timeline.push({ t: 'send', type: JSON.parse(data).type });
+    origSend(data);
+  };
+
+  ws.open();
+  ws.deliver({ type: 'AUTH_REQUIRED', payload: { pendingId: 'p1', code: '123456', expiresAt: Date.now() + 300000 } });
+  ws.deliver({ type: 'AUTH_OK', payload: { credentialId: 'cred-1', token: 'tok-abc' } });
+
+  // 5a. Full signaling connection after AUTH_OK.
+  assert.equal(sig.authed, true, 'authed after AUTH_OK');
+  assert.equal(sig.connected, true, 'socket connected after AUTH_OK');
+  assert.equal(sig.authState, 'authed', 'authState authed');
+
+  // 5b. Handoff order: every queued room/sub frame flushes BEFORE 'open'
+  //     fires, so a media consumer that acts on 'open' never sees it before
+  //     the room/sub are registered.
+  const order = timeline.map((e) => (e.t === 'send' ? e.type : e.t));
+  const openIdx = order.indexOf('open');
+  assert.ok(openIdx !== -1, "'open' fired after AUTH_OK");
+  assert.ok(order.indexOf('JOIN_ROOM') !== -1, 'JOIN_ROOM flushed after AUTH_OK');
+  assert.ok(order.indexOf('SUBSCRIBE_SOURCE') !== -1, 'SUBSCRIBE_SOURCE flushed after AUTH_OK');
+  assert.ok(order.indexOf('JOIN_ROOM') < openIdx, 'JOIN_ROOM flushed before open');
+  assert.ok(order.indexOf('SUBSCRIBE_SOURCE') < openIdx, 'SUBSCRIBE_SOURCE flushed before open');
+
+  // 5c. The media consumer reached 'connected' after the handoff.
+  const pc = wm.peerConnections.get('pi-1');
+  assert.ok(pc, 'monitor PC created in response to post-auth open');
+  pc.connectionState = 'connected';
+  assert.deepEqual(connStates, [{ peerId: 'pi-1', state: 'connected' }],
+    'media consumer reaches connected after auth handoff');
+  assert.equal(wm.pcMeta.get('pi-1').connected, true, 'pcMeta marks connected');
 }
 
 console.log('hermes-verify-auth: all checks passed');

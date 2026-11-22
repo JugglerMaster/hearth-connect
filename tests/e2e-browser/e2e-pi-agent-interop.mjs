@@ -163,21 +163,37 @@ try {
           return;
         }
         const st = window.__state;
+        let bytes = 0, videoBytes = 0, audioBytes = 0;
         if (st.connected && st.tracks.length > 0) {
-          clearInterval(iv);
-          let bytes = 0;
           try {
             const pc = wm.peerConnections.get(window.__subTo);
             if (pc) {
               const stats = await pc.getStats();
-              stats.forEach((r) => { if (r.type === 'inbound-rtp') bytes += r.bytesReceived || 0; });
+              stats.forEach((r) => {
+                if (r.type === 'inbound-rtp') {
+                  bytes += r.bytesReceived || 0;
+                  if (r.kind === 'video' || (r.mediaType === 'video')) videoBytes += r.bytesReceived || 0;
+                  if (r.kind === 'audio' || (r.mediaType === 'audio')) audioBytes += r.bytesReceived || 0;
+                }
+              });
             }
           } catch {}
-          resolve({ connected: true, tracks: st.tracks, bytesReceived: bytes });
-        } else if (Date.now() - t0 > 30000) {
+          if (audioBytes > 0) {
+            clearInterval(iv);
+            resolve({ connected: true, tracks: st.tracks, bytesReceived: bytes, videoBytes, audioBytes });
+            return;
+          }
+        }
+        if (Date.now() - t0 > 30000) {
           clearInterval(iv);
-          reject(new Error('timed out; states=' + JSON.stringify(st.states) +
-            ' subTo=' + window.__subTo + ' msgs=' + JSON.stringify(window.__msgs)));
+          if (!st.connected) {
+            reject(new Error('timed out; states=' + JSON.stringify(st.states) +
+              ' subTo=' + window.__subTo + ' msgs=' + JSON.stringify(window.__msgs)));
+          } else {
+            resolve({ connected: true, tracks: st.tracks, bytesReceived: bytes, videoBytes, audioBytes,
+                      note: 'connected+tracks but no audio bytes within 30s' });
+          }
+          return;
         }
       }, 500);
     });
@@ -189,9 +205,10 @@ try {
   } else {
     console.log('PASS: WebRTC connected to Pi agent');
     console.log('  tracks:', JSON.stringify(result.tracks));
-    console.log('  bytesReceived:', result.bytesReceived);
+    console.log('  bytesReceived:', result.bytesReceived, 'audioBytes:', result.audioBytes, 'videoBytes:', result.videoBytes);
     if (result.tracks.length === 0) { console.error('FAIL: no remote track'); exitCode = 1; }
-    if (result.bytesReceived === 0) { console.warn('WARN: connected but no media bytes yet'); }
+    else if (result.audioBytes === 0) { console.error('FAIL: connected but no audio bytes (audioBytes=' + result.audioBytes + ')'); exitCode = 1; }
+    else if (result.bytesReceived === 0) { console.warn('WARN: connected but no media bytes yet'); }
   }
 } catch (err) {
   exitCode = 1;

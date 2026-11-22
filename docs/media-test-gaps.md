@@ -13,33 +13,56 @@ media-setup messages (`JOIN_ROOM`/`SUBSCRIBE`) are now queued until `AUTH_OK`
 (`server/public/js/signaling.js:send`), then flushed — a race there yields
 "connected but no media."
 
+## Status
+
+- ✅ **G1** — implemented. Both E2E tests now split inbound-rtp bytes by
+  `kind === 'audio'` and **FAIL** when `audioBytes === 0`.
+- ✅ **G2** — implemented. `tests/hermes-verify-auth.mjs` section 5 asserts the
+  queued `JOIN_ROOM`/`SUBSCRIBE_SOURCE` flush in-order before `open` fires and
+  that a media consumer (`WebRTCManager`) reaches `connected` after the handoff.
+- ⬜ **G3** — latency (open).
+- ⬜ **G4** — audio channel count (open).
+- ⬜ **G5** — talkback audio bytes (open).
+- ⬜ **G6** — ICE resilience (open).
+
 ## Current coverage
 
 | Test | Asserts |
 |---|---|
-| `tests/e2e-browser/e2e-pi-agent-interop.mjs` | `RTCPeerConnection` → `connected`, ≥1 remote track, total `bytesReceived` (**WARN only** if 0) |
-| `tests/e2e-browser/e2e-verify-pi-video.mjs` | `connected`, ≥1 track, `videoBytes > 0` (**FAIL** if 0) |
-| `tests/e2e-browser/e2e-talkback-glare.mjs` | talkback (browser→Pi) — **verify** it asserts audio bytes, not just connection |
-| `tests/hermes-verify-auth.mjs` | client auth handshake (AUTH-first, queueing, one-time token, denied path) |
+| `tests/e2e-browser/e2e-pi-agent-interop.mjs` | `RTCPeerConnection` → `connected`, ≥1 remote track, `audioBytes > 0` (**FAIL** if 0) [G1] |
+| `tests/e2e-browser/e2e-verify-pi-video.mjs` | `connected`, ≥1 track, `videoBytes > 0` **and** `audioBytes > 0` (**FAIL** if either 0) [G1] |
+| `tests/e2e-browser/e2e-talkback-glare.mjs` | talkback (browser→Pi) — **verify** it asserts audio bytes, not just connection [G5] |
+| `tests/hermes-verify-auth.mjs` | client auth handshake (AUTH-first, queueing, one-time token, denied path) + **auth→media handoff: flush-in-order-before-open, media reaches connected** [G2] |
 | `tests/node-verify-auth-settings.mjs` | Node reference-server auth kill-switch loopback gate (18/18) |
 
 ## Gaps
 
-### G1 (P0) — No test fails if audio is dead
-- **Evidence:** `e2e-verify-pi-video.mjs` asserts `videoBytes > 0` only.
-  `e2e-pi-agent-interop.mjs` asserts total `bytesReceived` and only WARNs
-  (exit 0) when it's 0. Neither separates audio from video.
-- **Fix:** In both tests, split inbound-rtp bytes by `kind === 'audio'` and
-  **FAIL** when `audioBytes === 0` (mirror the existing `videoBytes` check).
+### G1 (P0) — No test fails if audio is dead — **DONE**
+- **Evidence:** `e2e-verify-pi-video.mjs` asserted `videoBytes > 0` only.
+  `e2e-pi-agent-interop.mjs` asserted total `bytesReceived` and only WARNed
+  (exit 0) when it was 0. Neither separated audio from video.
+- **Fix (applied):** In both tests, split inbound-rtp bytes by `kind === 'audio'`
+  and **FAIL** when `audioBytes === 0` (mirror the existing `videoBytes` check).
+  The interop test now *waits* for `audioBytes > 0` (not just `connected` + track)
+  before resolving, and the timeout now reports a `note` instead of a bare
+  `connected` success.
 - **Files:** `tests/e2e-browser/e2e-verify-pi-video.mjs`,
   `tests/e2e-browser/e2e-pi-agent-interop.mjs`.
 
-### G2 (P0) — Auth→media handoff untested
+### G2 (P0) — Auth→media handoff untested — **DONE**
 - **Evidence:** The auth change queues `JOIN_ROOM`/`SUBSCRIBE` until `AUTH_OK`
-  (`signaling.js.send`), then flushes. Nothing tests that the flush happens
+  (`signaling.js.send`), then flushes. Nothing tested that the flush happens
   in-order and media actually connects *after* auth.
-- **Fix:** Extend `tests/hermes-verify-auth.mjs` to assert that after `AUTH_OK`,
-  the queued room/sub messages flush and the connection reaches `connected`.
+- **Fix (applied):** `tests/hermes-verify-auth.mjs` section 5 now loads `webrtc.js`
+  (with a minimal fake `RTCPeerConnection`) and asserts, after `AUTH_OK`:
+  - the queued `JOIN_ROOM`/`SUBSCRIBE_SOURCE` flush in-order **before** `open`
+    fires (a media consumer acting on `open` never sees it before room/sub are
+    registered);
+  - the signaling connection is fully connected (`authed`, `connected`,
+    `authState === 'authed'`);
+  - a `WebRTCManager` that creates a monitor PC in response to `open` reaches
+    `connected` (its `onConnectionStateChange` is invoked and `pcMeta.connected`
+    is set).
 - **Files:** `tests/hermes-verify-auth.mjs`.
 
 ### G3 (P1) — No latency check
@@ -71,12 +94,12 @@ media-setup messages (`JOIN_ROOM`/`SUBSCRIBE`) are now queued until `AUTH_OK`
 - **Files:** `tests/e2e-browser/e2e-pi-agent-interop.mjs`.
 
 ## Recommended order of work
-1. **G1** — audio-bytes assertions (highest signal for the reported problems).
-2. **G2** — auth→media handoff (newest risk).
-3. **G3** — latency.
-4. **G4** — audio channel count.
-5. **G5** — talkback audio bytes.
-6. **G6** — ICE resilience.
+1. **G3** — latency.
+2. **G4** — audio channel count.
+3. **G5** — talkback audio bytes.
+4. **G6** — ICE resilience.
+
+(G1 and G2 are implemented — see *Status*.)
 
 ## Acceptance criteria
 - Running the full media suite **fails** when audio is dead (not just video).

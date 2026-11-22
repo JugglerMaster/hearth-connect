@@ -109,7 +109,7 @@ try {
         }
         const st = window.__state;
         if (st.connected && st.tracks.length > 0) {
-          let bytes = 0, videoBytes = 0;
+          let bytes = 0, videoBytes = 0, audioBytes = 0;
           try {
             const pc = wm.peerConnections.get(window.__subTo);
             if (pc) {
@@ -118,19 +118,20 @@ try {
                 if (r.type === 'inbound-rtp') {
                   bytes += r.bytesReceived || 0;
                   if (r.kind === 'video' || (r.mediaType === 'video')) videoBytes += r.bytesReceived || 0;
+                  if (r.kind === 'audio' || (r.mediaType === 'audio')) audioBytes += r.bytesReceived || 0;
                 }
               });
             }
           } catch {}
-          if (videoBytes > 0) {
+          if (videoBytes > 0 && audioBytes > 0) {
             clearInterval(iv);
-            resolve({ connected: true, tracks: st.tracks, bytesReceived: bytes, videoBytes });
+            resolve({ connected: true, tracks: st.tracks, bytesReceived: bytes, videoBytes, audioBytes });
             return;
           }
           if (Date.now() - t0 > 25000) {
             clearInterval(iv);
-            resolve({ connected: true, tracks: st.tracks, bytesReceived: bytes, videoBytes,
-                      note: 'connected+tracks but no video bytes within 25s' });
+            resolve({ connected: true, tracks: st.tracks, bytesReceived: bytes, videoBytes, audioBytes,
+                      note: 'connected+tracks but no media bytes within 25s' });
             return;
           }
         } else if (Date.now() - t0 > 30000) {
@@ -154,8 +155,14 @@ try {
   console.log('RESULT:', JSON.stringify(result, null, 2));
   if (!result.connected) { console.error('FAIL: not connected'); exitCode = 1; }
   else if (result.tracks.length === 0) { console.error('FAIL: no remote track'); exitCode = 1; }
-  else if (result.videoBytes === 0) { console.error('WARN: connected+track but no video bytes (' + (result.note || '') + ')'); exitCode = 1; }
-  else { console.log('PASS: received video from Pi (' + result.videoBytes + ' bytes)'); }
+  else if (result.videoBytes === 0 || result.audioBytes === 0) {
+    console.error('FAIL: connected+track but missing media bytes (' +
+      `video=${result.videoBytes} audio=${result.audioBytes}` +
+      (result.note ? ' ' + result.note : '') + ')');
+    exitCode = 1;
+  }
+  else { console.log('PASS: received video+audio from Pi (' +
+    `video=${result.videoBytes} audio=${result.audioBytes} bytes)`); }
 } catch (err) {
   exitCode = 1;
   console.error('FAIL:', err.message);
