@@ -361,6 +361,28 @@ class TestMonitorPipelineStr(unittest.TestCase):
         self.assertNotIn('libcamerasrc', s)
         self.assertNotIn('v4l2src', s)
 
+    def test_audio_downmix_forces_mono(self):
+        # G4: PS3Eye 4-channel audio regression. The pipeline must force the
+        # source's native channel count on the alsasrc capsfilter, then downmix
+        # to mono (channels=1) AFTER audioconvert — otherwise the browser gets
+        # 4-channel Opus and plays silence.
+        s = pa.monitor_pipeline_str(False, True, 1280, 720, 24, '', 'hw:2,0',
+                                    'v4l2h264enc', pa.STUN, audio_channels=4)
+        # Source capsfilter must match the native channel count (4).
+        self.assertIn('capsfilter caps=audio/x-raw,channels=4', s)
+        # Downmix capsfilter must force mono AFTER audioconvert.
+        self.assertIn('capsfilter caps=audio/x-raw,channels=1', s)
+        # Order: audioconvert -> downmix -> level -> opusenc.
+        self.assertLess(s.index('audioconvert'),
+                        s.index('capsfilter caps=audio/x-raw,channels=1'))
+        self.assertLess(s.index('capsfilter caps=audio/x-raw,channels=1'),
+                        s.index('level ! opusenc'))
+        # Zero-channel (default) path also forces mono.
+        s2 = pa.monitor_pipeline_str(False, True, 1280, 720, 24, '', 'hw:2,0',
+                                     'v4l2h264enc', pa.STUN)
+        self.assertIn('capsfilter caps=audio/x-raw,channels=1', s2)
+        self.assertNotIn('capsfilter caps=audio/x-raw,channels=4', s2)
+
 
 class TestBroadcastPipelineStr(unittest.TestCase):
     def test_contains_webrtcbin_and_stun(self):
