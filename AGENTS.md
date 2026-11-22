@@ -377,6 +377,18 @@ Pi's journal shows `PLAY_CLIP <id> playing`, but nothing comes out of the
 speaker. Diagnose via `state` in `/proc/asound/card0/pcm0p/sub*/status` while
 the clip plays (never leaves `closed` in the broken build).
 
+## Working preferences
+
+- **Double-check before adding new things.** Before adding new code, tests, or
+  features, verify the existing state first — what's already there, what's
+  intended, and whether the change is actually needed. Inspect the repo and
+  confirm rather than assume.
+- **Build out a spec or readme documentation first.** Before implementing a new
+  feature or change, write a spec or update the relevant readme/doc so the
+  approach is documented before the code. For new gaps/features, document the
+  plan in the relevant doc (e.g. `docs/media-test-gaps.md`, `docs/adr/`) before
+  writing the implementation.
+
 ## Agent skills
 
 ### Issue tracker
