@@ -20,10 +20,10 @@ media-setup messages (`JOIN_ROOM`/`SUBSCRIBE`) are now queued until `AUTH_OK`
 - ✅ **G2** — implemented. `tests/hermes-verify-auth.mjs` section 5 asserts the
   queued `JOIN_ROOM`/`SUBSCRIBE_SOURCE` flush in-order before `open` fires and
   that a media consumer (`WebRTCManager`) reaches `connected` after the handoff.
-- ⬜ **G3** — latency (open).
+- ✅ **G3** — implemented. `tests/e2e-browser/e2e-pi-agent-interop.mjs` samples `rtt` from `rtcp-received` over a 5s window after media is flowing and **FAILs** if `maxRtt > 500` (sub-500ms goal); warns if no RTT stats.
 - ✅ **G4** — implemented. `linux/pi-agent/test_pi_agent.py::TestMonitorPipelineStr.test_audio_downmix_forces_mono` asserts the monitor pipeline forces `channels=1` after `audioconvert` (both the `audio_channels=4` PS3Eye path and the zero-channel default path), guarding the 4-channel Opus silence regression.
 - ⬜ **G5** — talkback audio bytes (open).
-- ⬜ **G6** — ICE resilience (open).
+- ✅ **G6** — implemented. `tests/e2e-browser/e2e-pi-agent-interop.mjs` **FAILs** immediately if `RTCPeerConnection.connectionState` reaches `failed` during the steady-state window.
 
 ## Current coverage
 
@@ -65,10 +65,12 @@ media-setup messages (`JOIN_ROOM`/`SUBSCRIBE`) are now queued until `AUTH_OK`
     is set).
 - **Files:** `tests/hermes-verify-auth.mjs`.
 
-### G3 (P1) — No latency check
-- **Evidence:** Sub-500ms latency is a stated goal but nothing measures it.
-- **Fix:** In the interop test, sample `RTCPeerConnection` stats over a window
-  and assert one-way/round-trip RTT stays under ~500ms.
+### G3 (P1) — No latency check — **DONE**
+- **Evidence:** Sub-500ms latency is a stated goal but nothing measured it.
+- **Fix:** `tests/e2e-browser/e2e-pi-agent-interop.mjs` collects `rtt` from
+  `rtcp-received` stats (moving avg, ms), samples a 5s latency window after
+  `audioBytes > 0`, and **FAILs** if `maxRtt > 500` (sub-500ms goal). Warns
+  (not fails) when no RTT stats are available.
 - **Files:** `tests/e2e-browser/e2e-pi-agent-interop.mjs`.
 
 ### G4 (P1) — Audio channel count / downmix unverified — **DONE**
@@ -90,20 +92,19 @@ media-setup messages (`JOIN_ROOM`/`SUBSCRIBE`) are now queued until `AUTH_OK`
 - **Fix:** Add an `audioBytes > 0` assertion (Pi side) to the talkback test.
 - **Files:** `tests/e2e-browser/e2e-talkback-glare.mjs`.
 
-### G6 (P2) — ICE resilience untested
-- **Evidence:** Nothing asserts ICE never settles to `failed`, or that it
+### G6 (P2) — ICE resilience untested — **DONE**
+- **Evidence:** Nothing asserted ICE never settles to `failed`, or that it
   recovers after a network blip (reconnection strategy is documented but
   untested).
-- **Fix:** Assert `connectionState` never ends in `failed` during a steady-state
-  window; optionally simulate a blip and assert recovery.
+- **Fix:** `tests/e2e-browser/e2e-pi-agent-interop.mjs` **FAILs** immediately
+  if `RTCPeerConnection.connectionState` reaches `failed` during the steady-state
+  window. (Blip-simulation/recovery is out of scope for now.)
 - **Files:** `tests/e2e-browser/e2e-pi-agent-interop.mjs`.
 
 ## Recommended order of work
-1. **G3** — latency.
-2. **G5** — talkback audio bytes.
-3. **G6** — ICE resilience.
+1. **G5** — talkback audio bytes.
 
-(G1, G2 and G4 are implemented — see *Status*.)
+(G1, G2, G3, G4 and G6 are implemented — see *Status*.)
 
 ## Acceptance criteria
 - Running the full media suite **fails** when audio is dead (not just video).
