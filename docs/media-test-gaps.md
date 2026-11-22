@@ -21,7 +21,7 @@ media-setup messages (`JOIN_ROOM`/`SUBSCRIBE`) are now queued until `AUTH_OK`
   queued `JOIN_ROOM`/`SUBSCRIBE_SOURCE` flush in-order before `open` fires and
   that a media consumer (`WebRTCManager`) reaches `connected` after the handoff.
 - ⬜ **G3** — latency (open).
-- ⬜ **G4** — audio channel count (open).
+- ✅ **G4** — implemented. `linux/pi-agent/test_pi_agent.py::TestMonitorPipelineStr.test_audio_downmix_forces_mono` asserts the monitor pipeline forces `channels=1` after `audioconvert` (both the `audio_channels=4` PS3Eye path and the zero-channel default path), guarding the 4-channel Opus silence regression.
 - ⬜ **G5** — talkback audio bytes (open).
 - ⬜ **G6** — ICE resilience (open).
 
@@ -71,13 +71,18 @@ media-setup messages (`JOIN_ROOM`/`SUBSCRIBE`) are now queued until `AUTH_OK`
   and assert one-way/round-trip RTT stays under ~500ms.
 - **Files:** `tests/e2e-browser/e2e-pi-agent-interop.mjs`.
 
-### G4 (P1) — Audio channel count / downmix unverified
+### G4 (P1) — Audio channel count / downmix unverified — **DONE**
 - **Evidence:** The Pi pipeline forces `channels=1` after `audioconvert`
   (`linux/pi-agent/pi-agent.py` ~598-605) to avoid the PS3Eye 4-channel
-  silence regression, but nothing asserts the *encoded* stream is mono.
-- **Fix:** Assert the Pi's encoded audio is 1 channel (or the browser's inbound
-  audio track reports 1 channel).
-- **Files:** `linux/pi-agent/pi-agent.py` (unit), `tests/e2e-browser/*` (E2E).
+  silence regression, but nothing asserted the *encoded* stream is mono.
+- **Fix:** `linux/pi-agent/test_pi_agent.py::TestMonitorPipelineStr.test_audio_downmix_forces_mono`
+  asserts the monitor pipeline string forces `channels=1` after `audioconvert`
+  (both the `audio_channels=4` PS3Eye path and the zero-channel default path),
+  guarding the 4-channel Opus silence regression.
+- **Files:** `linux/pi-agent/test_pi_agent.py` (unit).
+- **Note:** A browser-side E2E assertion of the *encoded* stream's channel count
+  is not feasible with `getStats()` (no channel-count field), so the pure
+  `monitor_pipeline_str()` unit test is the strongest available guard.
 
 ### G5 (P1) — Talkback may be audio-blind
 - **Evidence:** `tests/e2e-browser/e2e-talkback-glare.mjs` exists, but verify
@@ -95,11 +100,10 @@ media-setup messages (`JOIN_ROOM`/`SUBSCRIBE`) are now queued until `AUTH_OK`
 
 ## Recommended order of work
 1. **G3** — latency.
-2. **G4** — audio channel count.
-3. **G5** — talkback audio bytes.
-4. **G6** — ICE resilience.
+2. **G5** — talkback audio bytes.
+3. **G6** — ICE resilience.
 
-(G1 and G2 are implemented — see *Status*.)
+(G1, G2 and G4 are implemented — see *Status*.)
 
 ## Acceptance criteria
 - Running the full media suite **fails** when audio is dead (not just video).
