@@ -14,6 +14,20 @@ import {
   AudioMode,
 } from './types';
 
+// Loopback detection for the admin plane. Only the local hub (127.0.0.1 /
+// ::1 / localhost) may flip auth settings — mirrors the Android hub's
+// connLoopback gate so the reference build enforces the same security model.
+export function isLoopbackIp(ip?: string): boolean {
+  if (!ip) return false;
+  let host = ip.replace(/^\[|\]$/g, '').trim();
+  if (host === 'localhost' || host === '127.0.0.1' || host === '::1') return true;
+  // IPv4 loopback block 127.0.0.0/8
+  if (/^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)) return true;
+  // IPv4-mapped IPv6 (::ffff:127.0.0.1)
+  if (/^::ffff:(127\.\d{1,3}\.\d{1,3}\.\d{1,3})$/.test(host)) return true;
+  return false;
+}
+
 export class SignalingHandler {
   constructor(
     private channels: ChannelManager,
@@ -97,6 +111,15 @@ export class SignalingHandler {
 
   private route(transport: Transport, msg: Message): void {
     switch (msg.type) {
+      case 'AUTH':
+        // The Node server is the ungated reference implementation: always
+        // acknowledge, so the shared signaling.js (which always sends AUTH
+        // first) works against both this server and the Android hub.
+        this.send(transport, {
+          type: 'AUTH_OK',
+          payload: { credentialId: 'local' },
+        });
+        break;
       case 'HEARTBEAT':
         this.handleHeartbeat(transport);
         break;
@@ -1134,6 +1157,13 @@ export class SignalingHandler {
     const value = (payload.value as Record<string, unknown>) || {};
     if (!section) {
       this.sendError(transport, 'INVALID_ARGS', 'SET_SETTINGS requires a section');
+      return;
+    }
+    // The auth kill-switch is admin-plane: only the loopback hub may flip it,
+    // so a remote (LAN) base can never disable approval gating. Mirrors the
+    // Android hub's connLoopback gate.
+    if (section === 'auth' && !isLoopbackIp(transport.ip)) {
+      this.sendError(transport, 'NOT_ALLOWED', 'Only the local hub can change auth settings');
       return;
     }
     this.config.setSettingsSection(section, value);

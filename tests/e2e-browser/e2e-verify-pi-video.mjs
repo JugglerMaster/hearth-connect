@@ -15,6 +15,9 @@ import { chromium } from 'playwright';
 const SERVER_URL = process.env.SERVER_URL || 'https://192.168.1.103:8090';
 const ROOM_ID = process.env.ROOM_ID || 'default';
 const TARGET_LABEL = process.env.TARGET_LABEL || 'Cat Room';
+// Optional device credential for a gated Android hub. Without it the run SKIPS
+// with instructions instead of hanging at AUTH_REQUIRED.
+const AUTH_TOKEN = process.env.AUTH_TOKEN || '';
 
 function toWs(url) {
   return url.replace(/^http:/, 'ws:').replace(/^https:/, 'wss:');
@@ -55,7 +58,7 @@ try {
     '/interop-harness.html';
   await page.goto(navUrl);
 
-  const result = await page.evaluate(({ wsUrl, room, targetLabel }) => {
+  const result = await page.evaluate(({ wsUrl, room, targetLabel, authToken }) => {
     window.__state = { tracks: [], states: [], connected: false };
     class Sub extends WebRTCManager {
       onRemoteTrack(peerId, stream, track) {
@@ -67,6 +70,7 @@ try {
       }
     }
     const sig = new SignalingClient(wsUrl);
+    if (authToken) sig.authToken = authToken;
     sig.deviceType = 'base';
     sig.deviceLabel = 'e2e-verify';
     const wm = new Sub(sig);
@@ -91,6 +95,18 @@ try {
     return new Promise((resolve, reject) => {
       const t0 = Date.now();
       const iv = setInterval(async () => {
+        if (!authToken && window.__msgs.includes('AUTH_REQUIRED')) {
+          clearInterval(iv);
+          resolve({ skipped: true,
+                    reason: 'hub requires device approval (no AUTH_TOKEN set). Approve this device on the hub once, then re-run with AUTH_TOKEN=<token>',
+                    msgs: window.__msgs });
+          return;
+        }
+        if (window.__msgs.includes('AUTH_INVALID')) {
+          clearInterval(iv);
+          reject(new Error('AUTH_INVALID: the hub rejected AUTH_TOKEN (revoked?) — approve the device and use its current token'));
+          return;
+        }
         const st = window.__state;
         if (st.connected && st.tracks.length > 0) {
           let bytes = 0, videoBytes = 0;
@@ -129,7 +145,7 @@ try {
         }
       }, 500);
     });
-  }, { wsUrl: toWs(SERVER_URL), room: ROOM_ID, targetLabel: TARGET_LABEL });
+  }, { wsUrl: toWs(SERVER_URL), room: ROOM_ID, targetLabel: TARGET_LABEL, authToken: AUTH_TOKEN });
 
   if (result.skipped) {
     console.warn(`SKIP: ${result.reason} (msgs=${JSON.stringify(result.msgs)})`);

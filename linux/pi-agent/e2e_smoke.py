@@ -90,6 +90,9 @@ else:
     if not SERVER_URL.startswith('ws'):
         SERVER_URL = 'wss://' + SERVER_URL
     ROOM_ID = os.environ.get('ROOM_ID') or _ENV.get('ROOM_ID', 'default')
+    # Device credential for a gated Android hub. Without one the hub parks this
+    # client at AUTH_REQUIRED and the test SKIPS with instructions.
+    AUTH_TOKEN = os.environ.get('AUTH_TOKEN') or _ENV.get('AUTH_TOKEN', '')
     DEVICE_LABEL = 'Pi E2E Test'
     SUBSCRIBER_ID = 'e2e-sub-' + os.urandom(4).hex()
 
@@ -110,6 +113,8 @@ class PiAgentE2ETest(unittest.TestCase):
         env['SERVER_URL'] = SERVER_URL
         env['ROOM_ID'] = ROOM_ID
         env['DEVICE_LABEL'] = DEVICE_LABEL
+        if AUTH_TOKEN:
+            env['AUTH_TOKEN'] = AUTH_TOKEN
         cls._agent_log = os.path.join(_HERE, 'e2e_agent_out.log')
         # Spawn as root via `sudo -E` so the agent runs in the same runtime
         # context as the systemd service (which is proven to build the WebRTC
@@ -146,6 +151,33 @@ class PiAgentE2ETest(unittest.TestCase):
         try:
             async with websockets.connect(SERVER_URL, max_size=None, ssl=_no_verify_ssl()) as ws:
                 base_id = 'e2e-base-' + os.urandom(4).hex()
+                # AUTH is the first message on every socket. The Node reference
+                # server acks immediately; the Android hub gates devices and
+                # requires a one-time approval, so surface that rather than
+                # hanging until the WELCOME timeout.
+                auth_payload = {'deviceType': 'base', 'deviceId': base_id,
+                                'label': 'E2E Base'}
+                if AUTH_TOKEN:
+                    auth_payload['token'] = AUTH_TOKEN
+                await ws.send(json.dumps({'type': 'AUTH', 'payload': auth_payload}))
+                auth_ok = False
+                for _ in range(10):
+                    try:
+                        raw = await asyncio.wait_for(ws.recv(), timeout=1.0)
+                    except asyncio.TimeoutError:
+                        continue
+                    msg = json.loads(raw)
+                    if msg.get('type') == 'AUTH_OK':
+                        auth_ok = True
+                        break
+                    if msg.get('type') == 'AUTH_REQUIRED':
+                        code = (msg.get('payload') or {}).get('code')
+                        raise unittest.SkipTest(
+                            'hub requires device approval (pairing code %s); approve '
+                            'it once on the hub, then re-run with AUTH_TOKEN=<token>'
+                            % code)
+                if not auth_ok:
+                    raise AssertionError('no AUTH_OK from server')
                 await ws.send(json.dumps({'type': 'JOIN_ROOM', 'payload': {
                     'roomId': ROOM_ID, 'deviceId': base_id,
                     'deviceType': 'base', 'label': 'E2E Base'}}))

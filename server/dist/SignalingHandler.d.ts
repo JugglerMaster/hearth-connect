@@ -2,6 +2,7 @@ import { ChannelManager } from './ChannelManager';
 import { ConfigManager } from './ConfigManager';
 import { ClipStore } from './ClipStore';
 import { Transport } from './types';
+export declare function isLoopbackIp(ip?: string): boolean;
 export declare class SignalingHandler {
     private channels;
     private config;

@@ -55,11 +55,37 @@
       </div>
     </div>
 
+    <div id="accessBanner" class="access-banner hidden">
+      <div class="access-banner-title">Device requesting access</div>
+      <div id="accessBannerList"></div>
+    </div>
+
     <div id="homeView">
       <div class="panel devices-panel">
-        <h2>Devices</h2>
+        <div class="panel-head">
+          <h2>Devices</h2>
+          <button id="accessBtn" class="btn btn-small btn-outline hidden" type="button">🔐 Access</button>
+        </div>
         <button id="testSelfVideoBtn" class="btn btn-small btn-outline" style="margin-bottom:8px">🎥 Test: show my own video</button>
         <div id="deviceList" class="device-list"></div>
+      </div>
+
+      <div id="accessPanel" class="panel hidden">
+        <div class="panel-head">
+          <h2>Access</h2>
+          <button id="accessCloseBtn" class="btn btn-small btn-outline" type="button">Close</button>
+        </div>
+        <div class="access-toggle-row">
+          <div class="access-row-main">
+            <div class="access-row-label">Require approval for new devices</div>
+            <div class="access-row-meta">Only devices approved here can join the room.</div>
+          </div>
+          <div class="toggle-switch" id="requireApprovalToggle" role="switch" aria-checked="true"></div>
+        </div>
+        <div class="access-subhead">Approved devices</div>
+        <div id="accessApprovedList" class="access-list">
+          <div class="access-empty">Loading…</div>
+        </div>
       </div>
 
       <div id="configPanel" class="panel hidden">

@@ -85,6 +85,7 @@ Edit `/opt/hearth-pi-agent/config.env`:
 | `ROOM_ID`    | Room to join (default `default`)                               |
 | `DEVICE_ID`  | Stable per-install identity the agent reports to the server. **Leave blank** — the agent generates a random `pi-xxxxxxxx` id and persists it here on first run. It must stay constant for the life of the install: a changing id makes every restart look like a new device, orphaning subscriptions and duplicating the "Pi Agent" entry on the base station. An explicit `DEVICE_ID` env var overrides this line. |
 | `DEVICE_LABEL` | Name shown in the base station device list                   |
+| `AUTH_TOKEN` | Hub-issued pairing credential. **Leave blank** — written automatically the first time the hub owner approves this Pi, and sent as the FIRST message on every connection. If the hub rejects/revokes it, the agent clears it and asks to be paired again. Copying it to another Pi clones that device's identity. |
 | `VIDEO_DEVICE` | V4L2 path, e.g. `/dev/video0`; blank = first available      |
 | `AUDIO_DEVICE` | ALSA id, e.g. `hw:1,0`; blank = first available             |
 | `RESOLUTION` | `480p` / `720p` / `1080p`. Also changeable live from the base station's camera config — the agent rewrites this file on change so it persists across restarts. |
@@ -99,6 +100,23 @@ For the camera, enable it once: `sudo raspi-config` → Interface → Camera (or
 Set a USB mic as the default capture device if needed (`~/.asoundrc` / `alsactl`).
 To hear talkback/broadcasts, attach a speaker/headphones and set `SPEAKER_DEVICE` (or leave
 blank for the default ALSA playback device).
+
+### Device approval (pairing)
+
+The Android hub denies non-local connections by default. On the **first**
+connection the hub answers `AUTH_REQUIRED` and creates a pending row in the
+base-station UI; the agent logs:
+
+```
+AUTH pending: approve this Pi in the hub UI (code 123456, pending pend-1a2b3c4d)
+```
+
+Approve the row on the hub (the Pi is headless — the code is only a visual
+cross-check). The hub then sends the token once; the agent writes
+`AUTH_TOKEN=` into `config.env` and never asks again. Approvals are
+once-and-done and survive hub restarts; revoke from the hub UI to force a
+re-pair. If the hub answers `AUTH_INVALID` (revoked/cleared token) the agent
+erases `AUTH_TOKEN` and re-requests pairing automatically.
 
 ### Auto-Discovery (mDNS)
 

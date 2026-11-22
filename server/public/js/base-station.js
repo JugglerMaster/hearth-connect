@@ -119,6 +119,15 @@
   const dismissCallBtn = document.getElementById('dismissCallBtn');
   let configDeviceId = null;
 
+  // Access / device-approval UI (hub pairing)
+  const accessBtn = document.getElementById('accessBtn');
+  const accessPanel = document.getElementById('accessPanel');
+  const accessCloseBtn = document.getElementById('accessCloseBtn');
+  const accessBanner = document.getElementById('accessBanner');
+  const accessBannerList = document.getElementById('accessBannerList');
+  const accessApprovedList = document.getElementById('accessApprovedList');
+  const requireApprovalToggle = document.getElementById('requireApprovalToggle');
+
   // Talk / mute / call state (per active view)
   let talkingTo = null;       // deviceId we are currently talking to
   let faceTalkingTo = null;   // kioskId we are currently pushing video+audio to
@@ -1293,9 +1302,13 @@
       label: 'Base Station',
       durationMs: String(clip.durationMs),
     });
+    // Announcement uploads are gated: the hub only accepts them from the local
+    // UI or from an approved device token.
+    const headers = { 'Content-Type': 'audio/wav' };
+    if (sig.authToken) headers['X-Hearth-Token'] = sig.authToken;
     const res = await fetch('/api/clip?' + qs.toString(), {
       method: 'POST',
-      headers: { 'Content-Type': 'audio/wav' },
+      headers: headers,
       body: clip.blob,
     });
     if (!res.ok) throw new Error('upload failed: HTTP ' + res.status);
@@ -2078,6 +2091,178 @@
     if (peerId === viewingId) recoverWatch();
   };
 
+  // ─── Device access (hub pairing) ─────────────────────
+  // The hub only lets approved devices into the room. Approval happens here,
+  // on the hub itself: this page is opened by the Android WebView at
+  // https://127.0.0.1:8090, so "loopback" means "the tablet in your hand".
+  // The server enforces this too (AUTH_DECISION is rejected from non-loopback
+  // clients); hiding the UI off-loopback is just to avoid dead buttons.
+  const IS_LOCAL_HUB = (function () {
+    const h = (location.hostname || '').toLowerCase();
+    return h === '127.0.0.1' || h === 'localhost' || h === '::1' || h === '[::1]';
+  })();
+
+  let pendingAccess = [];  // [{pendingId, code, ip, label, deviceType, legacy, expiresAt}]
+  let approvedAccess = []; // [{credentialId, label, deviceType, ip, approvedAt, legacyNoToken}]
+
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => (
+      { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+    ));
+  }
+
+  function timeAgo(ms) {
+    if (!ms) return '';
+    const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
+    if (s < 60) return 'just now';
+    if (s < 3600) return Math.round(s / 60) + 'm ago';
+    if (s < 86400) return Math.round(s / 3600) + 'h ago';
+    return Math.round(s / 86400) + 'd ago';
+  }
+
+  function upsertPending(p) {
+    if (!p || !p.pendingId) return;
+    const i = pendingAccess.findIndex((x) => x.pendingId === p.pendingId);
+    if (i >= 0) pendingAccess[i] = Object.assign({}, pendingAccess[i], p);
+    else pendingAccess.push(p);
+  }
+
+  function renderAccessBanner() {
+    if (!accessBanner || !accessBannerList) return;
+    if (!IS_LOCAL_HUB || pendingAccess.length === 0) {
+      accessBanner.classList.add('hidden');
+      accessBannerList.innerHTML = '';
+      return;
+    }
+    accessBanner.classList.remove('hidden');
+    accessBannerList.innerHTML = pendingAccess.map((p) => {
+      const label = p.label || p.deviceId || 'Unknown device';
+      const meta = [p.deviceType, p.ip].filter(Boolean).join(' · ');
+      return '<div class="access-req">' +
+        '<div class="access-req-main">' +
+          '<div class="access-req-label">' + esc(label) + '</div>' +
+          '<div class="access-req-meta">' + esc(meta) + ' · code ' +
+            '<span class="access-req-code">' + esc(p.code || '------') + '</span></div>' +
+          (p.legacy ? '<div class="access-legacy">Old client — reload the page on that device</div>' : '') +
+        '</div>' +
+        '<div class="access-req-actions">' +
+          '<button class="btn btn-small btn-primary" type="button" data-approve="' + esc(p.pendingId) + '">Approve</button>' +
+          '<button class="btn btn-small btn-outline" type="button" data-deny="' + esc(p.pendingId) + '">Deny</button>' +
+        '</div>' +
+      '</div>';
+    }).join('');
+  }
+
+  function renderAccessPanel() {
+    if (!accessApprovedList) return;
+    if (approvedAccess.length === 0) {
+      accessApprovedList.innerHTML = '<div class="access-empty">No devices approved yet.</div>';
+      return;
+    }
+    // Approved credentials are the tokens; device entries without one are the
+    // legacy/cached clients that are still trusted by deviceId only.
+    accessApprovedList.innerHTML = approvedAccess.map((c) => {
+      const label = c.label || c.deviceId || c.credentialId;
+      const meta = [c.deviceType, c.ip, c.lastSeenAt ? 'seen ' + timeAgo(c.lastSeenAt) : '']
+        .filter(Boolean).join(' · ');
+      return '<div class="access-row">' +
+        '<div class="access-row-main">' +
+          '<div class="access-row-label">' + esc(label) +
+            (c.legacyNoToken ? ' <span class="access-legacy">legacy</span>' : '') +
+          '</div>' +
+          '<div class="access-row-meta">' + esc(meta) + '</div>' +
+        '</div>' +
+        '<button class="btn btn-small btn-outline" type="button" data-revoke="' + esc(c.credentialId) + '">Revoke</button>' +
+      '</div>';
+    }).join('');
+  }
+
+  function renderRequireToggle(auth) {
+    if (!requireApprovalToggle) return;
+    const on = !auth || auth.requiresApproval !== false; // default ON
+    requireApprovalToggle.classList.toggle('active', on);
+    requireApprovalToggle.setAttribute('aria-checked', String(on));
+  }
+
+  function initAccess() {
+    // Only the hub itself can approve devices.
+    if (!IS_LOCAL_HUB) return;
+
+    if (accessBtn) accessBtn.classList.remove('hidden');
+
+    if (accessBtn && accessPanel) {
+      accessBtn.addEventListener('click', () => {
+        accessPanel.classList.toggle('hidden');
+        if (!accessPanel.classList.contains('hidden')) sig.getAuthState();
+      });
+    }
+    if (accessCloseBtn && accessPanel) {
+      accessCloseBtn.addEventListener('click', () => accessPanel.classList.add('hidden'));
+    }
+
+    if (accessBannerList) {
+      accessBannerList.addEventListener('click', (e) => {
+        const approve = e.target.closest('[data-approve]');
+        const deny = e.target.closest('[data-deny]');
+        if (approve) {
+          sig.approveDevice(approve.getAttribute('data-approve'));
+          pendingAccess = pendingAccess.filter((p) => p.pendingId !== approve.getAttribute('data-approve'));
+          renderAccessBanner();
+        } else if (deny) {
+          sig.denyDevice(deny.getAttribute('data-deny'));
+          pendingAccess = pendingAccess.filter((p) => p.pendingId !== deny.getAttribute('data-deny'));
+          renderAccessBanner();
+        }
+      });
+    }
+
+    if (accessApprovedList) {
+      accessApprovedList.addEventListener('click', (e) => {
+        const revoke = e.target.closest('[data-revoke]');
+        if (!revoke) return;
+        const id = revoke.getAttribute('data-revoke');
+        const row = approvedAccess.find((c) => c.credentialId === id);
+        if (!row) return;
+        if (!window.confirm('Revoke access for "' + (row.label || row.deviceId || id) + '"?')) return;
+        sig.revokeCredential(id);
+      });
+    }
+
+    if (requireApprovalToggle) {
+      requireApprovalToggle.addEventListener('click', () => {
+        const on = !requireApprovalToggle.classList.contains('active');
+        requireApprovalToggle.classList.toggle('active', on);
+        requireApprovalToggle.setAttribute('aria-checked', String(on));
+        sig.setRequiresApproval(on);
+        showToast(on ? 'Approval required for new devices'
+                     : 'Approval disabled — every device is trusted');
+      });
+    }
+
+    sig.on('authState', (p) => {
+      pendingAccess = (p && p.pending) || [];
+      approvedAccess = (p && p.approved) || [];
+      renderAccessBanner();
+      renderAccessPanel();
+    });
+
+    sig.on('authPending', (p) => {
+      upsertPending(p);
+      renderAccessBanner();
+      showToast('Device requesting access: ' + ((p && (p.label || p.deviceId)) || 'unknown'));
+    });
+
+    sig.on('authPendingResolved', (p) => {
+      if (!p) return;
+      pendingAccess = pendingAccess.filter((x) => x.pendingId !== p.pendingId);
+      renderAccessBanner();
+    });
+
+    sig.on('settingsResult', (p) => {
+      if (p && p.settings) renderRequireToggle(p.settings.auth);
+    });
+  }
+
   // ─── Signaling ──
 
   function init() {
@@ -2096,6 +2281,7 @@
     sig.deviceId = deviceId;
     sig.deviceType = 'base';
     sig.deviceLabel = 'Base Station';
+    initAccess();
     sig.connect();
 
     // Tap the monitor feed to reveal the controls (they auto-hide after 5s).
@@ -2145,6 +2331,7 @@
       ftDbgState.wsUp = true;
       renderFtDebug();
       sig.getSettings();
+      if (IS_LOCAL_HUB) sig.getAuthState();
     });
 
     sig.on('welcome', (data) => {

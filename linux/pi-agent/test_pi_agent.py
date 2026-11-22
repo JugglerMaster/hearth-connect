@@ -1441,5 +1441,82 @@ class TestGstClipArgv(unittest.TestCase):
         self.assertNotIn('volume=0.5!', argv)  # no token boundary loss
 
 
+class TestAuthCredentialPersistence(unittest.TestCase):
+    """The hub-issued AUTH_TOKEN must live in CONFIG_FILE next to DEVICE_ID:
+    never in the repo, never derived from device_id, and it must survive the
+    agent's other config writes. These drive the real methods on an isolated
+    temp install dir (like TestConfigLabelPersistence)."""
+
+    _counter = 0
+
+    def _load_agent(self, config_text):
+        TestAuthCredentialPersistence._counter += 1
+        d = tempfile.mkdtemp(prefix='piagent_auth_')
+        cfg = os.path.join(d, 'config.env')
+        with open(cfg, 'w') as f:
+            f.write(config_text)
+        saved = os.environ.get('CONFIG_FILE')
+        os.environ['CONFIG_FILE'] = cfg
+        try:
+            name = 'pi_agent_auth_%d' % TestAuthCredentialPersistence._counter
+            spec = importlib.util.spec_from_file_location(
+                name, os.path.join(_HERE, 'pi-agent.py'))
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            agent = mod.Agent()
+            agent.enqueue_ws = lambda msg: None
+            return agent, cfg, d
+        finally:
+            if saved is not None:
+                os.environ['CONFIG_FILE'] = saved
+            else:
+                os.environ.pop('CONFIG_FILE', None)
+
+    def test_auth_payload_omits_empty_token(self):
+        p = pa.auth_payload('pi-abc', 'Cat Room', '')
+        self.assertEqual(p['deviceType'], 'kiosk')
+        self.assertEqual(p['deviceId'], 'pi-abc')
+        self.assertEqual(p['label'], 'Cat Room')
+        self.assertNotIn('token', p)
+
+    def test_auth_payload_includes_token(self):
+        p = pa.auth_payload('pi-abc', 'Cat Room', 's3cret')
+        self.assertEqual(p['token'], 's3cret')
+
+    def test_token_is_loaded_from_config_env(self):
+        agent, cfg, d = self._load_agent(
+            "DEVICE_ID=pi-test\nAUTH_TOKEN=tok-from-disk\n")
+        try:
+            self.assertEqual(agent.auth_token, 'tok-from-disk')
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_persist_and_clear_token(self):
+        agent, cfg, d = self._load_agent("DEVICE_ID=pi-test\n")
+        try:
+            agent._persist_auth_token('tok-123')
+            with open(cfg) as f:
+                self.assertIn('AUTH_TOKEN=tok-123', f.read())
+            agent._persist_auth_token('')
+            with open(cfg) as f:
+                content = f.read()
+            self.assertIn('AUTH_TOKEN=\n', content)
+            self.assertNotIn('tok-123', content)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_token_survives_persist_env(self):
+        agent, cfg, d = self._load_agent(
+            "DEVICE_ID=pi-test\nAUTH_TOKEN=tok-keep\n")
+        try:
+            agent._last_video_device = ''
+            agent._last_audio_device = ''
+            agent.persist_env()
+            with open(cfg) as f:
+                self.assertIn('AUTH_TOKEN=tok-keep', f.read())
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+
 if __name__ == '__main__':
     unittest.main()

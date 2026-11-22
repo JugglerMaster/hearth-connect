@@ -53,6 +53,50 @@ HTML5 video intercom / baby monitor system. Runs on iPads/iPhones via Safari. Se
 - Monitor selection creates a recv WebRTC peer connection from base station to kiosk
 - Kiosk responds to `SUBSCRIBER_JOINED` by creating a send peer connection and offering its camera
 
+### Device Authentication (deny-by-default hub pairing)
+- Every socket must send `AUTH` first. Only the hub's own WebView (loopback:
+  `127.0.0.1` / `::1`) is trusted implicitly; every other device needs a
+  server-issued credential token before `JOIN_ROOM` is honored.
+- **Identity is the token, not the deviceId.** `deviceId` is client-supplied
+  and lives in localStorage, so it is spoofable and resettable; the hub mints
+  32 random bytes (Base64-URL) on approval and stores only `SHA-256(token)`.
+- Pairing: `AUTH` without a token → `AUTH_REQUIRED {pendingId, code, expiresAt}`
+  → the hub UI (banner in `base-station.html`) shows label/IP/6-digit code →
+  owner taps Approve → `AUTH_OK {credentialId, token}` delivers the token
+  exactly once → client stores it in `localStorage.hearth_authToken` (or
+  `AUTH_TOKEN=` in the Pi's `config.env`) and every later connect is silent.
+  Only loopback may send `AUTH_DECISION` / `REVOKE_CREDENTIAL` / `GET_AUTH_STATE`.
+- State machine is strict: a non-`AUTH` message from an unauthenticated socket
+  gets `ERROR {code:"AUTH_REQUIRED"}` and close `4009`, so no room state leaks.
+- Close codes: `4003` denied (client stops retrying), `4004` unknown/revoked
+  token (client drops the token and re-pairs), `4005` pending table full,
+  `4008` pairing TTL expired (5 min) — retry, `4009` pre-auth violation.
+- Limits: 3 pending requests, 5-minute TTL, one pending row per IP (a retry
+  reattaches the same `pendingId`/code instead of stacking prompts).
+- `POST /api/clip` requires `X-Hearth-Token` (or loopback). Static files,
+  `/api/server-url`, `/hearthconnect.crt` and `GET /clip/*.wav` stay open so an
+  unpaired device can still load the page that shows the waiting screen.
+- Kill switch: `server_settings.json` → `auth.requiresApproval` (default true),
+  toggled from the hub's Access panel via `SET_SETTINGS {section:"auth"}`. The
+  `auth` section is loopback-gated in **both** servers (Android hub and the Node
+  reference build): a non-loopback `base` gets `ERROR {code:"NOT_ALLOWED"}`, so
+  a remote base can never disable approval gating. `tests/node-verify-auth-settings.mjs`
+  asserts this.
+- Persistence: Android `SharedPreferences("hearth_auth")`; the Pi writes
+  `AUTH_TOKEN=` next to `DEVICE_ID` in `config.env`.
+- Legacy migration: deviceIds already present in `device_configs.json` before
+  the upgrade are auto-trusted once (minted a token, then the entry is
+  consumed). A cached pre-auth client that sends `JOIN_ROOM` first appears as a
+  `legacy:true` pending row ("old client — reload that device") and is closed
+  with `4009` — unless its deviceId is legacy-known, in which case the socket is
+  trusted as `legacy-<deviceId>` and the join proceeds (no token is minted,
+  because old JS cannot store one). Reloading the page picks up the new
+  `signaling.js` and completes the migration.
+- Client contract: `signaling.js` queues every non-`AUTH` send until `AUTH_OK`,
+  emits `open` only after authorization, and injects a full-screen
+  pending/denied overlay on any page. `tests/hermes-verify-auth.mjs` exercises
+  the handshake in a Node `vm` with a fake WebSocket.
+
 ### Remote Configuration
 - **Camera**: camera (front/rear), resolution, framerate, nightMode, torch, micSensitivity, speakerVolume, twoWayAudioEnabled, streamEnabled, keepAwake, label
 - **Base Station**: visibleSources, audioFocusMode (manual/last-active), gridLayout, idleTimeout
@@ -144,6 +188,18 @@ minimal DOM shim (stub `document`, `window`, `localStorage`, `getUserMedia`,
 `SignalingClient`, `WebRTCManager`). See `tests/hermes-verify-*.js` for
 examples. Catches JS-level races (e.g. press-and-hold broadcast fast-tap)
 but not real WebRTC media or iOS Safari behavior.
+
+`tests/hermes-verify-auth.mjs` is the auth-handshake check: it runs the real
+`signaling.js` against a fake `WebSocket` and asserts AUTH-first ordering,
+queueing before `AUTH_OK`, one-time token storage, revoked-token recovery and
+the denied path. Run it with `node tests/hermes-verify-auth.mjs`.
+
+`tests/node-verify-auth-settings.mjs` is the Node reference-server auth-guard
+check: it drives the real `SignalingHandler` with a fake `Transport` and asserts
+that a non-loopback `base` gets `NOT_ALLOWED` on `SET_SETTINGS {section:"auth"}`
+while the loopback hub can flip it (and non-auth sections stay writable by any
+base). Run it with `node tests/node-verify-auth-settings.mjs` (after `cd server &&
+npm run build`).
 
 ### E2E browser interop (Playwright ↔ Pi agent)
 
@@ -320,3 +376,17 @@ when the process exits non-zero. The malformed-token variant is asserted in
 Pi's journal shows `PLAY_CLIP <id> playing`, but nothing comes out of the
 speaker. Diagnose via `state` in `/proc/asound/card0/pcm0p/sub*/status` while
 the clip plays (never leaves `closed` in the broken build).
+
+## Agent skills
+
+### Issue tracker
+
+Issues are tracked as GitHub issues in `JugglerMaster/hearth-connect` (via the `gh` CLI). See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five canonical triage labels are used as-is: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: `GLOSSARY.md` at the root plus `docs/adr/`. See `docs/agents/domain.md`.

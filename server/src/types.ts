@@ -172,6 +172,10 @@ export interface ClipInfo {
 // ─── WebSocket message types ─────────────────────────────────
 
 export type MessageType =
+  | 'AUTH'
+  | 'AUTH_OK'
+  | 'AUTH_REQUIRED'
+  | 'AUTH_DENIED'
   | 'JOIN_ROOM'
   | 'LEAVE_ROOM'
   | 'PAIR_DEVICE'

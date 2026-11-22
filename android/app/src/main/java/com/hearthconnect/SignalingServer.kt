@@ -94,6 +94,69 @@ class SignalingServer(private val context: Context, private val listener: Server
     private val deviceConfigs = ConcurrentHashMap<String, JSONObject>()    // deviceId → config
     private var connIdCounter = 0
 
+    // ─── Device authentication (deny-by-default) ────────────
+    // Every non-loopback socket must AUTH before it can JOIN_ROOM. The identity
+    // is a server-minted opaque token (32 random bytes), NOT the client-supplied
+    // deviceId: deviceId lives in localStorage/page state, so it is spoofable and
+    // resettable. The server stores only SHA-256(token). Only the hub UI (which
+    // connects over loopback) may approve a pairing request, so a remote client
+    // can never self-approve.
+    private enum class AuthState { NEW, PENDING, AUTHED }
+
+    private data class ConnAuth(
+        var state: AuthState,
+        var credentialId: String? = null,
+        var pendingId: String? = null
+    )
+
+    private data class PendingAuth(
+        val pendingId: String,
+        val code: String,
+        val ip: String,
+        val requestedAt: Long,
+        val expiresAt: Long,
+        var connId: String?,
+        var deviceId: String,
+        var deviceType: String,
+        var label: String,
+        var legacy: Boolean
+    )
+
+    private data class Credential(
+        val credentialId: String,
+        val tokenHash: String,
+        var label: String,
+        var deviceType: String,
+        var deviceId: String,
+        var ip: String,
+        val approvedAt: Long,
+        var lastSeenAt: Long,
+        // True for approvals that arrived without a token (legacy JOIN_ROOM
+        // clients, or a device auto-trusted from the pre-upgrade list before it
+        // has ever presented its minted token). The UI renders a "legacy" badge.
+        var legacyNoToken: Boolean = false
+    )
+
+    private val connAuth = ConcurrentHashMap<String, ConnAuth>()
+    private val connLoopback = ConcurrentHashMap<String, Boolean>()
+    private val pendingAuth = ConcurrentHashMap<String, PendingAuth>()
+    private val credentials = ConcurrentHashMap<String, Credential>()
+    private val secureRandom = SecureRandom()
+    private val authPrefs by lazy { context.getSharedPreferences("hearth_auth", Context.MODE_PRIVATE) }
+
+    // ─── Legacy auto-trust window ────────────────────────────
+    // Devices that joined this hub BEFORE the auth upgrade must keep working
+    // without a manual tap. On the first run after the upgrade we harvest every
+    // deviceId that has a persisted config and trust it exactly once; the set is
+    // kept in its own file so the window survives hub restarts. An entry leaves
+    // the window only when consumed (the device presents a valid token, or is
+    // auto-trusted via AUTH and gets one minted). Legacy JOIN_ROOM clients do
+    // NOT consume it: old JS cannot store a token, so the window must stay open
+    // for them.
+    private val legacyKnownFile by lazy { File(context.filesDir, "legacy_known_devices.json") }
+    private val legacyPending: MutableSet<String> = ConcurrentHashMap.newKeySet()
+    private val legacyConsumed: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
     // ─── Recorded broadcast clips (plan 18) ────────────────
     // Announcements are transient: held in memory, never persisted. A restart
     // must not be able to resurrect a stale announcement, and this avoids
@@ -122,9 +185,22 @@ class SignalingServer(private val context: Context, private val listener: Server
                     webSocket("/") {
                         val connId = "conn-${++connIdCounter}"
                         val remoteIp = call.request.local.remoteAddress
+                        val loopback = isLoopbackIp(remoteIp)
                         sessions[connId] = this
                         connIp[connId] = remoteIp
-                        Log.i(TAG, "WS conn #$connId opened from $remoteIp")
+                        connLoopback[connId] = loopback
+                        connAuth[connId] = ConnAuth(AuthState.NEW)
+                        Log.i(TAG, "WS conn #$connId opened from $remoteIp${if (loopback) " (loopback)" else ""}")
+
+                        // The hub UI is served from https://127.0.0.1:8090. Trust
+                        // loopback immediately (and also accept an explicit AUTH
+                        // from it) so a cached pre-auth UI can never lock the hub
+                        // out of its own server.
+                        if (loopback) {
+                            connAuth[connId] = ConnAuth(AuthState.AUTHED, "local")
+                            sendAck(connId, "local", null)
+                            sendAuthState(connId)
+                        }
 
                         try {
                             incoming.consumeEach { frame ->
@@ -171,6 +247,19 @@ class SignalingServer(private val context: Context, private val listener: Server
                     // The base uploads a recorded announcement once; endpoints
                     // fetch it by URL instead of negotiating a peer connection.
                     post("/api/clip") {
+                        // Announcement uploads are a mutating action: require an
+                        // approved device token (or the local hub UI) unless the
+                        // hub owner has disabled approval gating entirely.
+                        val remoteIp = call.request.local.remoteAddress
+                        val presented = call.request.headers["X-Hearth-Token"] ?: ""
+                        if (requiresApproval() && !isLoopbackIp(remoteIp) && credentialByToken(presented) == null) {
+                            call.respondText(
+                                """{"error":"unauthorized"}""",
+                                ContentType.Application.Json,
+                                HttpStatusCode.Unauthorized
+                            )
+                            return@post
+                        }
                         try {
                             // receiveStream() + readBounded() are blocking I/O and
                             // must not run on Ktor's Netty event-loop thread.
@@ -253,6 +342,9 @@ class SignalingServer(private val context: Context, private val listener: Server
         // so they survive a hub restart, not just disconnects.
         loadDeviceConfigs()
         loadServerSettings()
+        loadCredentials()
+        loadLegacyKnown()
+        startAuthSweeper()
         // Plan 19: discover Sonos / UPnP renderers on the LAN so recorded
         // announcements (PLAY_CLIP) can be pushed to them. Discovered speakers
         // are published to clients as first-class "sonos" room devices.
@@ -272,6 +364,15 @@ class SignalingServer(private val context: Context, private val listener: Server
         // Tear down any HA relay for this connection so the server-side HA
         // socket is never leaked when a base station drops.
         handleHaClose(connId)
+
+        // Drop auth state, but keep pending entries alive: a legacy/cached
+        // client that was closed with 4009 must still be visible (and
+        // approvable) in the hub UI so the user can reload it.
+        connAuth.remove(connId)
+        connLoopback.remove(connId)
+        for (p in pendingAuth.values) {
+            if (p.connId == connId) p.connId = null
+        }
 
         val deviceId = connToDevice[connId] ?: run {
             connToDevice.remove(connId)
@@ -360,10 +461,42 @@ class SignalingServer(private val context: Context, private val listener: Server
         val type = msg.optString("type", "")
         val payload = msg.optJSONObject("payload") ?: JSONObject()
 
+        // ─── Auth gate ───────────────────────────────────────
+        // AUTH is the only message accepted before authentication. Anything
+        // else from an unauthenticated socket is dropped and the socket is
+        // closed, so no room state (sources, recently-seen, config) can leak.
+        val auth = connAuth[connId]
+        if (type == "AUTH") {
+            handleAuth(connId, payload)
+            return
+        }
+        if (auth == null || auth.state != AuthState.AUTHED) {
+            // Heartbeats are harmless and some clients send them while the
+            // pairing prompt is on screen.
+            if (type == "HEARTBEAT" && auth?.state == AuthState.PENDING) {
+                handleHeartbeat(connId)
+                return
+            }
+            // Legacy fallback: a cached pre-auth signaling.js sends JOIN_ROOM
+            // straight away. Register it as a pending device (so the hub shows
+            // "old client — reload that device") instead of silently dropping
+            // it, then close with AUTH_REQUIRED.
+            if (type == "JOIN_ROOM") {
+                handleUnauthenticatedJoin(connId, payload)
+                return
+            }
+            sendError(connId, "AUTH_REQUIRED", "Send AUTH before $type")
+            closeConn(connId, 4009, "AUTH_REQUIRED")
+            return
+        }
+
         val deviceId = connToDevice[connId] ?: "unauthenticated"
         Log.d(TAG, "MSG $type from $deviceId")
 
         when (type) {
+            "AUTH_DECISION" -> handleAuthDecision(connId, payload)
+            "GET_AUTH_STATE" -> handleGetAuthState(connId)
+            "REVOKE_CREDENTIAL" -> handleRevokeCredential(connId, payload)
             "JOIN_ROOM" -> handleJoinRoom(connId, payload)
             "LEAVE_ROOM" -> handleLeaveRoom(connId)
             "HEARTBEAT" -> handleHeartbeat(connId)
@@ -449,6 +582,596 @@ class SignalingServer(private val context: Context, private val listener: Server
         }
     }
 
+    // ─── Device authentication ───────────────────────────────
+
+    private fun isLoopbackIp(raw: String?): Boolean {
+        if (raw.isNullOrBlank()) return false
+        val ip = raw.trim().removePrefix("[").removeSuffix("]")
+        return ip == "127.0.0.1" ||
+            ip == "::1" ||
+            ip == "0:0:0:0:0:0:0:1" ||
+            ip.equals("localhost", ignoreCase = true) ||
+            ip.startsWith("127.") ||
+            ip.startsWith("::ffff:127.")
+    }
+
+    /** Hub-owner kill-switch, toggled from the base station settings UI. */
+    private fun requiresApproval(): Boolean =
+        serverSettings.optJSONObject("auth")?.optBoolean("requiresApproval", true) ?: true
+
+    private fun sha256Hex(value: String): String {
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+        return digest.digest(value.toByteArray(Charsets.UTF_8))
+            .joinToString("") { b -> java.lang.String.format(java.util.Locale.US, "%02x", b) }
+    }
+
+    private fun mintToken(): String {
+        val bytes = ByteArray(32)
+        secureRandom.nextBytes(bytes)
+        return Base64.encodeToString(bytes, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
+    }
+
+    private fun hexId(byteCount: Int): String {
+        val bytes = ByteArray(byteCount)
+        secureRandom.nextBytes(bytes)
+        return bytes.joinToString("") { b -> java.lang.String.format(java.util.Locale.US, "%02x", b) }
+    }
+
+    private fun credentialByToken(token: String): Credential? {
+        if (token.isEmpty()) return null
+        val hash = sha256Hex(token)
+        return credentials.values.firstOrNull { it.tokenHash == hash }
+    }
+
+    private fun credentialToJson(c: Credential): JSONObject = JSONObject().apply {
+        put("credentialId", c.credentialId)
+        put("label", c.label)
+        put("deviceType", c.deviceType)
+        put("deviceId", c.deviceId)
+        put("ip", c.ip)
+        put("approvedAt", c.approvedAt)
+        put("lastSeenAt", c.lastSeenAt)
+        if (c.legacyNoToken) put("legacyNoToken", true)
+    }
+
+    private fun pendingToJson(p: PendingAuth): JSONObject = JSONObject().apply {
+        put("pendingId", p.pendingId)
+        put("code", p.code)
+        put("ip", p.ip)
+        put("deviceType", p.deviceType)
+        put("label", p.label)
+        put("requestedAt", p.requestedAt)
+        put("expiresAt", p.expiresAt)
+        put("legacy", p.legacy)
+    }
+
+    private fun buildAuthState(): JSONObject {
+        val now = System.currentTimeMillis()
+        val approved = JSONArray()
+        for (c in credentials.values) approved.put(credentialToJson(c))
+        val pending = JSONArray()
+        for (p in pendingAuth.values) {
+            if (now < p.expiresAt) pending.put(pendingToJson(p))
+        }
+        return JSONObject().apply {
+            put("approved", approved)
+            put("pending", pending)
+        }
+    }
+
+    @Synchronized
+    private fun loadCredentials() {
+        try {
+            val raw = authPrefs.getString("credentials", null) ?: return
+            if (raw.isBlank()) return
+            val obj = JSONObject(raw)
+            val keys = obj.keys()
+            while (keys.hasNext()) {
+                val id = keys.next()
+                val c = obj.optJSONObject(id) ?: continue
+                val hash = c.optString("tokenHash", "")
+                if (hash.isEmpty()) continue
+                credentials[id] = Credential(
+                    credentialId = id,
+                    tokenHash = hash,
+                    label = c.optString("label", "Device"),
+                    deviceType = c.optString("deviceType", "kiosk"),
+                    deviceId = c.optString("deviceId", ""),
+                    ip = c.optString("ip", ""),
+                    approvedAt = c.optLong("approvedAt", 0L),
+                    lastSeenAt = c.optLong("lastSeenAt", 0L),
+                    legacyNoToken = c.optBoolean("legacyNoToken", false)
+                )
+            }
+            if (credentials.isNotEmpty()) {
+                Log.i(TAG, "Loaded ${credentials.size} approved device credential(s)")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to load device credentials: ${e.message}")
+        }
+    }
+
+    @Synchronized
+    private fun saveCredentials() {
+        try {
+            val obj = JSONObject()
+            for ((id, c) in credentials) {
+                // In-memory legacy credentials (legacy-<deviceId>) have no token
+                // and must never be persisted: they are re-derived from the
+                // legacy window on demand.
+                if (c.tokenHash.isEmpty()) continue
+                obj.put(id, JSONObject().apply {
+                    put("tokenHash", c.tokenHash)
+                    put("label", c.label)
+                    put("deviceType", c.deviceType)
+                    put("deviceId", c.deviceId)
+                    put("ip", c.ip)
+                    put("approvedAt", c.approvedAt)
+                    put("lastSeenAt", c.lastSeenAt)
+                    if (c.legacyNoToken) put("legacyNoToken", true)
+                })
+            }
+            authPrefs.edit().putString("credentials", obj.toString()).apply()
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to save device credentials: ${e.message}")
+        }
+    }
+
+    /** Load (or, on first run after the upgrade, harvest) the legacy trust list. */
+    @Synchronized
+    private fun loadLegacyKnown() {
+        try {
+            if (legacyKnownFile.exists()) {
+                val obj = JSONObject(legacyKnownFile.readText())
+                obj.optJSONArray("pending")?.let { arr ->
+                    for (i in 0 until arr.length()) {
+                        arr.optString(i).takeIf { it.isNotEmpty() }?.let { legacyPending.add(it) }
+                    }
+                }
+                obj.optJSONArray("consumed")?.let { arr ->
+                    for (i in 0 until arr.length()) {
+                        arr.optString(i).takeIf { it.isNotEmpty() }?.let { legacyConsumed.add(it) }
+                    }
+                }
+            } else {
+                // First start after the auth upgrade: every device that ever
+                // joined this hub has a persisted config. Trust each exactly once.
+                for (deviceId in deviceConfigs.keys) {
+                    if (deviceId.isNotEmpty()) legacyPending.add(deviceId)
+                }
+                Log.i(TAG, "Harvested ${legacyPending.size} legacy device id(s) for auto-trust")
+                saveLegacyKnown()
+            }
+            // A stored credential means the device already received (and used)
+            // a token — close its window now instead of waiting for a reconnect.
+            for (c in credentials.values) {
+                if (c.deviceId.isNotEmpty() && legacyPending.remove(c.deviceId)) {
+                    legacyConsumed.add(c.deviceId)
+                }
+            }
+            saveLegacyKnown()
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to load legacy device list: ${e.message}")
+        }
+    }
+
+    @Synchronized
+    private fun saveLegacyKnown() {
+        try {
+            val obj = JSONObject()
+            obj.put("pending", JSONArray(legacyPending.toList()))
+            obj.put("consumed", JSONArray(legacyConsumed.toList()))
+            legacyKnownFile.writeText(obj.toString())
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to save legacy device list: ${e.message}")
+        }
+    }
+
+    @Synchronized
+    private fun consumeLegacy(deviceId: String) {
+        if (deviceId.isEmpty()) return
+        if (legacyPending.remove(deviceId)) {
+            legacyConsumed.add(deviceId)
+            saveLegacyKnown()
+            Log.i(TAG, "Legacy auto-trust window closed for $deviceId")
+        }
+    }
+
+    private suspend fun sendAck(connId: String, credentialId: String, token: String?) {
+        sendToConn(connId, JSONObject().apply {
+            put("type", "AUTH_OK")
+            put("payload", JSONObject().apply {
+                put("credentialId", credentialId)
+                if (token != null) put("token", token)
+            })
+        })
+    }
+
+    private suspend fun sendAuthRequired(connId: String, pending: PendingAuth) {
+        sendToConn(connId, JSONObject().apply {
+            put("type", "AUTH_REQUIRED")
+            put("payload", JSONObject().apply {
+                put("pendingId", pending.pendingId)
+                put("code", pending.code)
+                put("expiresAt", pending.expiresAt)
+            })
+        })
+    }
+
+    private suspend fun sendAuthState(connId: String) {
+        sendToConn(connId, JSONObject().apply {
+            put("type", "AUTH_STATE")
+            put("payload", buildAuthState())
+        })
+    }
+
+    private suspend fun broadcastAuthState() {
+        val msg = JSONObject().apply {
+            put("type", "AUTH_STATE")
+            put("payload", buildAuthState())
+        }
+        for ((connId, loopback) in connLoopback) {
+            if (!loopback) continue
+            if (connAuth[connId]?.state != AuthState.AUTHED) continue
+            sendToConn(connId, msg)
+        }
+    }
+
+    private suspend fun broadcastToLoopback(msg: JSONObject) {
+        for ((connId, loopback) in connLoopback) {
+            if (!loopback) continue
+            if (connAuth[connId]?.state != AuthState.AUTHED) continue
+            sendToConn(connId, msg)
+        }
+    }
+
+    private suspend fun closeConn(connId: String, code: Short, reason: String) {
+        try {
+            sessions[connId]?.close(CloseReason(code, reason))
+        } catch (e: Exception) {
+            Log.w(TAG, "failed to close conn $connId: ${e.message}")
+        }
+    }
+
+    /**
+     * Create (or reuse) the pairing entry for [connId]. Reusing by IP keeps a
+     * reconnect loop from spawning a stream of pending rows/codes for the same
+     * physical device, and it is what makes the legacy "reload that device"
+     * recovery work: the row survives the 4009 close and is reattached when the
+     * device comes back with an AUTH message.
+     *
+     * Returns the pending entry, or null when the pending table is full.
+     */
+    private fun grantPending(connId: String, ip: String, payload: JSONObject): PendingAuth? {
+        val deviceType = payload.optString("deviceType", "kiosk").trim().take(16).ifEmpty { "kiosk" }
+        val label = payload.optString("label", "").trim().take(64)
+        val deviceId = payload.optString("deviceId", "").trim().take(64)
+        val now = System.currentTimeMillis()
+        synchronized(this) {
+            // One pairing prompt per IP at a time (also enforces the 2s
+            // anti-spam rule: a rapid retry reuses the outstanding entry).
+            val existing = pendingAuth.values.firstOrNull { it.ip == ip && now < it.expiresAt }
+            if (existing != null) {
+                existing.connId = connId
+                if (deviceType.isNotEmpty()) existing.deviceType = deviceType
+                if (label.isNotEmpty()) existing.label = label
+                if (deviceId.isNotEmpty()) existing.deviceId = deviceId
+                return existing
+            }
+            if (pendingAuth.size >= AUTH_MAX_PENDING) {
+                for (p in pendingAuth.values.filter { now >= it.expiresAt }) {
+                    pendingAuth.remove(p.pendingId)
+                }
+                if (pendingAuth.size >= AUTH_MAX_PENDING) return null
+            }
+            val pending = PendingAuth(
+                pendingId = "pend-" + hexId(4),
+                code = java.lang.String.format(java.util.Locale.US, "%06d", secureRandom.nextInt(1_000_000)),
+                ip = ip,
+                requestedAt = now,
+                expiresAt = now + AUTH_PENDING_TTL_MS,
+                connId = connId,
+                deviceId = deviceId,
+                deviceType = deviceType,
+                label = label.ifEmpty { deviceId }.ifEmpty { "Unknown device" },
+                legacy = false
+            )
+            pendingAuth[pending.pendingId] = pending
+            return pending
+        }
+    }
+
+    private suspend fun handleAuth(connId: String, payload: JSONObject) {
+        val ip = connIp[connId] ?: "?"
+
+        if (connLoopback[connId] == true) {
+            connAuth[connId] = ConnAuth(AuthState.AUTHED, "local")
+            sendAck(connId, "local", null)
+            sendAuthState(connId)
+            return
+        }
+
+        // Hub owner disabled gating: every client is trusted (dev/back-compat).
+        if (!requiresApproval()) {
+            connAuth[connId] = ConnAuth(AuthState.AUTHED, "open")
+            sendAck(connId, "open", null)
+            return
+        }
+
+        val token = payload.optString("token", "")
+        if (token.isNotEmpty()) {
+            val cred = credentialByToken(token)
+            if (cred == null) {
+                Log.i(TAG, "AUTH rejected: unknown/revoked token from $ip")
+                sendError(connId, "AUTH_INVALID", "Unknown or revoked credential")
+                closeConn(connId, 4004, "AUTH_INVALID")
+                return
+            }
+            cred.lastSeenAt = System.currentTimeMillis()
+            var dirty = false
+            if (cred.ip != ip) {
+                cred.ip = ip
+                dirty = true
+            }
+            if (cred.legacyNoToken) {
+                // It came back with the minted token: it is no longer legacy.
+                cred.legacyNoToken = false
+                dirty = true
+            }
+            if (dirty) saveCredentials()
+            // Possession of the token closes any legacy auto-trust window.
+            consumeLegacy(payload.optString("deviceId", "").trim().ifEmpty { cred.deviceId })
+            connAuth[connId] = ConnAuth(AuthState.AUTHED, cred.credentialId)
+            Log.i(TAG, "AUTH ok: ${cred.label} (${cred.credentialId}) from $ip")
+            sendAck(connId, cred.credentialId, null)
+            return
+        }
+
+        // Legacy auto-trust: a device that existed before the auth upgrade is
+        // approved once without a human tap. Mint + deliver a token now, then
+        // close its window so this only ever happens once.
+        val claimedDeviceId = payload.optString("deviceId", "").trim()
+        if (claimedDeviceId.isNotEmpty() && legacyPending.contains(claimedDeviceId)) {
+            val token = mintToken()
+            val now = System.currentTimeMillis()
+            val credential = Credential(
+                credentialId = "cred-" + hexId(8),
+                tokenHash = sha256Hex(token),
+                label = payload.optString("label", "").trim().take(64).ifEmpty { claimedDeviceId },
+                deviceType = payload.optString("deviceType", "kiosk").trim().take(16).ifEmpty { "kiosk" },
+                deviceId = claimedDeviceId,
+                ip = ip,
+                approvedAt = now,
+                lastSeenAt = now,
+                legacyNoToken = true
+            )
+            credentials[credential.credentialId] = credential
+            saveCredentials()
+            consumeLegacy(claimedDeviceId)
+            connAuth[connId] = ConnAuth(AuthState.AUTHED, credential.credentialId)
+            Log.i(TAG, "auto-trusted legacy device $claimedDeviceId")
+            sendAck(connId, credential.credentialId, token)
+            broadcastAuthState()
+            return
+        }
+
+        val pending = grantPending(connId, ip, payload)
+        if (pending == null) {
+            sendError(connId, "AUTH_BUSY", "Too many pairing requests — try again shortly")
+            closeConn(connId, 4005, "AUTH_BUSY")
+            return
+        }
+        pending.legacy = false
+        connAuth[connId] = ConnAuth(AuthState.PENDING, pendingId = pending.pendingId)
+        // Never log the code at info: it is a human cross-check, not a secret
+        // we want in logcat.
+        Log.i(TAG, "AUTH pairing pending ${pending.pendingId} from $ip")
+        Log.d(TAG, "pairing code for ${pending.pendingId}: ${pending.code}")
+        sendAuthRequired(connId, pending)
+        // Always upsert the row (the UI keys by pendingId): a reconnect may
+        // have flipped legacy -> false, and the hub should stop saying "reload".
+        broadcastToLoopback(JSONObject().apply {
+            put("type", "AUTH_PENDING")
+            put("payload", pendingToJson(pending))
+        })
+    }
+
+    /** Cached pre-auth client: register it for approval, then ask it to reload. */
+    private suspend fun handleUnauthenticatedJoin(connId: String, payload: JSONObject) {
+        val ip = connIp[connId] ?: "?"
+        if (connLoopback[connId] == true) {
+            connAuth[connId] = ConnAuth(AuthState.AUTHED, "local")
+            handleJoinRoom(connId, payload)
+            return
+        }
+        // Cached pre-auth client (old signaling.js). It cannot store a token, so
+        // if it is a known pre-upgrade device let its JOIN through and keep the
+        // window open for when it reloads and AUTHs properly.
+        val claimedDeviceId = payload.optString("deviceId", "").trim()
+        if (claimedDeviceId.isNotEmpty() && legacyPending.contains(claimedDeviceId)) {
+            val credentialId = "legacy-$claimedDeviceId"
+            val now = System.currentTimeMillis()
+            val existing = credentials[credentialId]
+            if (existing != null) {
+                existing.lastSeenAt = now
+            } else {
+                credentials[credentialId] = Credential(
+                    credentialId = credentialId,
+                    tokenHash = "",
+                    label = payload.optString("label", "").trim().take(64).ifEmpty { claimedDeviceId },
+                    deviceType = payload.optString("deviceType", "kiosk").trim().take(16).ifEmpty { "kiosk" },
+                    deviceId = claimedDeviceId,
+                    ip = ip,
+                    approvedAt = now,
+                    lastSeenAt = now,
+                    legacyNoToken = true
+                )
+            }
+            connAuth[connId] = ConnAuth(AuthState.AUTHED, credentialId)
+            Log.i(TAG, "legacy client $claimedDeviceId trusted without a token (window stays open)")
+            handleJoinRoom(connId, payload)
+            broadcastAuthState()
+            return
+        }
+        val pending = grantPending(connId, ip, payload)
+        if (pending == null) {
+            sendError(connId, "AUTH_BUSY", "Too many pairing requests — try again shortly")
+            closeConn(connId, 4005, "AUTH_BUSY")
+            return
+        }
+        pending.legacy = true
+        connAuth[connId] = ConnAuth(AuthState.PENDING, pendingId = pending.pendingId)
+        Log.i(TAG, "Pre-auth JOIN_ROOM from $ip (old/cached client) -> pending ${pending.pendingId}")
+        sendAuthRequired(connId, pending)
+        broadcastToLoopback(JSONObject().apply {
+            put("type", "AUTH_PENDING")
+            put("payload", pendingToJson(pending))
+        })
+        closeConn(connId, 4009, "AUTH_REQUIRED")
+    }
+
+    private suspend fun handleAuthDecision(connId: String, payload: JSONObject) {
+        if (connLoopback[connId] != true) {
+            return sendError(connId, "NOT_AUTHORIZED", "Only the local hub may approve devices")
+        }
+        val pendingId = payload.optString("pendingId", "")
+        val approve = payload.optBoolean("approve", false)
+        val pending = synchronized(this) { pendingAuth.remove(pendingId) }
+        if (pending == null) {
+            return sendError(connId, "UNKNOWN_PENDING", "No such pairing request")
+        }
+
+        if (!approve) {
+            Log.i(TAG, "Pairing ${pending.pendingId} denied by hub UI")
+            val target = pending.connId
+            if (target != null) {
+                sendToConn(target, JSONObject().apply {
+                    put("type", "AUTH_DENIED")
+                    put("payload", JSONObject().apply { put("reason", "denied") })
+                })
+                closeConn(target, 4003, "AUTH_DENIED")
+            }
+            broadcastToLoopback(JSONObject().apply {
+                put("type", "AUTH_PENDING_RESOLVED")
+                put("payload", JSONObject().apply {
+                    put("pendingId", pending.pendingId)
+                    put("approved", false)
+                })
+            })
+            broadcastAuthState()
+            return
+        }
+
+        val target = pending.connId
+        if (target == null || sessions[target] == null) {
+            // The device gave up before the tap landed. We cannot deliver the
+            // token (it is only ever sent once, over the live socket) and we
+            // refuse to store a plaintext token server-side, so discard.
+            Log.i(TAG, "Pairing ${pending.pendingId} approved but device socket is gone — discarded")
+            broadcastToLoopback(JSONObject().apply {
+                put("type", "AUTH_PENDING_RESOLVED")
+                put("payload", JSONObject().apply {
+                    put("pendingId", pending.pendingId)
+                    put("approved", false)
+                    put("reason", "disconnected")
+                })
+            })
+            broadcastAuthState()
+            return
+        }
+
+        val label = payload.optString("label", "").trim().take(64).ifEmpty { pending.label }
+        val token = mintToken()
+        val now = System.currentTimeMillis()
+        val credential = Credential(
+            credentialId = "cred-" + hexId(8),
+            tokenHash = sha256Hex(token),
+            label = label,
+            deviceType = pending.deviceType,
+            deviceId = pending.deviceId,
+            ip = pending.ip,
+            approvedAt = now,
+            lastSeenAt = now
+        )
+        credentials[credential.credentialId] = credential
+        saveCredentials()
+        connAuth[target] = ConnAuth(AuthState.AUTHED, credential.credentialId)
+        // Token goes to the device exactly once, here.
+        sendAck(target, credential.credentialId, token)
+        Log.i(TAG, "Pairing ${pending.pendingId} approved: ${credential.label} (${credential.credentialId})")
+        broadcastToLoopback(JSONObject().apply {
+            put("type", "AUTH_PENDING_RESOLVED")
+            put("payload", JSONObject().apply {
+                put("pendingId", pending.pendingId)
+                put("approved", true)
+                put("credentialId", credential.credentialId)
+            })
+        })
+        broadcastAuthState()
+    }
+
+    private suspend fun handleGetAuthState(connId: String) {
+        if (connLoopback[connId] != true) {
+            return sendError(connId, "NOT_AUTHORIZED", "Only the local hub may read the device list")
+        }
+        sendAuthState(connId)
+    }
+
+    private suspend fun handleRevokeCredential(connId: String, payload: JSONObject) {
+        if (connLoopback[connId] != true) {
+            return sendError(connId, "NOT_AUTHORIZED", "Only the local hub may revoke devices")
+        }
+        val credentialId = payload.optString("credentialId", "")
+        val removed = synchronized(this) { credentials.remove(credentialId) }
+        if (removed != null) {
+            // A revoked device must not silently fall back into the legacy
+            // auto-trust window on its next connect.
+            consumeLegacy(removed.deviceId)
+            saveCredentials()
+            Log.i(TAG, "Revoked credential $credentialId (${removed.label})")
+        }
+        broadcastAuthState()
+    }
+
+    /** Expire unanswered pairing requests (5 min TTL) and tell the hub UI. */
+    private fun startAuthSweeper() {
+        teardownScheduler.scheduleAtFixedRate({
+            try {
+                val now = System.currentTimeMillis()
+                val expired = synchronized(this) {
+                    val due = pendingAuth.values.filter { now >= it.expiresAt }
+                    for (p in due) pendingAuth.remove(p.pendingId)
+                    due
+                }
+                if (expired.isEmpty()) return@scheduleAtFixedRate
+                runBlocking {
+                    for (p in expired) {
+                        Log.i(TAG, "Pairing ${p.pendingId} expired")
+                        val target = p.connId
+                        if (target != null) {
+                            sendToConn(target, JSONObject().apply {
+                                put("type", "AUTH_DENIED")
+                                put("payload", JSONObject().apply { put("reason", "expired") })
+                            })
+                            closeConn(target, 4008, "AUTH_TIMEOUT")
+                        }
+                        broadcastToLoopback(JSONObject().apply {
+                            put("type", "AUTH_PENDING_RESOLVED")
+                            put("payload", JSONObject().apply {
+                                put("pendingId", p.pendingId)
+                                put("approved", false)
+                                put("reason", "expired")
+                            })
+                        })
+                    }
+                    broadcastAuthState()
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "auth sweeper error: ${e.message}")
+            }
+        }, 5, 5, TimeUnit.SECONDS)
+    }
+
     // ─── Handlers ────────────────────────────────────────────
 
     private suspend fun handleJoinRoom(connId: String, payload: JSONObject) {
@@ -459,6 +1182,32 @@ class SignalingServer(private val context: Context, private val listener: Server
         if (deviceId.isEmpty() || deviceType.isEmpty()) {
             sendError(connId, "INVALID_PARAMS", "deviceId and deviceType required")
             return
+        }
+
+        // Keep the approved credential's display fields in sync. deviceId is
+        // NOT an identity here (it is client-supplied): if a kiosk clears its
+        // storage and comes back with a new id, the token still authenticates
+        // it and we simply update the label the hub shows.
+        val credentialId = connAuth[connId]?.credentialId
+        if (credentialId != null && credentialId != "local" && credentialId != "open") {
+            credentials[credentialId]?.let { cred ->
+                var dirty = false
+                if (cred.deviceId != deviceId) {
+                    Log.i(TAG, "Credential $credentialId deviceId changed '${cred.deviceId}' -> '$deviceId'")
+                    cred.deviceId = deviceId
+                    dirty = true
+                }
+                if (cred.label != label) {
+                    cred.label = label
+                    dirty = true
+                }
+                if (cred.deviceType != deviceType) {
+                    cred.deviceType = deviceType
+                    dirty = true
+                }
+                cred.lastSeenAt = System.currentTimeMillis()
+                if (dirty) saveCredentials()
+            }
         }
 
         val roomId = "default"
@@ -964,6 +1713,11 @@ class SignalingServer(private val context: Context, private val listener: Server
         val value = payload.optJSONObject("value") ?: JSONObject()
         if (section.isEmpty()) {
             return sendError(connId, "INVALID_PARAMS", "SETTINGS requires a section")
+        }
+        // The auth kill-switch is admin-plane: only the loopback hub may flip
+        // it, so a remote (LAN) base can never disable approval gating.
+        if (section == "auth" && connLoopback[connId] != true) {
+            return sendError(connId, "NOT_ALLOWED", "Only the local hub can change auth settings")
         }
         // Shallow-merge so a partial update (e.g. only `pages`) keeps other
         // fields. A present, non-empty token replaces; an empty/absent token
@@ -1912,6 +2666,12 @@ class SignalingServer(private val context: Context, private val listener: Server
         private const val KEYSTORE_PASSWORD = "changeme"
         private const val KEYSTORE_FILE = "hearthconnect.p12"
         private const val RECENT_SEEN_WINDOW = 24 * 60 * 60 * 1000L // 24 hours
+
+        // Device pairing: short-lived codes, bounded table (memory/DoS guard),
+        // and a short cooldown window enforced by reusing the outstanding entry
+        // for the same IP instead of minting a new one.
+        private const val AUTH_PENDING_TTL_MS = 5 * 60 * 1000L
+        private const val AUTH_MAX_PENDING = 3
         private val VALID_SOURCE_TYPES = setOf("video+audio", "video-only", "audio-only", "none")
         private val BASE_TYPES = setOf("base", "room")
 

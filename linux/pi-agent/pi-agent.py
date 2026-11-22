@@ -84,6 +84,12 @@ def _read_env_value(key):
         pass
     return None
 
+# Pairing credential issued by the hub the first time this device is approved.
+# Persisted in CONFIG_FILE next to DEVICE_ID so it survives restarts; the hub
+# stores only a SHA-256 of it. Blank means "not paired yet".
+AUTH_TOKEN = (_read_env_value('AUTH_TOKEN') or os.environ.get('AUTH_TOKEN', '')).strip()
+
+
 # Test-source mode: substitute videotestsrc/audiotestsrc for v4l2src/alsasrc so
 # the agent runs on a headless box with no real camera/mic (used by the e2e
 # smoke test, plan 11). Set TEST_SOURCE=1 to enable.
@@ -144,6 +150,20 @@ def _no_verify_ssl():
 
 def rand_id(n=8):
     return ''.join(random.choices(string.ascii_lowercase + string.digits, k=n))
+
+
+def auth_payload(device_id, device_label, token):
+    """Build the AUTH payload sent as the first message on every socket.
+
+    Identity is the hub-issued token, never device_id (which is client-supplied
+    and lives in localStorage). Without a token the hub opens a pairing prompt;
+    with an unknown/revoked token it answers AUTH_INVALID and we clear it.
+    deviceType/label are display-only so the hub can show what is asking.
+    """
+    payload = {'deviceType': 'kiosk', 'label': device_label, 'deviceId': device_id}
+    if token:
+        payload['token'] = token
+    return payload
 
 
 def gst_element_exists(name):
@@ -1655,6 +1675,9 @@ class Agent:
         self.device_label = self._load_device_label()
         self.config = self._load_persisted_config()
         self.ws = None
+        self.auth_token = AUTH_TOKEN
+        self._auth_ok = False
+        self.joined = False
         self.has_video = False
         self.has_audio = False
         self.config = {}
@@ -1785,6 +1808,48 @@ class Agent:
         except Exception as e:
             log.warning('could not persist device label: %s', e)
 
+    def _persist_auth_token(self, token):
+        """Persist (or clear) the hub-issued AUTH_TOKEN in CONFIG_FILE.
+
+        A blank token removes the stored credential so the next connect asks for
+        a fresh pairing instead of replaying a revoked one.
+        """
+        self.auth_token = (token or '').strip()
+        try:
+            lines = []
+            if os.path.exists(CONFIG_FILE):
+                with open(CONFIG_FILE) as f:
+                    lines = f.read().splitlines()
+            out = []
+            replaced = False
+            for line in lines:
+                key = line.split('=', 1)[0].strip() if '=' in line else ''
+                if key == 'AUTH_TOKEN':
+                    out.append('AUTH_TOKEN=' + self.auth_token)
+                    replaced = True
+                    continue
+                out.append(line)
+            if not replaced:
+                out.append('AUTH_TOKEN=' + self.auth_token)
+            os.makedirs(os.path.dirname(CONFIG_FILE) or '.', exist_ok=True)
+            with open(CONFIG_FILE, 'w') as f:
+                f.write('\n'.join(out) + '\n')
+            log.info('persisted AUTH_TOKEN to %s', CONFIG_FILE)
+        except Exception as e:
+            log.warning('could not persist AUTH_TOKEN to %s: %s', CONFIG_FILE, e)
+
+    async def _send_auth(self, ws):
+        """AUTH is the first message on every socket (see signaling protocol)."""
+        await ws.send(json.dumps({
+            'type': 'AUTH',
+            'payload': auth_payload(self.device_id, self.device_label, self.auth_token),
+        }))
+
+    async def _send_join_room(self, ws):
+        await ws.send(json.dumps({'type': 'JOIN_ROOM', 'payload': {
+            'roomId': ROOM_ID, 'deviceId': self.device_id,
+            'deviceType': 'kiosk', 'label': self.device_label}}))
+
     def _load_persisted_config(self):
         """Load previously-persisted operator config (e.g. speakerDevice) so
         settings survive agent restarts. Returns a dict (possibly empty)."""
@@ -1881,6 +1946,11 @@ class Agent:
     async def ws_pump(self):
         while True:
             msg = await self.ws_queue.get()
+            # Messages queued before AUTH_OK belong to a previous (or
+            # not-yet-paired) session. Sending one now would violate the
+            # AUTH-first state machine and get the socket closed with 4009.
+            if not self._auth_ok:
+                continue
             if self._ws_connected():
                 try:
                     await self.ws.send(json.dumps(msg))
@@ -1985,6 +2055,41 @@ class Agent:
         t = msg.get('type')
         p = msg.get('payload', {})
         log.info('received msg type=%s payload_keys=%s', t, list(p.keys()) if isinstance(p, dict) else p)
+        # ─── Device authentication (first exchange on every socket) ───
+        if t == 'AUTH_REQUIRED':
+            self._auth_ok = False
+            code = p.get('code') if isinstance(p, dict) else None
+            pending = p.get('pendingId') if isinstance(p, dict) else None
+            # The pairing code is logged at WARNING because this agent is
+            # headless: the operator reads it from the journal if the hub row is
+            # ambiguous. It is NOT an authorization factor.
+            log.warning('AUTH pending: approve this Pi in the hub UI '
+                        '(code %s, pending %s)', code, pending)
+            return
+        if t == 'AUTH_OK':
+            cred = p.get('credentialId') if isinstance(p, dict) else None
+            token = p.get('token') if isinstance(p, dict) else None
+            if token:
+                # Minted exactly once, at the moment of first approval.
+                self._persist_auth_token(token)
+                log.info('AUTH approved — credential %s stored', cred)
+            else:
+                log.info('AUTH ok (%s)', cred)
+            if self.ws is not None and not self.joined:
+                self.joined = True
+                await self._send_join_room(self.ws)
+            # Only now may queued messages (capabilities, ICE, …) hit the wire.
+            self._auth_ok = True
+            return
+        if t == 'AUTH_DENIED':
+            self._auth_ok = False
+            log.error('AUTH denied by hub (%s) — approve this device in the hub UI',
+                      (p.get('reason') if isinstance(p, dict) else None))
+            return
+        if t == 'ERROR' and isinstance(p, dict) and p.get('code') == 'AUTH_INVALID':
+            log.warning('AUTH token rejected by hub — clearing stored credential')
+            self._persist_auth_token('')
+            return
         if t == 'WELCOME':
             # Keep our stable local device id authoritative. The server echoes
             # the id we sent in JOIN_ROOM, so this is normally a no-op — but if
@@ -2565,31 +2670,58 @@ class Agent:
                 continue
 
             try:
+                denied = False
                 log.info('connecting to %s', WS_URL)
                 async with websockets.connect(WS_URL, max_size=None, ssl=_no_verify_ssl()) as ws:
                     self.ws = ws
                     self.reconnect_delay = 1
                     self._consecutive_failures = 0
-                    await ws.send(json.dumps({'type': 'JOIN_ROOM', 'payload': {
-                        'roomId': ROOM_ID, 'deviceId': self.device_id,
-                        'deviceType': 'kiosk', 'label': self.device_label}}))
+                    self._auth_ok = False
+                    self.joined = False
+                    # Device authentication is the first exchange on EVERY socket.
+                    # JOIN_ROOM is only sent once the hub answers AUTH_OK (see
+                    # handle_message), so an unapproved device never enters a room
+                    # and never learns the room state.
+                    await self._send_auth(ws)
                     pump = asyncio.ensure_future(self.ws_pump())
                     # Periodically re-scan for devices so cameras plugged in
                     # after boot (or slow to enumerate) get reported.
                     refresh_task = asyncio.ensure_future(self._refresh_loop())
-                    async for raw in ws:
-                        try:
-                            await self.handle_message(json.loads(raw))
-                        except Exception as e:
-                            log.error('handle error: %s', e)
-                    pump.cancel()
-                    refresh_task.cancel()
+                    try:
+                        async for raw in ws:
+                            try:
+                                await self.handle_message(json.loads(raw))
+                            except Exception as e:
+                                log.error('handle error: %s', e)
+                    finally:
+                        pump.cancel()
+                        refresh_task.cancel()
                 # WS dropped — tear down all active sessions.  The server has
                 # already wiped our subscription state and sent SUBSCRIBER_LEFT
                 # to publishers (if it could reach them), so any surviving
                 # GStreamer pipelines are orphaned and holding camera/mic
                 # devices.  Without this teardown the camera red light stays on
                 # and the next reconnect can't open the device (REGRESSION FIX).
+                self._teardown_all_sessions()
+            except websockets.exceptions.ConnectionClosed as e:
+                code = getattr(e, 'code', None)
+                if code == 4004:
+                    log.warning('hub rejected AUTH_TOKEN — clearing credential and re-pairing')
+                    self._persist_auth_token('')
+                    self.reconnect_delay = 1
+                elif code == 4003:
+                    # Explicit Deny on the hub. Do not hammer it: retry slowly so
+                    # that if the owner changes their mind a fresh prompt appears.
+                    log.error('hub DENIED this device — approve it in the hub UI '
+                              '(retrying in 60s)')
+                    denied = True
+                elif code == 4008:
+                    log.warning('pairing request expired — asking the hub again')
+                    self.reconnect_delay = 5
+                elif code == 4009:
+                    log.warning('hub requires AUTH before JOIN_ROOM (retrying)')
+                else:
+                    log.warning('connection closed by hub: code=%s reason=%s', code, getattr(e, 'reason', ''))
                 self._teardown_all_sessions()
             except Exception as e:
                 log.warning('connection lost: %s', e)
@@ -2601,7 +2733,7 @@ class Agent:
                     log.info('consecutive failures >= 3 — attempting mDNS re-discovery')
                     await self._discover_server_via_mdns()
                     self._consecutive_failures = 0
-            await asyncio.sleep(self.reconnect_delay)
+            await asyncio.sleep(60 if denied else self.reconnect_delay)
             self.reconnect_delay = min(self.reconnect_delay * 2, 30)
 
 

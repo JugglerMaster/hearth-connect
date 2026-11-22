@@ -4,7 +4,25 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.SignalingHandler = void 0;
+exports.isLoopbackIp = isLoopbackIp;
 const ws_1 = __importDefault(require("ws"));
+// Loopback detection for the admin plane. Only the local hub (127.0.0.1 /
+// ::1 / localhost) may flip auth settings — mirrors the Android hub's
+// connLoopback gate so the reference build enforces the same security model.
+function isLoopbackIp(ip) {
+    if (!ip)
+        return false;
+    let host = ip.replace(/^\[|\]$/g, '').trim();
+    if (host === 'localhost' || host === '127.0.0.1' || host === '::1')
+        return true;
+    // IPv4 loopback block 127.0.0.0/8
+    if (/^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host))
+        return true;
+    // IPv4-mapped IPv6 (::ffff:127.0.0.1)
+    if (/^::ffff:(127\.\d{1,3}\.\d{1,3}\.\d{1,3})$/.test(host))
+        return true;
+    return false;
+}
 class SignalingHandler {
     constructor(channels, config, clips) {
         this.channels = channels;
@@ -84,6 +102,15 @@ class SignalingHandler {
     }
     route(transport, msg) {
         switch (msg.type) {
+            case 'AUTH':
+                // The Node server is the ungated reference implementation: always
+                // acknowledge, so the shared signaling.js (which always sends AUTH
+                // first) works against both this server and the Android hub.
+                this.send(transport, {
+                    type: 'AUTH_OK',
+                    payload: { credentialId: 'local' },
+                });
+                break;
             case 'HEARTBEAT':
                 this.handleHeartbeat(transport);
                 break;
@@ -937,6 +964,13 @@ class SignalingHandler {
         const value = payload.value || {};
         if (!section) {
             this.sendError(transport, 'INVALID_ARGS', 'SET_SETTINGS requires a section');
+            return;
+        }
+        // The auth kill-switch is admin-plane: only the loopback hub may flip it,
+        // so a remote (LAN) base can never disable approval gating. Mirrors the
+        // Android hub's connLoopback gate.
+        if (section === 'auth' && !isLoopbackIp(transport.ip)) {
+            this.sendError(transport, 'NOT_ALLOWED', 'Only the local hub can change auth settings');
             return;
         }
         this.config.setSettingsSection(section, value);

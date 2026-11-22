@@ -30,6 +30,10 @@ const PI_DIR = path.resolve(__dirname, '../../linux/pi-agent');
 
 const SERVER_URL = process.env.SERVER_URL || 'http://localhost:8090';
 const ROOM_ID = process.env.ROOM_ID || 'e2e-interop';
+// Optional device credential for a gated Android hub (see AUTH contract). With
+// no token the hub parks this client at AUTH_REQUIRED; the run then SKIPS with
+// instructions instead of timing out.
+const AUTH_TOKEN = process.env.AUTH_TOKEN || '';
 const AGENT_LOG = path.join(PI_DIR, 'e2e_interop_agent.log');
 const TIMEOUT_MS = 30_000;
 
@@ -105,7 +109,7 @@ try {
     '/interop-harness.html';
   await page.goto(navUrl);
 
-  const result = await page.evaluate(({ wsUrl, room }) => {
+  const result = await page.evaluate(({ wsUrl, room, authToken }) => {
     window.__state = { tracks: [], states: [], connected: false };
     class Sub extends WebRTCManager {
       onRemoteTrack(peerId, stream, track) {
@@ -117,6 +121,7 @@ try {
       }
     }
     const sig = new SignalingClient(wsUrl);
+    if (authToken) sig.authToken = authToken;
     sig.deviceType = 'base';
     sig.deviceLabel = 'e2e-chromium';
     const wm = new Sub(sig);
@@ -144,6 +149,19 @@ try {
     return new Promise((resolve, reject) => {
       const t0 = Date.now();
       const iv = setInterval(async () => {
+        // A gated hub parks an unpaired client at AUTH_REQUIRED forever.
+        // Report that as a skip (with the fix) rather than a 30s timeout.
+        if (!authToken && window.__msgs.includes('AUTH_REQUIRED')) {
+          clearInterval(iv);
+          resolve({ skipped: true,
+                    reason: 'hub requires device approval (no AUTH_TOKEN set). Approve this device on the hub once, then re-run with AUTH_TOKEN=<token>; the spawned Pi agent reads the same env var.' });
+          return;
+        }
+        if (window.__msgs.includes('AUTH_INVALID')) {
+          clearInterval(iv);
+          reject(new Error('AUTH_INVALID: the hub rejected AUTH_TOKEN (revoked?) — approve the device and use its current token'));
+          return;
+        }
         const st = window.__state;
         if (st.connected && st.tracks.length > 0) {
           clearInterval(iv);
@@ -163,13 +181,18 @@ try {
         }
       }, 500);
     });
-  }, { wsUrl: toWs(SERVER_URL), room: ROOM_ID });
+  }, { wsUrl: toWs(SERVER_URL), room: ROOM_ID, authToken: AUTH_TOKEN });
 
-  console.log('PASS: WebRTC connected to Pi agent');
-  console.log('  tracks:', JSON.stringify(result.tracks));
-  console.log('  bytesReceived:', result.bytesReceived);
-  if (result.tracks.length === 0) { console.error('FAIL: no remote track'); exitCode = 1; }
-  if (result.bytesReceived === 0) { console.warn('WARN: connected but no media bytes yet'); }
+  if (result.skipped) {
+    console.warn(`SKIP: ${result.reason}`);
+    exitCode = 0;
+  } else {
+    console.log('PASS: WebRTC connected to Pi agent');
+    console.log('  tracks:', JSON.stringify(result.tracks));
+    console.log('  bytesReceived:', result.bytesReceived);
+    if (result.tracks.length === 0) { console.error('FAIL: no remote track'); exitCode = 1; }
+    if (result.bytesReceived === 0) { console.warn('WARN: connected but no media bytes yet'); }
+  }
 } catch (err) {
   exitCode = 1;
   console.error('FAIL:', err.message);

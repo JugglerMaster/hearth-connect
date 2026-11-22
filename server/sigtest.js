@@ -7,7 +7,10 @@ let baseId = 'test-base-' + Date.now();
 let kioskSourceId = null;
 const receivedByBase = [];
 function send(ws, type, payload) { ws.send(JSON.stringify({ type, payload })); }
-kioskWs.on('open', () => send(kioskWs, 'JOIN_ROOM', { roomId: 'default', deviceId: kioskId, deviceType: 'kiosk', label: 'TestKiosk' }));
+kioskWs.on('open', () => {
+  send(kioskWs, 'AUTH', { deviceType: 'kiosk', deviceId: kioskId, label: 'TestKiosk' });
+  send(kioskWs, 'JOIN_ROOM', { roomId: 'default', deviceId: kioskId, deviceType: 'kiosk', label: 'TestKiosk' });
+});
 kioskWs.on('message', (raw) => {
   const msg = JSON.parse(raw.toString());
   if (msg.type === 'WELCOME') {
@@ -25,7 +28,10 @@ kioskWs.on('message', (raw) => {
 });
 function connectBase() {
   const baseWs = new WebSocket(URL, opts);
-  baseWs.on('open', () => send(baseWs, 'JOIN_ROOM', { roomId: 'default', deviceId: baseId, deviceType: 'base', label: 'TestBase' }));
+  baseWs.on('open', () => {
+    send(baseWs, 'AUTH', { deviceType: 'base', deviceId: baseId, label: 'TestBase' });
+    send(baseWs, 'JOIN_ROOM', { roomId: 'default', deviceId: baseId, deviceType: 'base', label: 'TestBase' });
+  });
   baseWs.on('message', (raw) => {
     const msg = JSON.parse(raw.toString());
     if (msg.type === 'WELCOME') {
