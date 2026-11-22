@@ -147,10 +147,21 @@ try {
               'talkbackAttached:', result.talkbackAttached);
 
   await new Promise((r) => setTimeout(r, 1500));
+  // G5: verify the Pi actually received talkback audio (not just attached).
+  // The Pi agent prints 'rx audio level: <db> dB' to stdout when it receives
+  // audible talkback; the test redirects stdout to AGENT_LOG.
+  let rxAudioReceived = false;
+  try {
+    const agentLog = execSync(`tail -n 200 ${AGENT_LOG}`).toString();
+    if (agentLog.includes('rx audio level')) rxAudioReceived = true;
+  } catch {}
+  console.log('rxAudioReceived:', rxAudioReceived);
+
   // The fix: talkback attached with no renegotiation (base never re-offers for
-  // talkback) and the monitor stream stayed connected through the talkback window.
-  if (result.connected && result.talkbackAttached && result.offersSent === 0) {
-    console.log('PASS: talkback attached via replaceTrack with no renegotiation; monitor stream stayed up');
+  // talkback) and the monitor stream stayed connected through the talkback
+  // window, AND the Pi actually received audible talkback audio.
+  if (result.connected && result.talkbackAttached && result.offersSent === 0 && rxAudioReceived) {
+    console.log('PASS: talkback attached via replaceTrack with no renegotiation; monitor stream stayed up; Pi received audio');
   } else {
     console.error('FAIL: talkback/renegotiation regression', JSON.stringify(result));
     console.error('--- browser console ---');

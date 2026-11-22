@@ -86,11 +86,37 @@ media-setup messages (`JOIN_ROOM`/`SUBSCRIBE`) are now queued until `AUTH_OK`
   is not feasible with `getStats()` (no channel-count field), so the pure
   `monitor_pipeline_str()` unit test is the strongest available guard.
 
-### G5 (P1) — Talkback may be audio-blind
-- **Evidence:** `tests/e2e-browser/e2e-talkback-glare.mjs` exists, but verify
-  it asserts **audio bytes reach the Pi**, not just peer connection.
+### G5 (P1) — Talkback may be audio-blind — **spec**
+- **Evidence:** `tests/e2e-browser/e2e-talkback-glare.mjs` exists, but it only
+  asserts talkback attached + no renegotiation + stream stayed up. It does **not**
+  assert that audio bytes actually reach the Pi.
 - **Fix:** Add an `audioBytes > 0` assertion (Pi side) to the talkback test.
-- **Files:** `tests/e2e-browser/e2e-talkback-glare.mjs`.
+- **Files:** `tests/e2e-browser/e2e-talkback-glare.mjs`, `linux/pi-agent/pi-agent.py`.
+
+**Implementation spec (Pi-side measurement):**
+1. The Pi receive chain (`make_audio_recv_chain`) currently is:
+   `queue ! rtpopusdepay ! opusdec ! audioconvert ! audioresample ! volume name=rxvol ! <sink>`.
+   Insert a named `level` element (`rxlevel`) after `audioresample` and before
+   `volume name=rxvol` so the received talkback audio is measured.
+2. The bus `ELEMENT` handler currently routes *any* `level` structure to
+   `on_audio_level` (peak alerts). Distinguish by element name (`message.get_source().get_name()`):
+   - `rxlevel` → new `on_rx_audio_level(self, db)` (logs received talkback level, throttled).
+   - the send `level` (audio peak) → `on_audio_level(self, db)` (unchanged).
+3. `on_rx_audio_level` logs e.g. `rx audio level: <db> dB` only when the received
+   level is above a small threshold (so the log only fires when audible talkback
+   actually arrives).
+4. The talkback test, after enabling talkback and the wait window, parses the
+   agent log (`/tmp/opencode/talkback-agent.log`) for the `rx audio level` marker
+   and **FAILs** if the Pi never received audible audio.
+
+**Constraints:** keep the receive chain's existing `volume`/`mute` behavior and
+  dynamic-pad handling; do not trigger renegotiation; keep the test CI-safe
+  (auto-skip when GStreamer/`websockets`/server/Chromium are absent).
+
+**Verification:** `python3 -m unittest test_pi_agent` (GStreamer-free pure path
+  unchanged); `node --check` the talkback test; run the talkback test against a
+  live hub + Pi (or `TEST_SOURCE=1`) to confirm the `rx audio level` marker
+  appears when talkback is active.
 
 ### G6 (P2) — ICE resilience untested — **DONE**
 - **Evidence:** Nothing asserted ICE never settles to `failed`, or that it

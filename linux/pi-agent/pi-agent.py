@@ -687,9 +687,14 @@ def make_audio_recv_chain(pipeline, volume, mute, sink=None):
     Returns (bin, rxvol_element). The volume element is pre-set so the chain is
     safe to link before any samples arrive. `sink` overrides the ALSA device
     (e.g. a specific speaker output chosen in base-station settings).
+
+    A `level` element named `rxlevel` is inserted after `audioresample` to
+    measure the received talkback audio (G5). The bus handler routes `rxlevel`
+    to `Agent.on_rx_audio_level` (distinct from the send-side audio-peak `level`).
     """
     chain = Gst.parse_bin_from_description(
         'queue ! rtpopusdepay ! opusdec ! audioconvert ! audioresample ! '
+        'level name=rxlevel ! '
         'volume name=rxvol ! ' + (sink or audio_sink_str()), True)
     pipeline.add(chain)
     chain.set_state(Gst.State.PLAYING)
@@ -1113,7 +1118,14 @@ class MonitorSession:
                 rms = struct.get_value('rms')
                 if rms and len(rms) > 0:
                     db = float(rms[0])
-                    self.agent.on_audio_level(self, db)
+                    # Distinguish the receive-side rxlevel (talkback received,
+                    # G5) from the send-side audio-peak level.
+                    src = message.get_source()
+                    src_name = src.get_name() if src else ''
+                    if src_name == 'rxlevel':
+                        self.agent.on_rx_audio_level(self, db)
+                    else:
+                        self.agent.on_audio_level(self, db)
         return True
 
     def set_remote_answer(self, sdp_text):
@@ -1977,6 +1989,16 @@ class Agent:
         if throttled is not None:
             self.enqueue_ws({'type': 'AUDIO_PEAK', 'payload': {
                 'deviceId': self.device_id, **throttled}})
+
+    def on_rx_audio_level(self, session, db):
+        """Received talkback audio level (G5). Prints when audible so the
+        talkback test can assert the Pi actually received audio bytes.
+
+        Prints (not `log`) because the test only redirects the agent's stdout
+        to its log file; `log` writes to stderr, which is inherited.
+        """
+        if db > -40.0:
+            print('rx audio level: %.1f dB' % db, flush=True)
 
     def enumerate_devices(self):
         self.video_devices = []
