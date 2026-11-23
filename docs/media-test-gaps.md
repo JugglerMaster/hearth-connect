@@ -86,7 +86,7 @@ media-setup messages (`JOIN_ROOM`/`SUBSCRIBE`) are now queued until `AUTH_OK`
   is not feasible with `getStats()` (no channel-count field), so the pure
   `monitor_pipeline_str()` unit test is the strongest available guard.
 
-### G5 (P1) — Talkback may be audio-blind — **spec**
+### G5 (P1) — Talkback may be audio-blind — **DONE**
 - **Evidence:** `tests/e2e-browser/e2e-talkback-glare.mjs` exists, but it only
   asserts talkback attached + no renegotiation + stream stayed up. It does **not**
   assert that audio bytes actually reach the Pi.
