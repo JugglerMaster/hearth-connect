@@ -10,6 +10,10 @@ HTML5 video intercom / baby monitor system. Runs on iPads/iPhones via Safari. Se
 - P2P mesh initially (one RTCPeerConnection per publisher/subscriber pair)
 - SFU (mediasoup/LiveKit) possible later if scaling beyond 2-3 cameras
 - One peer connection per peer pair; tracks flow bidirectionally (video+audio one way, talkback audio the other)
+- ICE negotiation (gathering, exchange, connectivity checks, renewal, restart, reconnection)
+  and its three environments (iOS clients, Android local WebView, Pi agent) are documented in
+  `docs/ice-negotiation.md` — read it before changing the `webrtc.js` / `webrtc.kt` / `pi-agent.py`
+  ICE path.
 
 ### Server Stack: Node.js + TypeScript
 - Single process serves static files + WebSocket signaling on one port
@@ -123,7 +127,7 @@ HTML5 video intercom / baby monitor system. Runs on iPads/iPhones via Safari. Se
 - "Add to Home Screen" improves tab persistence vs Safari tabs
 
 ### Two-Way Talkback
-- Talk button on viewer → subscriber adds audio track to existing RTCPeerConnection
+- Talk button on the base station → subscriber adds audio track to existing RTCPeerConnection
 - Only the currently audio-focused source receives talkback audio
 - Audio focus: one source plays at a time (manual or last-active mode)
 
@@ -145,15 +149,19 @@ hearth-connect/
 │       ├── index.html         # Landing / room selector
 │       ├── monitor.html        # Monitor device (minimal UI)
 │       ├── base-station.html  # Base station (full control)
-│       ├── viewer.html        # Remote viewer
+│       ├── room-control.html  # Room Control (all-in-one: monitor + full control, same stack)
+│       ├── home-assistant.html # Home Assistant integration page
+│       ├── interop-harness.html # Playwright e2e interop page (no UI)
 │       ├── css/
 │       │   └── style.css
 │       └── js/
 │           ├── signaling.js   # WS client with reconnection
-│           ├── webrtc.js      # getUserMedia + RTCPeerConnection
+│           ├── webrtc.js      # getUserMedia + RTCPeerConnection (perfect negotiation, talkback)
 │           ├── camera.js         # Monitor page logic (served by monitor.html)
+│           ├── room-control.js  # Room-control page logic
 │           ├── base-station.js# Base station page logic
-│           └── viewer.js      # Viewer page logic
+│           ├── home-assistant.js # Home Assistant page logic
+│           └── topbar.js       # Shared topbar widget (room chip / link)
 ├── docker/
 │   ├── docker-compose.yml
 │   └── gen-cert.sh
@@ -315,7 +323,7 @@ so the device is free for the next connection.
 closes the feed or the browser crashes. A second device cannot connect because
 `/dev/video0 is busy`.
 
-### PS3Eye 4-channel audio silent on browser viewers
+### PS3Eye 4-channel audio silent on browser clients
 
 The PS3Eye camera exposes 4 raw microphone capsule channels via ALSA
 (`hw:2,0`, 16kHz). If the GStreamer pipeline passes all 4 channels through to
@@ -349,7 +357,7 @@ alsasrc device=hw:2,0 ! capsfilter caps=audio/x-raw,channels=4
   ! level ! opusenc ! rtpopuspay
 ```
 
-**Symptom**: Audio stream connected (WebRTC track present) but browser viewers
+**Symptom**: Audio stream connected (WebRTC track present) but browser clients
 hear silence from PS3Eye mic. Single-channel USB mics (e.g. C-Media PnP)
 were unaffected because they output 1 channel natively.
 

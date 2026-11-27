@@ -247,12 +247,18 @@ hearth-connect/
 │       ├── index.html            # Landing / role selector
 │       ├── monitor.html          # Monitor (publisher)
 │       ├── base-station.html     # Base station (subscriber + admin)
+│       ├── room-control.html     # Room Control (all-in-one: monitor + full control, same stack)
+│       ├── home-assistant.html   # Home Assistant integration page
+│       ├── interop-harness.html  # Playwright e2e interop harness
 │       ├── css/style.css
 │       └── js/
 │           ├── signaling.js      # WS client + reconnection
 │           ├── webrtc.js         # getUserMedia + RTCPeerConnection
 │           ├── camera.js         # Monitor page logic
-│           └── base-station.js   # Base station page logic
+│           ├── room-control.js   # Room-control page logic
+│           ├── base-station.js   # Base station page logic
+│           ├── home-assistant.js # Home Assistant page logic
+│           └── topbar.js         # Shared topbar widget
 ├── linux/
 │   └── pi-agent/
 │       ├── pi-agent.py           # GStreamer + WebRTC native agent
