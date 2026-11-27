@@ -842,6 +842,10 @@ def _make_session(agent=None, **overrides):
         pipeline=None,
         webrtc=None,
         _mid_map={},
+        # Production MonitorSession.__init__ defaults _dtls_role='passive';
+        # on_answer_created reads it for the renegotiation DTLS-role patch,
+        # so the mock must carry it too (it bypasses __init__).
+        _dtls_role='passive',
     )
     # Set overrides
     for k, v in overrides.items():
